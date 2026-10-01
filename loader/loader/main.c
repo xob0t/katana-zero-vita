@@ -189,6 +189,7 @@ void loadConfig(const char *game) {
 			else if (strcmp("memOverlay", buffer) == 0) mem_overlay = value;
 			else if (strcmp("maxVoices", buffer) == 0) { extern int max_voices; max_voices = value; }
 			else if (strcmp("sameSoundLimit", buffer) == 0) { extern int same_sound_limit; same_sound_limit = value; }
+			else if (strcmp("dissolveChunkScale", buffer) == 0) { extern int dissolve_chunk_scale; dissolve_chunk_scale = value; }
 			else if (strcmp("skipNetflixLogo", buffer) == 0) { extern int skip_netflix_logo; skip_netflix_logo = value; }
 			else if (strcmp("noSplash", buffer) == 0) forceSplashSkip = value;
 			else if (strcmp("maximizeMem", buffer) == 0) maximizeMem = value;

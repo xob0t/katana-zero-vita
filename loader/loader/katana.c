@@ -1155,6 +1155,32 @@ void katana_goto_check(void) {
 	room_goto(&result, NULL, NULL, 1, &arg);
 }
 
+// Laser deaths: obj_sprite_dissolver slices the body into rows of chunk_size pixels (rows = spr_height /
+// chunk_size, set by whoever creates it before user event 0), and every row becomes an obj_sprite_chunk with
+// its own Step, five additive draws, collision checks and a sound: ~5 ms/frame while it lasts.
+// dissolveChunkScale (yyl.cfg, default 2; 1 = original) multiplies chunk_size before that event: half the
+// chunks, each twice as tall.
+int dissolve_chunk_scale = 2;
+static event_func orig_dissolver_user0;
+
+static void dissolver_user0(void *self, void *other) {
+	static int *var_chunk_size;
+	if (!var_chunk_size)
+		var_chunk_size = (int *)so_symbol(&yoyoloader_mod, "g_VAR_chunk_size");
+	gml_rvalue *v = var_chunk_size ? gml_vget(self, var_chunk_size[1]) : NULL;
+	if (v && v->kind == 0 && v->val >= 1.0 && v->val < 64.0)
+		v->val *= dissolve_chunk_scale;
+	orig_dissolver_user0(self, other);
+}
+
+static void dissolve_install(void) {
+	if (dissolve_chunk_scale <= 1)
+		return;
+	uintptr_t entry = so_symbol(&yoyoloader_mod, "_Z40gml_Object_obj_sprite_dissolver_Other_10P9CInstanceS0_");
+	orig_dissolver_user0 = entry_hook(entry, dissolver_user0);
+	debugPrintf("dissolve chunk scale %d: %s\n", dissolve_chunk_scale, orig_dissolver_user0 ? "installed" : "NOT installed");
+}
+
 // Hooks that need the runner initialised (function registry, g_FUNC_* slots): called once
 // right before the main loop
 // Audio voice limit (maxVoices in yyl.cfg, default 32; 0 keeps the runner's 128): a safety net behind the
@@ -1176,6 +1202,7 @@ void katana_late_install(void) {
 	}
 	extern void sound_limit_install(void);
 	sound_limit_install();
+	dissolve_install();
 	if (exp_flag("tilemaplog")) {
 		runner_function **functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
 		int *count = (int *)so_symbol(&yoyoloader_mod, "the_numb");
