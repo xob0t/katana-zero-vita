@@ -959,6 +959,82 @@ static void DoAStep_Draw_texflush(void) {
 	texflush_orig_draw();
 }
 
+/*
+ * Screen copies with the 640x360 application surface: effects that copy application_surface into a surface
+ * of the original 1280x720 size (obj_drug_sequence, the medicine effect at the psychiatrist) got the image in
+ * its top-left quarter and showed the screen at a quarter size. surface_copy to (0, 0) of a surface exactly
+ * twice the source's size is drawn stretched instead (blending off, so pixels and alpha are copied as is).
+ */
+static builtin_fn orig_surface_copy, surface_width, surface_height, surface_set_target, surface_reset_target,
+	draw_surface_stretched_ext, gpu_get_blendenable, gpu_set_blendenable;
+unsigned appsurf_scaled_copies;
+
+static double builtin_real(builtin_fn fn, int argc, gml_rvalue *args) {
+	gml_rvalue result = {0};
+	fn(&result, NULL, NULL, argc, args);
+	return result.val;
+}
+
+static void surface_copy_scaled(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) {
+	if (argc == 4 && args[1].kind == 0 && args[2].kind == 0 && args[1].val == 0.0 && args[2].val == 0.0) {
+		double sw = builtin_real(surface_width, 1, &args[3]), sh = builtin_real(surface_height, 1, &args[3]);
+		double dw = builtin_real(surface_width, 1, &args[0]), dh = builtin_real(surface_height, 1, &args[0]);
+		if (sw == 640.0 && sh == 360.0 && dw == 2 * sw && dh == 2 * sh) {
+			gml_rvalue blend = {0}, r = {0};
+			gpu_get_blendenable(&blend, self, other, 0, NULL);
+			gml_rvalue off = {0};
+			gpu_set_blendenable(&r, self, other, 1, &off);
+			surface_set_target(&r, self, other, 1, &args[0]);
+			gml_rvalue draw[7] = { args[3], {0}, {0}, {dw}, {dh}, {16777215.0}, {1.0} }; // c_white, alpha 1
+			draw_surface_stretched_ext(&r, self, other, 7, draw);
+			surface_reset_target(&r, self, other, 0, NULL);
+			gpu_set_blendenable(&r, self, other, 1, &blend);
+			appsurf_scaled_copies++;
+			result->kind = 0;
+			result->val = 0.0;
+			return;
+		}
+	}
+	orig_surface_copy(result, self, other, argc, args);
+}
+
+static void appsurf_copy_install(void) {
+	runner_function **functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
+	int *count = (int *)so_symbol(&yoyoloader_mod, "the_numb");
+	if (!app_surf_native || !functions || !*functions || !count)
+		return;
+	runner_function *copy = NULL;
+	for (int i = 0; i < *count; i++) {
+		runner_function *f = &(*functions)[i];
+		if (!f->name)
+			continue;
+		if (!strcmp(f->name, "surface_copy"))
+			copy = f;
+		else if (!strcmp(f->name, "surface_get_width"))
+			surface_width = f->func;
+		else if (!strcmp(f->name, "surface_get_height"))
+			surface_height = f->func;
+		else if (!strcmp(f->name, "surface_set_target"))
+			surface_set_target = f->func;
+		else if (!strcmp(f->name, "surface_reset_target"))
+			surface_reset_target = f->func;
+		else if (!strcmp(f->name, "draw_surface_stretched_ext"))
+			draw_surface_stretched_ext = f->func;
+		else if (!strcmp(f->name, "gpu_get_blendenable"))
+			gpu_get_blendenable = f->func;
+		else if (!strcmp(f->name, "gpu_set_blendenable"))
+			gpu_set_blendenable = f->func;
+	}
+	if (!copy || !surface_width || !surface_height || !surface_set_target || !surface_reset_target ||
+			!draw_surface_stretched_ext || !gpu_get_blendenable || !gpu_set_blendenable) {
+		debugPrintf("app surface copy scaling: NOT installed\n");
+		return;
+	}
+	orig_surface_copy = copy->func;
+	copy->func = surface_copy_scaled;
+	debugPrintf("app surface copy scaling: installed\n");
+}
+
 static void DoAStep_Draw_frameskip(void) {
 	uint32_t now = sceKernelGetProcessTimeLow();
 	uint32_t last_frame_time = now - last_frame_start;
@@ -1162,6 +1238,20 @@ void katana_goto_check(void) {
 		if (command_create)
 			command_create(608, 0.0f, 0.0f);
 	}
+	// Debug: ux0:data/gms/shared/create_object (an object index) creates that object at (0, 0)
+	if (sceIoGetstat("ux0:data/gms/shared/create_object", &st) >= 0) {
+		char text[16] = {0};
+		SceUID fd = sceIoOpen("ux0:data/gms/shared/create_object", SCE_O_RDONLY, 0);
+		if (fd >= 0) {
+			sceIoRead(fd, text, sizeof(text) - 1);
+			sceIoClose(fd);
+		}
+		sceIoRemove("ux0:data/gms/shared/create_object");
+		void *(*command_create)(int object, float x, float y) = (void *)so_symbol(&yoyoloader_mod, "_Z14Command_Createiff");
+		debugPrintf("create_object: object %d\n", atoi(text));
+		if (command_create)
+			command_create(atoi(text), 0.0f, 0.0f);
+	}
 	if (sceIoGetstat("ux0:data/gms/shared/goto_room", &st) < 0)
 		return;
 	char name[64] = {0};
@@ -1236,6 +1326,7 @@ void katana_late_install(void) {
 	extern void sound_limit_install(void);
 	sound_limit_install();
 	dissolve_install();
+	appsurf_copy_install();
 	if (exp_flag("tilemaplog")) {
 		runner_function **functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
 		int *count = (int *)so_symbol(&yoyoloader_mod, "the_numb");

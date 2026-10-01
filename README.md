@@ -76,7 +76,7 @@ at ~59.5. What the loader does (details and measurements in the source comments)
 
 - Game thread on CPU core 1; core 0 loses ~2 ms/frame to system work.
 - Texture pages stored as LZ4 inside the runner's QOI container (`prepare_apk.py`), decoded natively.
-- 640x360 application surface, lighting refresh at 30 Hz, vblank-paced frames, larger vitaGL render-target
+- 640x360 application surface (copies of it into 1280x720 effect surfaces are stretched to fit), lighting refresh at 30 Hz, vblank-paced frames, larger vitaGL render-target
   scene budgets, VRAM split for large allocations.
 - Texture pages flushed and reloaded after a failed VRAM allocation: late in a session VRAM fragments until a
   16 MB page no longer fits and its sprites draw black (room geometry missing). Costs one ~1 s pause at that
