@@ -44,6 +44,10 @@ fi
 make -C "$BUILD/vitaGL" DEPTH_STENCIL_HACK=1 SOFTFP_ABI=1 NO_DEBUG=1 SHARED_RENDERTARGETS=1 NO_SPLASHSCREEN=1 ENABLE_LEGACY_PIPELINE=1 HAVE_SHADER_CACHE=1 -j "$JOBS" install
 
 fetch https://github.com/frangarcj/opensles.git opensles
+# Larger output grain and a high-priority playback thread: the stock 128-frame port crackles under load
+if git -C "$BUILD/opensles" apply --check "$ROOT/patches/opensles.patch" 2>/dev/null; then
+  git -C "$BUILD/opensles" apply "$ROOT/patches/opensles.patch"
+fi
 make -C "$BUILD/opensles/libopensles" -j "$JOBS" install
 
 echo "deps OK"

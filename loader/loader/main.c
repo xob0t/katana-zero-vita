@@ -188,6 +188,7 @@ void loadConfig(const char *game) {
 			else if (strcmp("debugMode", buffer) == 0) debugMode = value;
 			else if (strcmp("memOverlay", buffer) == 0) mem_overlay = value;
 			else if (strcmp("maxVoices", buffer) == 0) { extern int max_voices; max_voices = value; }
+			else if (strcmp("audioGrain", buffer) == 0) { extern int opensles_grain; opensles_grain = value; }
 			else if (strcmp("sameSoundLimit", buffer) == 0) { extern int same_sound_limit; same_sound_limit = value; }
 			else if (strcmp("dissolveChunkScale", buffer) == 0) { extern int dissolve_chunk_scale; dissolve_chunk_scale = value; }
 			else if (strcmp("skipNetflixLogo", buffer) == 0) { extern int skip_netflix_logo; skip_netflix_logo = value; }
@@ -1121,6 +1122,14 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 		debugPrintf("[SLEEP] game thread slept %.2fms/frame in %.1f calls\n", game_sleep_us / 1000.0f / frames,
 			(float)game_sleep_calls / frames);
 		game_sleep_us = game_sleep_calls = 0;
+		{
+			extern volatile unsigned opensles_late, opensles_outputs;
+			static unsigned last_late, last_outputs;
+			if (opensles_late != last_late)
+				debugPrintf("[AUDIO] output late %u of %u\n", opensles_late - last_late, opensles_outputs - last_outputs);
+			last_late = opensles_late;
+			last_outputs = opensles_outputs;
+		}
 		extern void alloc_prof_report(int frames);
 		alloc_prof_report(frames);
 		if (heavy_profiling) {

@@ -1,0 +1,66 @@
+diff --git a/libopensles/Vita.c b/libopensles/Vita.c
+index caa1a40..db2b889 100644
+--- a/libopensles/Vita.c
++++ b/libopensles/Vita.c
+@@ -33,7 +33,14 @@ static int audio_thread_valid;
+ static SceUID audio_thread_handle = -1;
+ #endif
+ 
+-uint8_t audio_buffers[SndFile_NUMBUFS][SndFile_BUFSIZE];
++// Output grain in sample frames. The original 128 frames (2.9 ms at 44.1 kHz, double buffered) underruns
++// whenever the thread wakes a few ms late on a busy Vita, which is heard as constant crackle. The host can
++// override the grain (opensles_grain) and thread priority (opensles_priority) before slCreateEngine.
++#define OPENSLES_MAX_GRAIN 4096
++int opensles_grain = 512;
++int opensles_priority = 64;
++volatile unsigned opensles_late, opensles_outputs; // stats for the host: late outputs (underrun risk), total
++uint8_t audio_buffers[SndFile_NUMBUFS][OPENSLES_MAX_GRAIN * 4];
+ 
+ static void reset_audio_backend_state(void) {
+ 	audio_shutdown_requested = 1;
+@@ -77,7 +84,11 @@ static int audioThread(unsigned int args, void *arg) {
+ 	(void)args;
+ #endif
+ 
+-	int ch = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_BGM, SndFile_BUFSIZE / 4,
++	int grain = opensles_grain;
++	if (grain < 64 || grain > OPENSLES_MAX_GRAIN)
++		grain = 512;
++	grain &= ~63; // sceAudioOut wants a multiple of 64
++	int ch = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_BGM, grain,
+ 															 opensles_output_freq(),
+ 															 SCE_AUDIO_OUT_MODE_STEREO);
+ 	if (ch < 0) {
+@@ -106,13 +117,21 @@ static int audioThread(unsigned int args, void *arg) {
+ 	}
+ 
+ 	int buf_idx = 0;
++	uint32_t period_us = (uint32_t)((uint64_t)grain * 1000000 / opensles_output_freq());
++	uint32_t last = 0;
+ 
+ 	while (!audio_shutdown_requested) {
+ 		uint8_t *stream = audio_buffers[buf_idx];
+ 		buf_idx = (buf_idx + 1) % SndFile_NUMBUFS;
+ 
+-		fill_output_buffer(stream, (SLuint32)SndFile_BUFSIZE);
++		fill_output_buffer(stream, (SLuint32)(grain * 4));
+ 		res = sceAudioOutOutput(ch, stream);
++		uint32_t now = sceKernelGetProcessTimeLow();
++		// sceAudioOutOutput returns once per period; a longer gap means the next buffer came too late (dropout)
++		if (last && now - last > period_us + period_us / 4)
++			opensles_late++;
++		opensles_outputs++;
++		last = now;
+ 		if (res < 0) {
+ 			SL_LOGE("Vita audio output failed on port %d: 0x%x", ch, res);
+ 			break;
+@@ -151,7 +170,8 @@ void SDL_open(IEngine *thisEngine)
+ 		reset_audio_backend_state();
+ 	}
+ #else
+-	audio_thread_handle = sceKernelCreateThread("OpenSLES Playback", &audioThread, 0x10000100,
++	audio_thread_handle = sceKernelCreateThread("OpenSLES Playback", &audioThread,
++                                                opensles_priority > 0 ? opensles_priority : 0x10000100,
+                                                 0x10000, 0, 0, NULL);
+ 	if (audio_thread_handle < 0) {
+ 		SL_LOGE("Unable to create OpenSLES playback thread: 0x%x", audio_thread_handle);

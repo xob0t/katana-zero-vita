@@ -60,6 +60,9 @@ touch panel is not used.
 - `dissolveChunkScale=4`: laser deaths dissolve the body into a quarter as many, four times as thick slices
   (default 4; `1` = original). Each slice is an object with its own physics, sound and five glow draws.
 - `maxVoices=32`: overall sound voice limit (default 32; `0` keeps the runner's 128).
+- `audioGrain=512`: sound output buffer in sample frames, a multiple of 64 (default 512, ~12 ms). The stock 128
+  frames, with the playback thread at normal priority, crackled constantly. A dropped buffer shows in the log as
+  `[AUDIO] output late`.
 - `memOverlay=1`: YoYo Loader's on-screen memory overlay (needs `debugMode=1`; off by default).
 - `stickDeadzone=20`: analog stick deadzone in percent (default 20). Vita sticks rest slightly off centre; without
   a deadzone the camera drifts while standing still. `0` disables it.
