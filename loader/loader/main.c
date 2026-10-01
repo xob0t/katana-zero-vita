@@ -109,6 +109,7 @@ extern int maximizeMem;
 int debugShaders = 0;
 int squeeze_mem = 0;
 int debugMode = 0;
+int mem_overlay = 0; // opt-in: memOverlay=1 in yyl.cfg shows the memory overlay (debugMode=1 only)
 int disableAudio = 0;
 int ime_active = 0;
 int msg_active = 0;
@@ -185,6 +186,7 @@ void loadConfig(const char *game) {
 			else if (strcmp("platTarget", buffer) == 0) platTarget = value;
 			else if (strcmp("debugShaders", buffer) == 0) debugShaders = value;
 			else if (strcmp("debugMode", buffer) == 0) debugMode = value;
+			else if (strcmp("memOverlay", buffer) == 0) mem_overlay = value;
 			else if (strcmp("noSplash", buffer) == 0) forceSplashSkip = value;
 			else if (strcmp("maximizeMem", buffer) == 0) maximizeMem = value;
 			else if (strcmp("netSupport", buffer) == 0) has_net = value;
@@ -3301,7 +3303,9 @@ void *pthread_main(void *arg) {
 
 	// Enabling analogs and touch sampling
 	sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
+#ifndef APP_GAME_NAME
 	sceTouchSetSamplingState(SCE_TOUCH_PORT_BACK, SCE_TOUCH_SAMPLING_STATE_START);
+#endif
 	sceCtrlSetSamplingModeExt(SCE_CTRL_MODE_ANALOG_WIDE);
 	sceMotionReset();
 	sceMotionStartSampling();
@@ -3510,7 +3514,8 @@ void *pthread_main(void *arg) {
 	// Initializing vitaGL
 	vglSetCircularPoolSize(3 * 1024);
 	vglSetSemanticBindingMode(VGL_MODE_POSTPONED);
-	if (debugMode)
+	// YoYo Loader's memory overlay: opt-in (memOverlay=1 in yyl.cfg), also in debug mode
+	if (debugMode && mem_overlay)
 		vglSetDisplayCallback(mem_profiler);
 	alloc_prof_on = exp_flag("allocprof");
 	vglSetupGarbageCollector(127, game_core_index() == 1 ? 0x40000 : 0x20000);

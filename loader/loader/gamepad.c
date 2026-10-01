@@ -430,6 +430,12 @@ void GamePadUpdate() {
 			sceAppMgrLoadExec("app0:eboot.bin", NULL, NULL);
 #endif
 
+#ifdef APP_GAME_NAME
+		// Katana ZERO binds slow-mo and roll to the triggers (gp_shoulderlb/rb, L2/R2). The Vita's L/R shoulders
+		// act as both shoulder and trigger, so L is slow-mo and R is roll; the rear touch panel is not used.
+		new_states[L2_BTN] |= new_states[L1_BTN];
+		new_states[R2_BTN] |= new_states[R1_BTN];
+#else
 		if (num_controllers == 1) {
 			// Rearpad support for L2/R2/L3/R3 emulation
 			SceTouchData touch;
@@ -452,7 +458,8 @@ void GamePadUpdate() {
 				}
 			}
 		}
-		
+#endif
+
 		int leftClickState = 0;
 		int rightClickState = 0;
 		if (has_kb_mapping) {

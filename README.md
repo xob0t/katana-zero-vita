@@ -38,6 +38,11 @@ Without it the VPK uses the placeholder art in `livearea/`.
 5. The first launch compiles all shaders and takes ~3 minutes; they are cached in
    `ux0:data/shader_cache/KTNZ00001`, so later launches reach the title in about a minute.
 
+### Controls
+
+The game's controller layout, with the Vita's L and R acting as the triggers: L is slow-mo, R is roll. The rear
+touch panel is not used.
+
 ### Settings (`yyl.cfg`)
 
 - `renderRes=960|720|640|480`: render resolution; the Vita scales it to the screen (640 recommended).
@@ -47,6 +52,7 @@ Without it the VPK uses the placeholder art in `livearea/`.
 - `rain=0|1|2`: rain drops none (default, ~20% faster in rainy levels), half, or all.
 - `ropeLights=0|1`: coloured light tint on clotheslines. Off by default (~7 fps faster near them).
 - `frameSkip=1`: experimental frame skipping (known to break some scenes).
+- `memOverlay=1`: YoYo Loader's on-screen memory overlay (needs `debugMode=1`; off by default).
 - `stickDeadzone=20`: analog stick deadzone in percent (default 20). Vita sticks rest slightly off centre; without
   a deadzone the camera drifts while standing still. `0` disables it.
 
