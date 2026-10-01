@@ -138,6 +138,25 @@ typedef struct Gamepad {
 
 Gamepad yoyo_gamepads[4];
 
+// Vita sticks rest a little off centre (e.g. right stick X ~0.1), and games that never call
+// gamepad_set_axis_deadzone (Android applies a system deadzone) read that as input: Katana ZERO's camera
+// leans toward the right stick and drifts while standing still. Radial deadzone per stick, rescaled so a
+// full tilt still reaches 1. stickDeadzone in yyl.cfg overrides the default (0 disables).
+double stick_deadzone = 0.2;
+
+static void radial_deadzone(double *x, double *y) {
+	double m = sqrt(*x * *x + *y * *y);
+	if (m <= stick_deadzone || m == 0.0) {
+		*x = *y = 0.0;
+		return;
+	}
+	double scaled = (m - stick_deadzone) / (1.0 - stick_deadzone);
+	if (scaled > 1.0)
+		scaled = 1.0;
+	*x *= scaled / m;
+	*y *= scaled / m;
+}
+
 int is_gamepad_connected(int id) {
 	return yoyo_gamepads[id].is_available;
 }
@@ -478,6 +497,8 @@ void GamePadUpdate() {
 		yoyo_gamepads[i].axis[1] = (double)((int)pad.ly - 127) / 127.0f;
 		yoyo_gamepads[i].axis[2] = (double)((int)pad.rx - 127) / 127.0f;
 		yoyo_gamepads[i].axis[3] = (double)((int)pad.ry - 127) / 127.0f;
+		radial_deadzone(&yoyo_gamepads[i].axis[0], &yoyo_gamepads[i].axis[1]);
+		radial_deadzone(&yoyo_gamepads[i].axis[2], &yoyo_gamepads[i].axis[3]);
 		
 		static int oldMousePosX = -1;
 		static int oldMousePosY = -1;
