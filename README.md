@@ -33,6 +33,7 @@ Without it the VPK uses the placeholder art in `livearea/`.
 2. Install `build/app/KatanaZero.vpk` (title ID `KTNZ00001`). It contains only the loader.
 3. Build the game APK with `python scripts/prepare_apk.py <Katana ZERO 1.1.10 APK> game.apk`
    (needs `pip install lz4 pyelftools`) and put it at `ux0:data/gms/katanazero/game.apk`.
+   It also redraws the game's Xbox button prompts as Vita buttons (`--xbox-glyphs` keeps the originals).
    Settings: `ux0:data/gms/katanazero/yyl.cfg`.
 4. With `debugMode=1` in `yyl.cfg`, logs go to `ux0:data/gms/shared/yyl.log`.
 5. The first launch compiles all shaders and takes ~3 minutes; they are cached in
@@ -77,6 +78,9 @@ at ~59.5. What the loader does (details and measurements in the source comments)
 - Texture pages stored as LZ4 inside the runner's QOI container (`prepare_apk.py`), decoded natively.
 - 640x360 application surface, lighting refresh at 30 Hz, vblank-paced frames, larger vitaGL render-target
   scene budgets, VRAM split for large allocations.
+- Texture pages flushed and reloaded after a failed VRAM allocation: late in a session VRAM fragments until a
+  16 MB page no longer fits and its sprites draw black (room geometry missing). Costs one ~1 s pause at that
+  room load.
 - Off-screen clothesline simulation paused; clothesline/rope solver and bbox computation in native code.
 - Exact native replacements for hot GML (same results, RNG use and collision queries; fallback to the original
   code for unusual inputs): `controller_check_pressed_ext`, minecart rails/master, ceiling lasers, dialogue
@@ -87,7 +91,7 @@ at ~59.5. What the loader does (details and measurements in the source comments)
 Each default can be turned off for comparison by creating an empty flag file
 `ux0:data/gms/shared/exp_<name>`: `gamecore0` (core 0), `vcapture0` (real enemy captures; `vcapexact` for the
 pixel-exact mode), `inputnative0`, `flashmask0`, `lasernative0`, `minecartnative0` (rails only; plus `railnative0`
-for none), `letternative0`.
+for none), `letternative0`, `texflush0`.
 
 ## Benchmarking and profiling
 

@@ -926,6 +926,39 @@ static void DoAStep_Draw_lighting30(void) {
 	lighting30_orig_draw();
 }
 
+/*
+ * Texture page recovery: over a long session the texture pages of earlier rooms fragment VRAM until a new
+ * 16 MB page no longer fits (17 MB free, largest block 7 MB) and its sprites draw black: room_psychiatrist
+ * after the first level showed only the player and the lights. After a failed allocation, the next frame
+ * flushes all texture pages (draw_texture_flush; render targets are kept). The runner reloads each page on
+ * first use, and vitaGL's out-of-memory path (GPU finish + garbage collection) frees the flushed pages, so
+ * the reloads land in unfragmented memory. Costs one frame of missing sprites and the reload time.
+ * exp_texflush0 disables.
+ */
+#define TEXFLUSH_MIN_INTERVAL_US 5000000
+static void (*texflush_orig_draw)(void);
+static builtin_fn texture_flush;
+static int texflush_failures_seen;
+static uint32_t texflush_last_us;
+unsigned texflush_count;
+
+static void DoAStep_Draw_texflush(void) {
+	extern int vgl_failed_allocs;
+	if (vgl_failed_allocs != texflush_failures_seen) {
+		texflush_failures_seen = vgl_failed_allocs;
+		uint32_t now = sceKernelGetProcessTimeLow();
+		if (!texflush_count || now - texflush_last_us >= TEXFLUSH_MIN_INTERVAL_US) {
+			gml_rvalue result = {0};
+			texture_flush(&result, NULL, NULL, 0, NULL);
+			texflush_last_us = sceKernelGetProcessTimeLow();
+			texflush_count++;
+			debugPrintf("[TEXFLUSH] texture pages flushed after allocation failure #%d (%.1f ms)\n", vgl_failed_allocs,
+				(texflush_last_us - now) / 1000.0f);
+		}
+	}
+	texflush_orig_draw();
+}
+
 static void DoAStep_Draw_frameskip(void) {
 	uint32_t now = sceKernelGetProcessTimeLow();
 	uint32_t last_frame_time = now - last_frame_start;
@@ -1672,6 +1705,16 @@ static void patch_performance() {
 		if (slot && global_obj_ptr && var_recolor_timer) {
 			lighting30_orig_draw = (void *)*slot;
 			*slot = (uintptr_t)&DoAStep_Draw_lighting30;
+		}
+	}
+
+	// Default on: reload texture pages that failed to allocate in fragmented VRAM
+	if (!exp_flag("texflush0")) {
+		uintptr_t *slot = so_got_slot(&yoyoloader_mod, "_Z12DoAStep_Drawv");
+		texture_flush = (builtin_fn)so_symbol(&yoyoloader_mod, "_Z23F_YoYo_DrawTextureFlushR6RValueP9CInstanceS2_iPS_");
+		if (slot && texture_flush) {
+			texflush_orig_draw = (void *)*slot;
+			*slot = (uintptr_t)&DoAStep_Draw_texflush;
 		}
 	}
 }
