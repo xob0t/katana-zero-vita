@@ -66,6 +66,7 @@ add_executable(YoYoLoader
   loader/netflix.c
   loader/katana.c
   loader/sound_limit.c
+  loader/stdio_mt.c
   loader/glprof.c
   loader/callprof.c
   loader/memtrace.c

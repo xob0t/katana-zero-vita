@@ -1457,6 +1457,16 @@ void patch_runner_post_init(void) {
 	}
 }
 
+// Thread-safe stdio for FILEs shared between runner threads (stdio_mt.c)
+size_t mt_fread(void *buf, size_t size, size_t count, FILE *f);
+int mt_fseek(FILE *f, long offset, int whence);
+int mt_fseeko(FILE *f, off_t offset, int whence);
+long mt_ftell(FILE *f);
+off_t mt_ftello(FILE *f);
+int mt_fgetc(FILE *f);
+char *mt_fgets(char *str, int n, FILE *f);
+int mt_fclose(FILE *f);
+
 extern void *_Znaj;
 extern void *_Znwj;
 extern void *_ZdlPv;
@@ -1575,13 +1585,23 @@ typedef struct {
 	int offs;
 } AAssetHandle;
 
+// The runner opens assets from several threads (its OGG streaming threads open the next song while the
+// game thread loads at a room change), but they share one minizip handle, which is not thread-safe:
+// interleaved locate/read calls gave "Failed to open assets/song_*.ogg" or corrupt music data
+// ("ov_read returned -3"), and the scene had no music. Opening (locate + full read) is serialised; reads
+// afterwards use each handle's own memory copy.
+static pthread_mutex_t asset_open_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 AAssetHandle *AAssetManager_open(unzFile apk_file, const char *fname, int mode) {
 	debugPrintf("AAssetManager_open %s\n", fname);
 	char path[256];
 	sprintf(path, "assets/%s", fname);
+	pthread_mutex_lock(&asset_open_mutex);
 	int res = unzLocateFile(apk_file, path, NULL);
-	if (res != UNZ_OK)
+	if (res != UNZ_OK) {
+		pthread_mutex_unlock(&asset_open_mutex);
 		return NULL;
+	}
 	AAssetHandle *ret = (AAssetHandle *)vglMalloc(sizeof(AAssetHandle));
 	unz_file_info file_info;
 	unzGetCurrentFileInfo(apk_file, &file_info, NULL, 0, NULL, 0, NULL, 0);
@@ -1591,6 +1611,7 @@ AAssetHandle *AAssetManager_open(unzFile apk_file, const char *fname, int mode) 
 	unzOpenCurrentFile(apk_file);
 	unzReadCurrentFile(apk_file, ret->buf, ret->sz);
 	unzCloseCurrentFile(apk_file);
+	pthread_mutex_unlock(&asset_open_mutex);
 	return ret;
 }
 
@@ -2431,15 +2452,15 @@ static so_default_dynlib default_dynlib[] = {
 	{ "exit", (uintptr_t)&exit },
 	{ "exp", (uintptr_t)&exp },
 	{ "expf", (uintptr_t)&expf },
-	{ "fclose", (uintptr_t)&fclose },
+	{ "fclose", (uintptr_t)&mt_fclose },
 	{ "fcntl", (uintptr_t)&ret0 },
 	{ "fdopen", (uintptr_t)&fdopen },
 	{ "feof", (uintptr_t)&feof },
 	{ "ferror", (uintptr_t)&ferror },
 	{ "fflush", (uintptr_t)&fflush },
 	{ "fgetpos", (uintptr_t)&fgetpos },
-	{ "fgetc", (uintptr_t)&fgetc },
-	{ "fgets", (uintptr_t)&fgets },
+	{ "fgetc", (uintptr_t)&mt_fgetc },
+	{ "fgets", (uintptr_t)&mt_fgets },
 	{ "floor", (uintptr_t)&floor },
 	{ "floorf", (uintptr_t)&floorf },
 	{ "fmax", (uintptr_t)&fmax },
@@ -2452,18 +2473,18 @@ static so_default_dynlib default_dynlib[] = {
 	{ "fprintf", (uintptr_t)&fprintf },
 	{ "fputc", (uintptr_t)&fputc },
 	{ "fputs", (uintptr_t)&fputs },
-	{ "fread", (uintptr_t)&fread },
+	{ "fread", (uintptr_t)&mt_fread },
 	{ "free", (uintptr_t)&prof_free },
 	{ "freelocale", (uintptr_t)&freelocale },
 	//{ "freeaddrinfo", (uintptr_t)&freeaddrinfo },
 	{ "frexp", (uintptr_t)&frexp },
 	{ "frexpf", (uintptr_t)&frexpf },
 	{ "fscanf", (uintptr_t)&fscanf },
-	{ "fseek", (uintptr_t)&fseek },
-	{ "fseeko", (uintptr_t)&fseeko },
+	{ "fseek", (uintptr_t)&mt_fseek },
+	{ "fseeko", (uintptr_t)&mt_fseeko },
 	{ "fstat", (uintptr_t)&fstat_hook },
-	{ "ftell", (uintptr_t)&ftell },
-	{ "ftello", (uintptr_t)&ftello },
+	{ "ftell", (uintptr_t)&mt_ftell },
+	{ "ftello", (uintptr_t)&mt_ftello },
 	{ "fwrite", (uintptr_t)&fwrite },
 	{ "getaddrinfo", (uintptr_t)&getaddrinfo },
 	{ "getc", (uintptr_t)&getc },
