@@ -187,6 +187,7 @@ void loadConfig(const char *game) {
 			else if (strcmp("debugShaders", buffer) == 0) debugShaders = value;
 			else if (strcmp("debugMode", buffer) == 0) debugMode = value;
 			else if (strcmp("memOverlay", buffer) == 0) mem_overlay = value;
+			else if (strcmp("maxVoices", buffer) == 0) { extern int max_voices; max_voices = value; }
 			else if (strcmp("skipNetflixLogo", buffer) == 0) { extern int skip_netflix_logo; skip_netflix_logo = value; }
 			else if (strcmp("noSplash", buffer) == 0) forceSplashSkip = value;
 			else if (strcmp("maximizeMem", buffer) == 0) maximizeMem = value;
@@ -426,6 +427,28 @@ int scandir_hook(const char *dir, struct android_dirent ***namelist,
 	return pos;
 }
 
+// The runner can log the same warning dozens of times per frame (e.g. "Index did not map to an existing
+// audio asset" for every finished sound while the death slow-down repitches them: ~60 per frame). Writing
+// each one costs the game thread time and, once the log buffer fills, a synchronous card write. Repeats
+// of the previous message within a second are only counted and summarised once the burst ends. (The runner passes most
+// messages through one "%s" format, so this compares the formatted text.)
+static int log_is_repeat(const char *msg) {
+	static char last[256];
+	static uint32_t repeats, last_time;
+	uint32_t now = sceKernelGetProcessTimeLow();
+	if (!strncmp(msg, last, sizeof(last) - 1) && now - last_time < 1000000) {
+		repeats++;
+		last_time = now;
+		return 1;
+	}
+	last_time = now;
+	if (repeats)
+		debugPrintf("[LOG] (previous message repeated %u more times)\n", repeats);
+	strncpy(last, msg, sizeof(last) - 1);
+	repeats = 0;
+	return 0;
+}
+
 int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
 	if (!debugMode)
 		return 0;
@@ -434,25 +457,28 @@ int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
 	static char string[0x8000];
 
 	va_start(list, fmt);
-	vsprintf(string, fmt, list);
+	vsnprintf(string, sizeof(string), fmt, list);
 	va_end(list);
+	if (log_is_repeat(string))
+		return 0;
 
 	debugPrintf("[LOG] %s: %s\n", tag, string);
-	
+
 	return 0;
 }
 
 int __android_log_vprint(int prio, const char *tag, const char *fmt, va_list list) {
 	if (!debugMode)
 		return 0;
-	
+
 	static char string[0x8000];
 
-	vsprintf(string, fmt, list);
+	vsnprintf(string, sizeof(string), fmt, list);
 	va_end(list);
+	if (log_is_repeat(string))
+		return 0;
 
 	debugPrintf("[LOGV] %s: %s\n", tag, string);
-
 	return 0;
 }
 
@@ -593,6 +619,8 @@ static void *worker_thread_start(void *arg) {
 	worker_start_t w = *(worker_start_t *)arg;
 	free(arg);
 	sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), WORKER_THREAD_CPU_MASK);
+	if (exp_flag("workerprio")) // experiment: runner threads (audio mixer, ...) above default priority
+		sceKernelChangeThreadPriority(sceKernelGetThreadId(), 96);
 	return w.start(w.param);
 }
 
