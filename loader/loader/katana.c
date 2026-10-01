@@ -423,6 +423,9 @@ static void *entry_hook(uintptr_t entry, void *replacement) {
 }
 
 void katana_prof_report(int frames) {
+	extern uint32_t sound_limit_skipped;
+	if (sound_limit_skipped)
+		debugPrintf("[AUDIO] same-sound copies skipped: %u\n", sound_limit_skipped);
 	{
 		extern unsigned rail_native_hits, rail_native_bottom_hits, rail_native_fallbacks;
 		extern unsigned rail_native_submitted, rail_native_culled, rail_native_reject_line[64], rail_native_reject_count[64];
@@ -1154,11 +1157,11 @@ void katana_goto_check(void) {
 
 // Hooks that need the runner initialised (function registry, g_FUNC_* slots): called once
 // right before the main loop
-// Audio voice limit (maxVoices in yyl.cfg, default 16; 0 keeps the runner's 128). A laser death dissolves
-// the body into chunks that each play a positional sound: ~45 voices at once, and one mixer pass then takes
-// ~30 ms while holding the audio lock that every audio_* call on the game thread needs (frames of 60+ ms).
-// The game never calls audio_channel_num itself; this applies it once, like that builtin does.
-int max_voices = 16;
+// Audio voice limit (maxVoices in yyl.cfg, default 32; 0 keeps the runner's 128): a safety net behind the
+// same-sound limit (sound_limit.c). Too many voices make one mixer pass hold the audio lock that every
+// audio_* call on the game thread needs. The game never calls audio_channel_num itself; this applies it
+// once, like that builtin does.
+int max_voices = 32;
 
 void katana_late_install(void) {
 	static int done;
@@ -1171,6 +1174,8 @@ void katana_late_install(void) {
 			debugPrintf("audio voices: %d\n", max_voices);
 		}
 	}
+	extern void sound_limit_install(void);
+	sound_limit_install();
 	if (exp_flag("tilemaplog")) {
 		runner_function **functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
 		int *count = (int *)so_symbol(&yoyoloader_mod, "the_numb");

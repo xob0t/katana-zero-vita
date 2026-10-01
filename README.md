@@ -55,8 +55,9 @@ touch panel is not used.
 - `frameSkip=1`: experimental frame skipping (known to break some scenes).
 - `skipNetflixLogo=1|0`: skip the Netflix logo at launch (default 1). The Netflix SDK screen still runs its
   checks, without the logo and its fades.
-- `maxVoices=16`: simultaneous sound voices (default 16; `0` keeps the runner's 128). Laser deaths spawn dozens of
-  overlapping chunk sounds; mixing them all held the audio lock for ~30 ms and stalled the game.
+- `sameSoundLimit=3`: at most this many copies of one sound play at once (default 3; `0` disables). Laser deaths
+  spawn dozens of identical chunk sounds; mixing them all held the audio lock for ~30 ms and stalled the game.
+- `maxVoices=32`: overall sound voice limit (default 32; `0` keeps the runner's 128).
 - `memOverlay=1`: YoYo Loader's on-screen memory overlay (needs `debugMode=1`; off by default).
 - `stickDeadzone=20`: analog stick deadzone in percent (default 20). Vita sticks rest slightly off centre; without
   a deadzone the camera drifts while standing still. `0` disables it.
