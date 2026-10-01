@@ -1,0 +1,249 @@
+diff --git a/source/gxm.c b/source/gxm.c
+index 4cbb40b..2b4a304 100644
+--- a/source/gxm.c
++++ b/source/gxm.c
+@@ -166,6 +166,7 @@ static inline __attribute__((always_inline)) int setup_render_target(SceGxmRende
+ #define MAX_RENDER_TARGETS_NUM 47 // Maximum amount of dedicated render targets usable for fbos
+ #define MAX_SHARED_RT_SIZE 256 // Maximum  width value in pixels for shared rendertargets usage
+ render_target rt_list[MAX_RENDER_TARGETS_NUM];
++int vgl_big_rt_scenes = 1; // scenesPerFrame for unshared (wide) fbo rendertargets
+ 
+ render_target *get_free_render_target(int w, int h) {
+ 	int i;
+@@ -177,7 +178,7 @@ render_target *get_free_render_target(int w, int h) {
+ 			}
+ 		} else {
+ 			rt_list[i].max_refs = w > MAX_SHARED_RT_SIZE ? 1 : MAX_SCENES_PER_FRAME;
+-			int r = setup_render_target(&rt_list[i].rt, w, h, rt_list[i].max_refs);
++			int r = setup_render_target(&rt_list[i].rt, w, h, w > MAX_SHARED_RT_SIZE ? vgl_big_rt_scenes : MAX_SCENES_PER_FRAME);
+ #ifdef LOG_ERRORS
+ 			if (r)
+ 				vgl_log("%s:%d Failed to create a shared rendertarget of size %dx%d (%s).\n", __FILE__, __LINE__, w, h, get_gxm_error_literal(r));
+@@ -201,7 +202,7 @@ render_target *get_free_render_target(int w, int h) {
+ 	sceGxmFinish(gxm_context);
+ 	sceGxmDestroyRenderTarget(r->rt);
+ 	r->max_refs = w > MAX_SHARED_RT_SIZE ? 1 : MAX_SCENES_PER_FRAME;
+-	int res = setup_render_target(&r->rt, w, h, r->max_refs);
++	int res = setup_render_target(&r->rt, w, h, w > MAX_SHARED_RT_SIZE ? vgl_big_rt_scenes : MAX_SCENES_PER_FRAME);
+ #ifdef LOG_ERRORS
+ 	if (res)
+ 		vgl_log("%s:%d Failed to create a shared rendertarget of size %dx%d (%s).\n", __FILE__, __LINE__, w, h, get_gxm_error_literal(res));
+@@ -567,10 +568,13 @@ void start_shader_patcher(void) {
+ #endif
+ }
+ 
++uint32_t vgl_scene_end_us, vgl_scene_begin_us, vgl_scene_count; // stats for the host
+ static inline __attribute__((always_inline)) void scene_end(void) {
+ 	// Ends current gxm scene
+ 	query_fence.value++;
++	uint32_t t0 = sceKernelGetProcessTimeLow();
+ 	sceGxmEndScene(gxm_context, NULL, &query_fence);
++	vgl_scene_end_us += sceKernelGetProcessTimeLow() - t0;
+ 	if (system_app_mode && vsync_interval)
+ 		sceDisplayWaitVblankStartMulti(vsync_interval);
+ }
+@@ -611,6 +615,8 @@ void scene_reset(void) {
+ #endif
+ 
+ 		// Starting drawing scene
++		uint32_t begin_t0 = sceKernelGetProcessTimeLow();
++		vgl_scene_count++;
+ 		is_rendering_display = !active_write_fb;
+ 		if (is_rendering_display) { // Default framebuffer is used
+ 			if (system_app_mode) {
+@@ -681,6 +687,7 @@ void scene_reset(void) {
+ #endif
+ 		}
+ 
++		vgl_scene_begin_us += sceKernelGetProcessTimeLow() - begin_t0;
+ 		// Setting back current viewport if enabled cause sceGxm will reset it at sceGxmEndScene call
+ 		if (old_framebuffer != in_use_framebuffer) {
+ 			dirty_scissor_state = GL_TRUE;
+diff --git a/source/utils/gpu_utils.c b/source/utils/gpu_utils.c
+index 4464db5..c6acfb6 100644
+--- a/source/utils/gpu_utils.c
++++ b/source/utils/gpu_utils.c
+@@ -153,6 +153,9 @@ static inline __attribute__((always_inline)) uint32_t vgl_cache_old_textures(siz
+ #endif
+ 
+ int unsafe_allocator_counter = 0;
++int vgl_forced_gc_allocs = 0, vgl_failed_allocs = 0; // stats for the host
++size_t vgl_failed_alloc_size = 0;
++void (*vgl_alloc_fail_cb)(size_t size, size_t alignment, int for_gpu, void *caller) = NULL; // host diagnostics on a failed allocation
+ void *gpu_alloc_mapped_aligned_unsafe_for_cpu(size_t alignment, size_t size) {
+ 	// Performing a garbage collection cycle prior to attempting to allocate the memory again
+ 	unsafe_allocator_counter++;
+@@ -164,7 +167,11 @@ void *gpu_alloc_mapped_aligned_unsafe_for_cpu(size_t alignment, size_t size) {
+ #else
+ 	sceKernelWaitSema(gc_mutex[1], 1, NULL);
+ 	sceKernelSignalSema(gc_mutex[0], 1);
+-	sceKernelDelayThread(1000000);
++	// Wait for the collection to complete instead of sleeping a fixed second: the pull semaphore
++	// holds one credit per job slot, so all FRAME_PURGE_FREQ credits are back only once every
++	// queued job (including this one) has finished
++	sceKernelWaitSema(gc_mutex[1], FRAME_PURGE_FREQ, NULL);
++	sceKernelSignalSema(gc_mutex[1], FRAME_PURGE_FREQ);
+ #endif
+ 
+ 	// Allocating requested memblock
+@@ -190,7 +197,11 @@ void *gpu_alloc_mapped_aligned_unsafe_for_gpu(size_t alignment, size_t size) {
+ #else
+ 	sceKernelWaitSema(gc_mutex[1], 1, NULL);
+ 	sceKernelSignalSema(gc_mutex[0], 1);
+-	sceKernelDelayThread(1000000);
++	// Wait for the collection to complete instead of sleeping a fixed second: the pull semaphore
++	// holds one credit per job slot, so all FRAME_PURGE_FREQ credits are back only once every
++	// queued job (including this one) has finished
++	sceKernelWaitSema(gc_mutex[1], FRAME_PURGE_FREQ, NULL);
++	sceKernelSignalSema(gc_mutex[1], FRAME_PURGE_FREQ);
+ #endif
+ 
+ 	// Allocating requested memblock
+@@ -221,6 +232,13 @@ void *gpu_alloc_mapped_aligned_for_cpu(size_t alignment, size_t size) {
+ #endif
+ 	unsafe_allocator_counter = 0;
+ 	res = gpu_alloc_mapped_aligned_unsafe_for_cpu(alignment, size);
++	vgl_forced_gc_allocs++;
++	if (!res) {
++		vgl_failed_allocs++;
++		vgl_failed_alloc_size = size;
++		if (vgl_alloc_fail_cb)
++			vgl_alloc_fail_cb(size, alignment, 0, __builtin_return_address(0));
++	}
+ 
+ #ifdef LOG_ERRORS
+ 	if (!res) {
+@@ -250,6 +268,13 @@ void *gpu_alloc_mapped_aligned_for_gpu(size_t alignment, size_t size) {
+ #endif
+ 	unsafe_allocator_counter = 0;
+ 	res = gpu_alloc_mapped_aligned_unsafe_for_gpu(alignment, size);
++	vgl_forced_gc_allocs++;
++	if (!res) {
++		vgl_failed_allocs++;
++		vgl_failed_alloc_size = size;
++		if (vgl_alloc_fail_cb)
++			vgl_alloc_fail_cb(size, alignment, 1, __builtin_return_address(0));
++	}
+ 
+ #ifdef LOG_ERRORS
+ 	if (!res) {
+diff --git a/source/utils/mem_utils.c b/source/utils/mem_utils.c
+index 4b791b7..1500b57 100644
+--- a/source/utils/mem_utils.c
++++ b/source/utils/mem_utils.c
+@@ -32,6 +32,40 @@ static void *mempool_addr[VGL_MEM_ALL] = {}; // Base addresses of heap memblocks
+ static void *mempool_end[VGL_MEM_ALL] = {}; // Addresses of heap memblocks ends
+ static size_t mempool_size[VGL_MEM_ALL] = {}; // Sizes (in bytes) of heap memblocks
+ 
++#ifndef HAVE_CUSTOM_HEAP
++// Optional split of the VRAM pool: allocations of at least VRAM_LARGE_MIN bytes (texture pages,
++// render surfaces) come from a separate region at the top of VRAM, so small long-lived allocations
++// can't fragment the space large pages need. Enabled by setting vgl_vram_small_size (bytes kept for
++// the small-allocation region) before initialization; 0 keeps a single VRAM heap.
++#define VRAM_LARGE_MIN (1024 * 1024)
++size_t vgl_vram_small_size = 0;
++static void *vram_large_mspace = NULL;
++static void *vram_large_base = NULL;
++
++static inline __attribute__((always_inline)) void *vram_mspace_for(void *ptr) {
++	return (vram_large_mspace && ptr >= vram_large_base) ? vram_large_mspace : mempool_mspace[VGL_MEM_VRAM];
++}
++
++static void *vram_memalign(size_t alignment, size_t size) {
++	void *first = size >= VRAM_LARGE_MIN ? vram_large_mspace : mempool_mspace[VGL_MEM_VRAM];
++	void *second = size >= VRAM_LARGE_MIN ? mempool_mspace[VGL_MEM_VRAM] : vram_large_mspace;
++	void *res = sceClibMspaceMemalign(first, alignment, size);
++	return res ? res : sceClibMspaceMemalign(second, alignment, size);
++}
++
++// Free bytes in the small and large VRAM regions (large is 0 when the split is off)
++void vgl_vram_split_free(size_t *small_free, size_t *large_free) {
++	SceClibMspaceStats stats;
++	sceClibMspaceMallocStats(mempool_mspace[VGL_MEM_VRAM], &stats);
++	*small_free = stats.capacity - stats.current_in_use;
++	*large_free = 0;
++	if (vram_large_mspace) {
++		sceClibMspaceMallocStats(vram_large_mspace, &stats);
++		*large_free = stats.capacity - stats.current_in_use;
++	}
++}
++#endif
++
+ GLboolean vgl_has_cdlg_support = GL_TRUE;
+ 
+ #ifdef HAVE_WRAPPED_ALLOCATORS
+@@ -494,7 +528,13 @@ void vgl_mem_init(size_t size_ram, size_t size_cdram, size_t size_phycont, size_
+ 				mempool_end[i] = (void *)((uintptr_t)mempool_addr[i] + mempool_size[i]);
+ 				sceGxmMapMemory(mempool_addr[i], mempool_size[i], SCE_GXM_MEMORY_ATTRIB_RW);
+ #ifndef HAVE_CUSTOM_HEAP
+-				mempool_mspace[i] = sceClibMspaceCreate(mempool_addr[i], mempool_size[i]);
++				if (i == VGL_MEM_VRAM && vgl_vram_small_size && vgl_vram_small_size + 4 * VRAM_LARGE_MIN < mempool_size[i]) {
++					size_t small = VGL_ALIGN(vgl_vram_small_size, 256 * 1024);
++					mempool_mspace[i] = sceClibMspaceCreate(mempool_addr[i], small);
++					vram_large_base = (void *)((uintptr_t)mempool_addr[i] + small);
++					vram_large_mspace = sceClibMspaceCreate(vram_large_base, mempool_size[i] - small);
++				} else
++					mempool_mspace[i] = sceClibMspaceCreate(mempool_addr[i], mempool_size[i]);
+ #else
+ 				heap_extend(i, mempool_addr[i], mempool_size[i]);
+ #endif
+@@ -624,6 +664,10 @@ size_t vgl_mem_get_free_space(vglMemType type) {
+ 		return tm_free[type];
+ 	}
+ #else
++	} else if (type == VGL_MEM_VRAM && vram_large_mspace) {
++		size_t small_free, large_free;
++		vgl_vram_split_free(&small_free, &large_free);
++		return small_free + large_free;
+ 	} else if (mempool_size[type]) {
+ 		SceClibMspaceStats stats;
+ 		sceClibMspaceMallocStats(mempool_mspace[type], &stats);
+@@ -689,6 +733,8 @@ void vgl_free(void *ptr) {
+ 		tm_max_failed_alloc[type] = tm_free[type] + 1;
+ 	}
+ #else
++	else if (type == VGL_MEM_VRAM)
++		sceClibMspaceFree(vram_mspace_for(ptr), ptr);
+ 	else if (mempool_mspace[type])
+ 		sceClibMspaceFree(mempool_mspace[type], ptr);
+ #endif
+@@ -709,6 +755,8 @@ void *vgl_malloc(size_t size, vglMemType type) {
+ 	else if (size <= tm_max_failed_alloc[type])
+ 		return heap_alloc(type, size, MEM_ALIGNMENT);
+ #else
++	else if (type == VGL_MEM_VRAM && vram_large_mspace)
++		return vram_memalign(MEM_ALIGNMENT, size);
+ 	else if (mempool_mspace[type])
+ 		return sceClibMspaceMalloc(mempool_mspace[type], size);
+ #endif
+@@ -740,6 +788,12 @@ void *vgl_calloc(size_t num, size_t size, vglMemType type) {
+ 		return ret;
+ 	}
+ #else
++	else if (type == VGL_MEM_VRAM && vram_large_mspace) {
++		void *ret = vram_memalign(MEM_ALIGNMENT, num * size);
++		if (ret)
++			sceClibMemset(ret, 0, num * size);
++		return ret;
++	}
+ 	else if (mempool_mspace[type])
+ 		return sceClibMspaceCalloc(mempool_mspace[type], num, size);
+ #endif
+@@ -761,6 +815,8 @@ void *vgl_memalign(size_t alignment, size_t size, vglMemType type) {
+ 	else if (size <= tm_max_failed_alloc[type])
+ 		return heap_alloc(type, size, alignment);
+ #else
++	else if (type == VGL_MEM_VRAM && vram_large_mspace)
++		return vram_memalign(alignment, size);
+ 	else if (mempool_mspace[type])
+ 		return sceClibMspaceMemalign(mempool_mspace[type], alignment, size);
+ #endif
+@@ -798,6 +854,8 @@ void *vgl_realloc(void *ptr, size_t size) {
+ 	}
+ #endif
+ #ifndef HAVE_CUSTOM_HEAP
++	if (type == VGL_MEM_VRAM)
++		return sceClibMspaceRealloc(vram_mspace_for(ptr), ptr, size);
+ 	return sceClibMspaceRealloc(mempool_mspace[type], ptr, size);
+ #else
+ 	return heap_realloc(type, ptr, size);

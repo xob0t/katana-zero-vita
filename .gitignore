@@ -1,0 +1,11 @@
+# Game files are copyrighted; never commit them
+*.apk
+*.xapk
+*.obb
+work/
+
+# Build output
+build/
+build.log
+*.vpk
+build-*.log
