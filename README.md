@@ -57,8 +57,8 @@ touch panel is not used.
   checks, without the logo and its fades.
 - `sameSoundLimit=3`: at most this many copies of one sound play at once (default 3; `0` disables). Laser deaths
   spawn dozens of identical chunk sounds; mixing them all held the audio lock for ~30 ms and stalled the game.
-- `dissolveChunkScale=2`: laser deaths dissolve the body into half as many, twice as thick slices (default 2;
-  `1` = original). Each slice is an object with its own physics, sound and five glow draws.
+- `dissolveChunkScale=4`: laser deaths dissolve the body into a quarter as many, four times as thick slices
+  (default 4; `1` = original). Each slice is an object with its own physics, sound and five glow draws.
 - `maxVoices=32`: overall sound voice limit (default 32; `0` keeps the runner's 128).
 - `memOverlay=1`: YoYo Loader's on-screen memory overlay (needs `debugMode=1`; off by default).
 - `stickDeadzone=20`: analog stick deadzone in percent (default 20). Vita sticks rest slightly off centre; without

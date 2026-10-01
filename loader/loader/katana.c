@@ -1158,9 +1158,9 @@ void katana_goto_check(void) {
 // Laser deaths: obj_sprite_dissolver slices the body into rows of chunk_size pixels (rows = spr_height /
 // chunk_size, set by whoever creates it before user event 0), and every row becomes an obj_sprite_chunk with
 // its own Step, five additive draws, collision checks and a sound: ~5 ms/frame while it lasts.
-// dissolveChunkScale (yyl.cfg, default 2; 1 = original) multiplies chunk_size before that event: half the
-// chunks, each twice as tall.
-int dissolve_chunk_scale = 2;
+// dissolveChunkScale (yyl.cfg, default 4; 1 = original) multiplies chunk_size before that event: a quarter
+// of the chunks, each four times as tall.
+int dissolve_chunk_scale = 4;
 static event_func orig_dissolver_user0;
 
 static void dissolver_user0(void *self, void *other) {
