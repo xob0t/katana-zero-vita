@@ -52,6 +52,8 @@ touch panel is not used.
 - `rain=0|1|2`: rain drops none (default, ~20% faster in rainy levels), half, or all.
 - `ropeLights=0|1`: coloured light tint on clotheslines. Off by default (~7 fps faster near them).
 - `frameSkip=1`: experimental frame skipping (known to break some scenes).
+- `skipNetflixLogo=1|0`: skip the Netflix logo at launch (default 1). The Netflix SDK screen still runs its
+  checks, without the logo and its fades.
 - `memOverlay=1`: YoYo Loader's on-screen memory overlay (needs `debugMode=1`; off by default).
 - `stickDeadzone=20`: analog stick deadzone in percent (default 20). Vita sticks rest slightly off centre; without
   a deadzone the camera drifts while standing still. `0` disables it.

@@ -187,6 +187,7 @@ void loadConfig(const char *game) {
 			else if (strcmp("debugShaders", buffer) == 0) debugShaders = value;
 			else if (strcmp("debugMode", buffer) == 0) debugMode = value;
 			else if (strcmp("memOverlay", buffer) == 0) mem_overlay = value;
+			else if (strcmp("skipNetflixLogo", buffer) == 0) { extern int skip_netflix_logo; skip_netflix_logo = value; }
 			else if (strcmp("noSplash", buffer) == 0) forceSplashSkip = value;
 			else if (strcmp("maximizeMem", buffer) == 0) maximizeMem = value;
 			else if (strcmp("netSupport", buffer) == 0) has_net = value;

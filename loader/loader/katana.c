@@ -1070,6 +1070,29 @@ static void lighting_user0(void *self, void *other) {
 	in_lighting_user0--;
 }
 
+// Netflix logo on launch (obj_netflixSDKScreen): skipNetflixLogo=1 (default) zeroes its fade/hold timers right
+// after Create and skips its GUI draw. The rest of its Step still runs as in the original (creates
+// obj_netflixSDK, waits for sdkReady, sets allowMenu, room_goto), so boot proceeds the same way, just without
+// the logo.
+int skip_netflix_logo = 1;
+static event_func orig_netflix_screen_create, orig_netflix_screen_draw;
+
+static void netflix_screen_create(void *self, void *other) {
+	orig_netflix_screen_create(self, other);
+	static const char *const timers[] = { "startFadeIn", "waitFade", "logoFade", "logoPause", "loadSdkWait" };
+	for (int i = 0; i < 5; i++) {
+		char sym[64];
+		snprintf(sym, sizeof(sym), "g_VAR_%s", timers[i]);
+		int *var = (int *)so_symbol(&yoyoloader_mod, sym);
+		gml_rvalue *v = var ? gml_vget(self, var[1]) : NULL;
+		if (v && (v->kind == 0 || v->kind == 13))
+			v->val = 0;
+	}
+}
+
+static void netflix_screen_draw(void *self, void *other) {
+}
+
 static void layer_tilemap_create_fixed(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) {
 	if (in_lighting_user0 && argc == 6 && args[4].kind == 0 && args[5].kind == 0 &&
 		args[4].val > 32.0 && args[5].val > 32.0 && args[4].val < 1e6 && args[5].val < 1e6) {
@@ -1512,6 +1535,13 @@ static void patch_performance() {
 	if (!exp_flag("lasernative0")) {
 		extern int laser_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native lasers: %s\n", laser_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
+	if (skip_netflix_logo) {
+		if ((orig = gml_replace(table, "gml_Object_obj_netflixSDKScreen_Create_0", netflix_screen_create)))
+			orig_netflix_screen_create = orig;
+		if ((orig = gml_replace(table, "gml_Object_obj_netflixSDKScreen_Draw_64", netflix_screen_draw)))
+			orig_netflix_screen_draw = orig;
+		debugPrintf("Netflix logo skip: %s\n", orig_netflix_screen_create ? "installed" : "NOT installed");
 	}
 	if (!exp_flag("lightmapbig") && (orig = gml_replace(table, "gml_Object_obj_new_platform_lighting_Other_10", lighting_user0)))
 		orig_lighting_user0 = orig;
