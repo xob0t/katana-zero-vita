@@ -9,3 +9,4 @@ build/
 build.log
 *.vpk
 build-*.log
+livearea/game/

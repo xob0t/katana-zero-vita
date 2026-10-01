@@ -19,8 +19,13 @@ Requires `gh`, CMake and MinGW `mingw32-make` on PATH.
 ```bash
 bash scripts/setup-sdk.sh    # softfp VitaSDK into C:/vitasdk-softfp
 bash scripts/setup-deps.sh   # vitaGL, openal-soft, vitaShaRK, SceShaccCgExt, opensles
+python scripts/make_livearea.py --apk <Katana ZERO APK>   # optional: game art for the bubble/LiveArea
 bash scripts/build.sh        # -> build/app/KatanaZero.vpk (+ build/loader/loader2.bin)
 ```
+
+`make_livearea.py --apk` builds the icon, LiveArea background and startup gate from the game's own title
+screen art (extracted from your APK with `scripts/extract_art.py`) into `livearea/game/`, which is not committed.
+Without it the VPK uses the placeholder art in `livearea/`.
 
 ## Installing on a Vita
 

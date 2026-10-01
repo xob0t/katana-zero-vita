@@ -129,13 +129,19 @@ target_link_libraries(YoYoLoader
 )
 
 if (KATANA_APP)
+# Game art generated from the user's APK (scripts/make_livearea.py --apk) when present, placeholders otherwise
+set(LIVEAREA_ART ${CMAKE_SOURCE_DIR}/../livearea)
+if (EXISTS ${CMAKE_SOURCE_DIR}/../livearea/game/icon0.png)
+  set(LIVEAREA_ART ${CMAKE_SOURCE_DIR}/../livearea/game)
+endif()
+message(STATUS "LiveArea art: ${LIVEAREA_ART}")
 vita_create_self(eboot.bin YoYoLoader UNSAFE)
 vita_create_vpk(KatanaZero.vpk ${VITA_TITLEID} eboot.bin
   VERSION ${VITA_VERSION}
   NAME ${VITA_APP_NAME}
-  FILE ${CMAKE_SOURCE_DIR}/../livearea/icon0.png sce_sys/icon0.png
-       ${CMAKE_SOURCE_DIR}/../livearea/bg0.png sce_sys/livearea/contents/bg0.png
-       ${CMAKE_SOURCE_DIR}/../livearea/startup.png sce_sys/livearea/contents/startup.png
+  FILE ${LIVEAREA_ART}/icon0.png sce_sys/icon0.png
+       ${LIVEAREA_ART}/bg0.png sce_sys/livearea/contents/bg0.png
+       ${LIVEAREA_ART}/startup.png sce_sys/livearea/contents/startup.png
        ${CMAKE_SOURCE_DIR}/../livearea/template.xml sce_sys/livearea/contents/template.xml
 )
 else()
