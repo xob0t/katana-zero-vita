@@ -7,9 +7,10 @@
   startup very slow). Pages stay in the runner's "2zoq" container with an "LZ4H"-marked payload,
   which the loader decodes by replacing BZ2_bzBuffToBuffDecompress (loader/loader/katana.c). Plain QOI
   would decode fastest but keeps ~25 MB more of game.droid resident in RAM. Needs `pip install lz4`.
+- redraws the Xbox button glyphs as PS Vita buttons (scripts/vita_glyphs.py; --xbox-glyphs keeps them)
 - rewrites the runner's PLT calls into direct branches (scripts/patch_plt_calls.py)
 
-Usage: python scripts/prepare_apk.py <input.apk> <output.apk>
+Usage: python scripts/prepare_apk.py [--xbox-glyphs] <input.apk> <output.apk>
 """
 import bz2
 
@@ -20,6 +21,8 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+
+from vita_glyphs import encode_gm_qoi, patched_pages
 
 KEEP_LIB = "lib/armeabi-v7a/libyoyo.so"
 TEXTURE_ALIGN = 128
@@ -41,8 +44,9 @@ def parse_chunks(data):
     return chunks
 
 
-def recompress_textures(data):
-    """Returns game.droid with the bzip2 payload of 2zoq texture pages replaced by LZ4."""
+def recompress_textures(data, vita_glyphs=True):
+    """Returns game.droid with the bzip2 payload of 2zoq texture pages replaced by LZ4 (and the Vita glyphs)."""
+    pages = patched_pages(data) if vita_glyphs else {}
     chunks = parse_chunks(data)
     names = [c[0] for c in chunks]
     if names[-2:] != ["TXTR", "AUDO"]:
@@ -55,13 +59,18 @@ def recompress_textures(data):
     entries = [u32(data, base + 4 + 4 * i) for i in range(count)]
     # Texture entry: ..., +8 blob length, ..., +24 blob pointer
     blobs = []
-    for e in entries:
+    for n, e in enumerate(entries):
         length, ptr = u32(data, e + 8), u32(data, e + 24)
         blob = data[ptr:ptr + length]
+        if n in pages and blob[:4] != b"2zoq":
+            raise ValueError(f"texture page {n} is not a 2zoq page")
         if blob[:4] == b"2zoq":
             qoi = bz2.decompress(blob[12:])
             if qoi[:4] != b"fioq" or u32(blob, 8) != len(qoi):
                 raise ValueError("bzip2 payload is not a QOI image")
+            if n in pages:
+                qoi = encode_gm_qoi(pages[n])
+                blob = blob[:8] + struct.pack("<I", len(qoi)) + blob[12:]
             # Header (magic, width, height, QOI size) is kept; the runner allocates from the size
             # Payload: "LZ4H", u32 block size (the runner passes the whole blob length), LZ4 block
             block = lz4.block.compress(qoi, mode="high_compression", compression=12, store_size=False)
@@ -107,9 +116,12 @@ def patch_runner(payload):
 
 
 def main():
-    if len(sys.argv) != 3:
+    args = sys.argv[1:]
+    vita_glyphs = "--xbox-glyphs" not in args
+    args = [a for a in args if a != "--xbox-glyphs"]
+    if len(args) != 2:
         raise SystemExit(__doc__)
-    src, dst = sys.argv[1], sys.argv[2]
+    src, dst = args
     with zipfile.ZipFile(src) as zi:
         names = set(zi.namelist())
         nested = any(n.startswith("assets/assets/") for n in names)
@@ -132,8 +144,9 @@ def main():
                     payload = patch_runner(payload)
                 if out_name == "assets/game.droid":
                     before = len(payload)
-                    payload = recompress_textures(payload)
-                    print(f"game.droid: {before / 1e6:.1f}MB -> {len(payload) / 1e6:.1f}MB (textures recompressed to LZ4)")
+                    payload = recompress_textures(payload, vita_glyphs)
+                    print(f"game.droid: {before / 1e6:.1f}MB -> {len(payload) / 1e6:.1f}MB (textures recompressed to LZ4"
+                          + (", Vita button glyphs)" if vita_glyphs else ")"))
                 zo.writestr(zipfile.ZipInfo(out_name, (2020, 1, 1, 0, 0, 0)), payload)
     print(f"wrote {dst} ({len(entries)} entries)")
 
