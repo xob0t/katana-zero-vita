@@ -10,3 +10,4 @@ build.log
 *.vpk
 build-*.log
 livearea/game/
+__pycache__/
