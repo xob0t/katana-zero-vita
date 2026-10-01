@@ -46,7 +46,8 @@ touch panel is not used.
 ### Settings (`yyl.cfg`)
 
 - `renderRes=960|720|640|480`: render resolution; the Vita scales it to the screen (640 recommended).
-- `replays=0|1`: replay recording (end-of-room VHS replay and the death rewind). Off by default:
+- `replays=0|1`: replay recording (end-of-room VHS replay and the death rewind). Off by default (levels end
+  through the game's own skip-replay path and deaths restart without the rewind):
   it runs the Vita out of memory after a few minutes in one room and costs ~2 fps in heavy rooms.
   With `replays=1` the game's own option in the graphics menu decides.
 - `rain=0|1|2`: rain drops none (default, ~20% faster in rainy levels), half, or all.

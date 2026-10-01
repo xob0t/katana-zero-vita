@@ -1117,6 +1117,15 @@ void katana_goto_check(void) {
 		return;
 	frames = 0;
 	SceIoStat st;
+	// Debug: ux0:data/gms/shared/level_complete creates obj_level_complete (object 608 in Katana ZERO 1.1.10),
+	// as reaching the level exit does
+	if (sceIoGetstat("ux0:data/gms/shared/level_complete", &st) >= 0) {
+		sceIoRemove("ux0:data/gms/shared/level_complete");
+		void *(*command_create)(int object, float x, float y) = (void *)so_symbol(&yoyoloader_mod, "_Z14Command_Createiff");
+		debugPrintf("level_complete: creating obj_level_complete\n");
+		if (command_create)
+			command_create(608, 0.0f, 0.0f);
+	}
 	if (sceIoGetstat("ux0:data/gms/shared/goto_room", &st) < 0)
 		return;
 	char name[64] = {0};
@@ -1277,6 +1286,53 @@ static void record_end_step_noreplay(void *self, void *other) {
 		v->kind = 0;
 	}
 	orig_record_end_step(self, other);
+}
+
+// With nothing recorded, the end-of-level VHS replay and the death rewind would read empty recorder
+// arrays (obj_record Draw: "trying to index variable that is not an array", then a crash at level
+// completion). Use the game's own skips instead: the speedrun "skip replay" path in obj_level_complete
+// Create (taken when global.speedrun && global.speedrun_skip_replay: removes the cursor, commits queued
+// story flags, room_transition to the next room) and the "skip rewind" option for obj_record Draw. The
+// globals are only changed while those events run and restored afterwards, so options/saves keep the
+// player's values.
+static event_func orig_level_complete_create, orig_record_draw;
+static int *var_speedrun, *var_speedrun_skip_replay, *var_skip_rewind;
+
+static gml_rvalue *global_var(int *var) {
+	gml_rvalue *(*vwrite)(void *, int) = (*(void ***)*global_obj_ptr)[3];
+	gml_rvalue *v = var ? vwrite(*global_obj_ptr, var[1]) : NULL;
+	return v && (v->kind == 0 || v->kind == 13) ? v : NULL;
+}
+
+static void level_complete_create_noreplay(void *self, void *other) {
+	gml_rvalue *a = global_var(var_speedrun), *b = global_var(var_speedrun_skip_replay);
+	gml_rvalue sa, sb;
+	if (a && b) {
+		sa = *a;
+		sb = *b;
+		a->val = b->val = 1.0;
+	}
+	orig_level_complete_create(self, other);
+	if (a && b) {
+		// Re-fetch: the event may have reallocated the global variable table
+		gml_rvalue *a2 = global_var(var_speedrun), *b2 = global_var(var_speedrun_skip_replay);
+		if (a2)
+			*a2 = sa;
+		if (b2)
+			*b2 = sb;
+	}
+}
+
+static void record_draw_noreplay(void *self, void *other) {
+	gml_rvalue *r = global_var(var_skip_rewind);
+	gml_rvalue sr;
+	if (r) {
+		sr = *r;
+		r->val = 1.0;
+	}
+	orig_record_draw(self, other);
+	if (r && (r = global_var(var_skip_rewind)))
+		*r = sr;
 }
 
 // Collision query cache (exp_colcache for now). Enemy AI asks ground_meeting / block_meeting the
@@ -1490,6 +1546,16 @@ static void patch_performance() {
 	if (!replays && var_replay_enabled && global_obj_ptr &&
 		(orig = gml_replace(table, "gml_Object_obj_record_Step_2", record_end_step_noreplay)))
 		orig_record_end_step = orig;
+	var_speedrun = (int *)so_symbol(&yoyoloader_mod, "g_VAR_speedrun");
+	var_speedrun_skip_replay = (int *)so_symbol(&yoyoloader_mod, "g_VAR_speedrun_skip_replay");
+	var_skip_rewind = (int *)so_symbol(&yoyoloader_mod, "g_VAR_skip_rewind");
+	if (!replays && orig_record_end_step) {
+		if (var_speedrun && var_speedrun_skip_replay &&
+			(orig = gml_replace(table, "gml_Object_obj_level_complete_Create_0", level_complete_create_noreplay)))
+			orig_level_complete_create = orig;
+		if (var_skip_rewind && (orig = gml_replace(table, "gml_Object_obj_record_Draw_0", record_draw_noreplay)))
+			orig_record_draw = orig;
+	}
 
 	if (exp_flag("colcache"))
 		install_colcache();
