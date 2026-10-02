@@ -1262,9 +1262,15 @@ void katana_goto_check(void) {
 		}
 		sceIoRemove("ux0:data/gms/shared/create_object");
 		void *(*command_create)(int object, float x, float y) = (void *)so_symbol(&yoyoloader_mod, "_Z14Command_Createiff");
-		debugPrintf("create_object: object %d\n", atoi(text));
+		// "<index> view" creates it at the centre of the view instead
+		float x = 0.0f, y = 0.0f;
+		if (strstr(text, "view")) {
+			x = global_real(var_xview, 0) + global_real(var_wview, 0) / 2;
+			y = global_real(var_yview, 0) + global_real(var_hview, 0) / 2;
+		}
+		debugPrintf("create_object: object %d at %.0f,%.0f\n", atoi(text), x, y);
 		if (command_create)
-			command_create(atoi(text), 0.0f, 0.0f);
+			command_create(atoi(text), x, y);
 	}
 	if (sceIoGetstat("ux0:data/gms/shared/goto_room", &st) < 0)
 		return;
