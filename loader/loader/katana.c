@@ -1350,6 +1350,87 @@ static void dissolve_install(void) {
 	debugPrintf("dissolve chunk scale %d: %s\n", dissolve_chunk_scale, orig_dissolver_user0 ? "installed" : "NOT installed");
 }
 
+// Prison fog: obj_fogspawner keeps ~170 obj_fog puffs alive (room_prison_3: ~4.5 ms per frame for Step, Draw
+// and spawning). fogScale (yyl.cfg, default 4; 1 = original) keeps one puff in that many and draws the
+// survivors denser: draw_alpha a becomes 1 - (1 - a)^sqrt(N) after their Step (puffs only partly overlap, so
+// the full 1 - (1 - a)^N looked too opaque).
+// The others are destroyed at the start of their first Step, after the original Create and the spawner's
+// writes, so every random() call of the spawn still happens. The fog is visual only.
+int fog_scale = 4;
+unsigned fog_puffs_removed;
+static event_func orig_fog_create, orig_fog_step;
+static void (*fog_instance_destroy)(void *self, void *other, int argc, void **args);
+static int *var_draw_alpha;
+
+// Puffs waiting for their first Step: open-addressing set of instance pointers
+#define FOG_SET_SIZE 4096
+#define FOG_TOMBSTONE ((void *)1)
+static void *doomed_fog[FOG_SET_SIZE];
+
+static void **fog_find(void *p) {
+	for (unsigned i = ((uintptr_t)p >> 4) * 2654435761u % FOG_SET_SIZE, n = 0; n < FOG_SET_SIZE; i = (i + 1) % FOG_SET_SIZE, n++) {
+		if (doomed_fog[i] == p)
+			return &doomed_fog[i];
+		if (!doomed_fog[i])
+			return NULL;
+	}
+	return NULL;
+}
+
+static void fog_mark(void *p) {
+	if (fog_find(p))
+		return;
+	for (unsigned i = ((uintptr_t)p >> 4) * 2654435761u % FOG_SET_SIZE, n = 0; n < FOG_SET_SIZE; i = (i + 1) % FOG_SET_SIZE, n++) {
+		if (!doomed_fog[i] || doomed_fog[i] == FOG_TOMBSTONE) {
+			doomed_fog[i] = p;
+			return;
+		}
+	}
+	// Set full: the puff is kept
+}
+
+static int fog_take(void *p) {
+	void **slot = fog_find(p);
+	if (!slot)
+		return 0;
+	*slot = FOG_TOMBSTONE;
+	return 1;
+}
+
+static void fog_create(void *self, void *other) {
+	static unsigned created;
+	orig_fog_create(self, other);
+	fog_take(self); // a new instance can reuse the memory of a puff destroyed before its first Step
+	if (created++ % fog_scale)
+		fog_mark(self);
+}
+
+static void fog_step(void *self, void *other) {
+	if (fog_take(self)) {
+		fog_instance_destroy(self, other, 0, NULL);
+		fog_puffs_removed++;
+		return;
+	}
+	orig_fog_step(self, other);
+	gml_rvalue *a = gml_vget(self, var_draw_alpha[1]);
+	if (a && a->kind == 0) {
+		double v = a->val < 0.0 ? 0.0 : a->val > 1.0 ? 1.0 : a->val;
+		a->val = 1.0 - pow(1.0 - v, sqrt((double)fog_scale));
+	}
+}
+
+static void fog_install(void) {
+	if (fog_scale <= 1)
+		return;
+	fog_instance_destroy = (void *)so_symbol(&yoyoloader_mod, "_Z22YYGML_instance_destroyP9CInstanceS0_iPP8YYRValue");
+	var_draw_alpha = (int *)so_symbol(&yoyoloader_mod, "g_VAR_draw_alpha");
+	uintptr_t create = so_symbol(&yoyoloader_mod, "_Z27gml_Object_obj_fog_Create_0P9CInstanceS0_");
+	uintptr_t step = so_symbol(&yoyoloader_mod, "_Z25gml_Object_obj_fog_Step_0P9CInstanceS0_");
+	if (fog_instance_destroy && var_draw_alpha && create && step && (orig_fog_step = entry_hook(step, fog_step)))
+		orig_fog_create = entry_hook(create, fog_create);
+	debugPrintf("fog scale %d: %s\n", fog_scale, orig_fog_create && orig_fog_step ? "installed" : "NOT installed");
+}
+
 // Hooks that need the runner initialised (function registry, g_FUNC_* slots): called once
 // right before the main loop
 // Audio voice limit (maxVoices in yyl.cfg, default 32; 0 keeps the runner's 128): a safety net behind the
@@ -1372,6 +1453,7 @@ void katana_late_install(void) {
 	extern void sound_limit_install(void);
 	sound_limit_install();
 	dissolve_install();
+	fog_install();
 	appsurf_copy_install();
 	if (exp_flag("tilemaplog")) {
 		runner_function **functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");

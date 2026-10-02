@@ -60,6 +60,8 @@ touch panel is not used.
   spawn dozens of identical chunk sounds; mixing them all held the audio lock for ~30 ms and stalled the game.
 - `dissolveChunkScale=4`: laser deaths dissolve the body into a quarter as many, four times as thick slices
   (default 4; `1` = original). Each slice is an object with its own physics, sound and five glow draws.
+- `fogScale=4`: prison fog keeps one puff in N, the rest drawn denser to make up (default 4; `1` = original).
+  room_prison_3 ~56 fps originally.
 - `dancerGlow=0`: the club dancers' coloured rim glow from the club lights (default 0 = off; the light show
   itself stays). It adds ~285 outline draws per frame: about 44 fps with it, 52-56 without. `1` turns it on, using
   an exact native version of the effect.
