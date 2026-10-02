@@ -1086,6 +1086,12 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 		win_room = *current_room;
 		win_frames = 0;
 		win_frame_us = win_run_us = 0;
+		// GPU memory at each room change: textures and surfaces that miss VRAM land in slower RAM pools
+		extern size_t vgl_gpu_fallback_bytes;
+		extern unsigned vgl_gpu_fallback_allocs;
+		debugPrintf("[VRAM] room %d: free vram %uKB (largest %uKB) ram %uKB phycont %uKB | GPU allocations outside VRAM %u (%uKB)\n",
+			win_room, vglMemFree(VGL_MEM_VRAM) / 1024, gpu_pool_largest(VGL_MEM_VRAM) / 1024, vglMemFree(VGL_MEM_RAM) / 1024,
+			vglMemFree(VGL_MEM_PHYCONT) / 1024, vgl_gpu_fallback_allocs, (unsigned)(vgl_gpu_fallback_bytes / 1024));
 	}
 	win_frames++;
 	static uint64_t last_swap;
@@ -1109,6 +1115,16 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 	extern int vgl_failed_allocs;
 	extern size_t vgl_failed_alloc_size;
 	static int reported_failures = 0;
+	{
+		extern size_t vgl_gpu_fallback_bytes;
+		extern unsigned vgl_gpu_fallback_allocs;
+		static unsigned reported_fallbacks;
+		if (vgl_gpu_fallback_allocs != reported_fallbacks) {
+			reported_fallbacks = vgl_gpu_fallback_allocs;
+			debugPrintf("[VRAM] GPU allocations outside VRAM: %u (%uKB total) | free vram %uKB\n", vgl_gpu_fallback_allocs,
+				(unsigned)(vgl_gpu_fallback_bytes / 1024), vglMemFree(VGL_MEM_VRAM) / 1024);
+		}
+	}
 	if (vgl_failed_allocs != reported_failures) {
 		reported_failures = vgl_failed_allocs;
 		debugPrintf("[VGLMEM] allocation failure #%d: %u bytes; free vram %u ram %u phycont %u\n", vgl_failed_allocs,

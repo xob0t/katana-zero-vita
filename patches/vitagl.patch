@@ -60,20 +60,54 @@ index 4cbb40b..2b4a304 100644
  		if (old_framebuffer != in_use_framebuffer) {
  			dirty_scissor_state = GL_TRUE;
 diff --git a/source/utils/gpu_utils.c b/source/utils/gpu_utils.c
-index 4464db5..c6acfb6 100644
+index 4464db5..9c44ff0 100644
 --- a/source/utils/gpu_utils.c
 +++ b/source/utils/gpu_utils.c
-@@ -153,6 +153,9 @@ static inline __attribute__((always_inline)) uint32_t vgl_cache_old_textures(siz
+@@ -100,9 +100,15 @@ static inline __attribute__((always_inline)) void *gpu_alloc_mapped_aligned_for_
+ 	return res;
+ }
+ 
++size_t vgl_gpu_fallback_bytes = 0; // stats for the host: GPU allocations that did not fit in VRAM
++unsigned vgl_gpu_fallback_allocs = 0;
+ static inline __attribute__((always_inline)) void *gpu_alloc_mapped_aligned_for_gpu_inner(size_t alignment, size_t size) {
+ 	void *res;
+ 	vgl_alloc_attempt(alignment, size, VGL_MEM_VRAM)
++	// Anything below lives outside VRAM, where the GPU reads and writes far more slowly (a texture page in RAM
++	// can make a room GPU-bound); the host can react to these counters
++	vgl_gpu_fallback_allocs++;
++	vgl_gpu_fallback_bytes += size;
+ 	vgl_alloc_attempt(alignment, size, VGL_MEM_RAM)
+ 	vgl_alloc_attempt(alignment, size, VGL_MEM_PHYCONT)
+ 	vgl_alloc_attempt(alignment, size, VGL_MEM_BUDGET)
+@@ -153,6 +159,27 @@ static inline __attribute__((always_inline)) uint32_t vgl_cache_old_textures(siz
  #endif
  
  int unsafe_allocator_counter = 0;
 +int vgl_forced_gc_allocs = 0, vgl_failed_allocs = 0; // stats for the host
 +size_t vgl_failed_alloc_size = 0;
 +void (*vgl_alloc_fail_cb)(size_t size, size_t alignment, int for_gpu, void *caller) = NULL; // host diagnostics on a failed allocation
++// Host API: frees everything waiting in the garbage collector's purge lists now (GPU finish, then one cycle per
++// purge slot), so memory released this frame is available to the next allocations instead of a few frames later
++void vgl_collect_garbage_now(void) {
++	sceGxmFinish(gxm_context);
++	for (int i = 0; i < FRAME_PURGE_FREQ; i++) {
++#if defined(HAVE_SINGLE_THREADED_GC) && !defined(HAVE_PTHREAD)
++		garbage_collector(0, NULL);
++#else
++		sceKernelWaitSema(gc_mutex[1], 1, NULL);
++		sceKernelSignalSema(gc_mutex[0], 1);
++#endif
++	}
++#if !(defined(HAVE_SINGLE_THREADED_GC) && !defined(HAVE_PTHREAD))
++	sceKernelWaitSema(gc_mutex[1], FRAME_PURGE_FREQ, NULL);
++	sceKernelSignalSema(gc_mutex[1], FRAME_PURGE_FREQ);
++#endif
++}
++
  void *gpu_alloc_mapped_aligned_unsafe_for_cpu(size_t alignment, size_t size) {
  	// Performing a garbage collection cycle prior to attempting to allocate the memory again
  	unsafe_allocator_counter++;
-@@ -164,7 +167,11 @@ void *gpu_alloc_mapped_aligned_unsafe_for_cpu(size_t alignment, size_t size) {
+@@ -164,7 +191,11 @@ void *gpu_alloc_mapped_aligned_unsafe_for_cpu(size_t alignment, size_t size) {
  #else
  	sceKernelWaitSema(gc_mutex[1], 1, NULL);
  	sceKernelSignalSema(gc_mutex[0], 1);
@@ -86,7 +120,7 @@ index 4464db5..c6acfb6 100644
  #endif
  
  	// Allocating requested memblock
-@@ -190,7 +197,11 @@ void *gpu_alloc_mapped_aligned_unsafe_for_gpu(size_t alignment, size_t size) {
+@@ -190,7 +221,11 @@ void *gpu_alloc_mapped_aligned_unsafe_for_gpu(size_t alignment, size_t size) {
  #else
  	sceKernelWaitSema(gc_mutex[1], 1, NULL);
  	sceKernelSignalSema(gc_mutex[0], 1);
@@ -99,7 +133,7 @@ index 4464db5..c6acfb6 100644
  #endif
  
  	// Allocating requested memblock
-@@ -221,6 +232,13 @@ void *gpu_alloc_mapped_aligned_for_cpu(size_t alignment, size_t size) {
+@@ -221,6 +256,13 @@ void *gpu_alloc_mapped_aligned_for_cpu(size_t alignment, size_t size) {
  #endif
  	unsafe_allocator_counter = 0;
  	res = gpu_alloc_mapped_aligned_unsafe_for_cpu(alignment, size);
@@ -113,7 +147,7 @@ index 4464db5..c6acfb6 100644
  
  #ifdef LOG_ERRORS
  	if (!res) {
-@@ -250,6 +268,13 @@ void *gpu_alloc_mapped_aligned_for_gpu(size_t alignment, size_t size) {
+@@ -250,6 +292,13 @@ void *gpu_alloc_mapped_aligned_for_gpu(size_t alignment, size_t size) {
  #endif
  	unsafe_allocator_counter = 0;
  	res = gpu_alloc_mapped_aligned_unsafe_for_gpu(alignment, size);

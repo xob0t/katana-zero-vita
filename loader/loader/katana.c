@@ -941,34 +941,57 @@ static void DoAStep_Draw_lighting30(void) {
 }
 
 /*
- * Texture page recovery: over a long session the texture pages of earlier rooms fragment VRAM until a new
- * 16 MB page no longer fits (17 MB free, largest block 7 MB) and its sprites draw black: room_psychiatrist
- * after the first level showed only the player and the lights. After a failed allocation, the next frame
- * flushes all texture pages (draw_texture_flush; render targets are kept). The runner reloads each page on
- * first use, and vitaGL's out-of-memory path (GPU finish + garbage collection) frees the flushed pages, so
- * the reloads land in unfragmented memory. Costs one frame of missing sprites and the reload time.
- * exp_texflush0 disables.
+ * Texture page recovery. The runner loads 16 MB texture pages as rooms need them and never unloads them, so
+ * over a session VRAM fills with pages of earlier rooms:
+ * - A new page no longer fits anywhere and its sprites draw black (room_psychiatrist after the first level
+ *   showed only the player and the lights).
+ * - More often, vitaGL silently places the new page (or a surface) in main RAM, which the GPU reads far more
+ *   slowly: room_club_7 became GPU-bound at 33 fps (swap ~11 ms per frame) instead of 52-59. Forcing large
+ *   GPU allocations into RAM reproduced exactly that.
+ * In both cases the next frame flushes all texture pages (draw_texture_flush; render targets are kept). The
+ * runner reloads each page on first use; the flushed pages are freed right away (GPU finish + garbage
+ * collection), so the current room's pages reload into VRAM. After a failed allocation this runs
+ * at most every 5 s; after an allocation outside VRAM at most once per room, so a room whose pages really
+ * don't fit doesn't thrash. Costs the reload time (~1 s at a room load). exp_texflush0 disables.
  */
 #define TEXFLUSH_MIN_INTERVAL_US 5000000
+#define TEXFLUSH_SPILL_BYTES (1024 * 1024)
 static void (*texflush_orig_draw)(void);
 static builtin_fn texture_flush;
-static int texflush_failures_seen;
+static int texflush_failures_seen, texflush_spill_room = -2;
+static size_t texflush_spill_seen;
 static uint32_t texflush_last_us;
 unsigned texflush_count;
 
 static void DoAStep_Draw_texflush(void) {
 	extern int vgl_failed_allocs;
+	extern size_t vgl_gpu_fallback_bytes;
+	const char *reason = NULL;
+	uint32_t now = sceKernelGetProcessTimeLow();
 	if (vgl_failed_allocs != texflush_failures_seen) {
 		texflush_failures_seen = vgl_failed_allocs;
-		uint32_t now = sceKernelGetProcessTimeLow();
-		if (!texflush_count || now - texflush_last_us >= TEXFLUSH_MIN_INTERVAL_US) {
-			gml_rvalue result = {0};
-			texture_flush(&result, NULL, NULL, 0, NULL);
-			texflush_last_us = sceKernelGetProcessTimeLow();
-			texflush_count++;
-			debugPrintf("[TEXFLUSH] texture pages flushed after allocation failure #%d (%.1f ms)\n", vgl_failed_allocs,
-				(texflush_last_us - now) / 1000.0f);
+		if (!texflush_count || now - texflush_last_us >= TEXFLUSH_MIN_INTERVAL_US)
+			reason = "allocation failure";
+	}
+	if (vgl_gpu_fallback_bytes - texflush_spill_seen >= TEXFLUSH_SPILL_BYTES) {
+		texflush_spill_seen = vgl_gpu_fallback_bytes;
+		int room = current_room ? *current_room : -1;
+		if (room != texflush_spill_room) {
+			texflush_spill_room = room;
+			reason = "texture data outside VRAM";
 		}
+	} else
+		texflush_spill_seen = vgl_gpu_fallback_bytes;
+	if (reason) {
+		gml_rvalue result = {0};
+		texture_flush(&result, NULL, NULL, 0, NULL);
+		// Free the flushed pages now: otherwise vitaGL releases them a few frames later and the reloads,
+		// still not fitting, land in RAM again
+		extern void vgl_collect_garbage_now(void);
+		vgl_collect_garbage_now();
+		texflush_last_us = sceKernelGetProcessTimeLow();
+		texflush_count++;
+		debugPrintf("[TEXFLUSH] texture pages flushed after %s (%.1f ms)\n", reason, (texflush_last_us - now) / 1000.0f);
 	}
 	texflush_orig_draw();
 }

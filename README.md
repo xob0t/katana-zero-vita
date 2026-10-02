@@ -81,9 +81,9 @@ at ~59.5. What the loader does (details and measurements in the source comments)
 - Texture pages stored as LZ4 inside the runner's QOI container (`prepare_apk.py`), decoded natively.
 - 640x360 application surface (copies of it into 1280x720 effect surfaces are stretched to fit), lighting refresh at 30 Hz, vblank-paced frames, larger vitaGL render-target
   scene budgets, VRAM split for large allocations.
-- Texture pages flushed and reloaded after a failed VRAM allocation: late in a session VRAM fragments until a
-  16 MB page no longer fits and its sprites draw black (room geometry missing). Costs one ~1 s pause at that
-  room load.
+- Texture pages flushed and reloaded when VRAM runs out: the game never unloads its 16 MB texture pages, so
+  over a session new pages either fail to allocate (sprites draw black) or land in main RAM, which the GPU reads
+  far more slowly (a club room GPU-bound at 33 fps instead of 52-56). Costs a ~1-1.5 s pause at that room load.
 - Off-screen clothesline simulation paused; clothesline/rope solver and bbox computation in native code.
 - Exact native replacements for hot GML (same results, RNG use and collision queries; fallback to the original
   code for unusual inputs): `controller_check_pressed_ext`, minecart rails/master, ceiling lasers, dialogue
