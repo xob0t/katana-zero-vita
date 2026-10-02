@@ -434,6 +434,20 @@ void katana_prof_report(int frames) {
 				rail_native_bottom_hits, rail_native_fallbacks, rail_native_submitted, rail_native_culled);
 		for (int i = 0; i < 64 && rail_native_reject_line[i]; i++)
 			debugPrintf("[RAIL] reject at rail_native.c:%u x%u\n", rail_native_reject_line[i], rail_native_reject_count[i]);
+		extern unsigned clubber_native_hits, clubber_native_fallbacks, clubber_native_draws, clubber_native_reject_count[13];
+		static unsigned last_hits, last_fallbacks;
+		if (clubber_native_hits != last_hits || clubber_native_fallbacks != last_fallbacks) {
+			char reasons[96] = {0};
+			for (int i = 0, n = 0; i < 13; i++)
+				if (clubber_native_reject_count[i])
+					n += snprintf(reasons + n, sizeof(reasons) - n, " %d:%u", i, clubber_native_reject_count[i]);
+			debugPrintf("[CLUBBER] native %u fallback %u draws %u | reasons%s\n", clubber_native_hits - last_hits,
+				clubber_native_fallbacks - last_fallbacks, clubber_native_draws, reasons);
+			last_hits = clubber_native_hits;
+			last_fallbacks = clubber_native_fallbacks;
+		}
+	}
+	{
 		extern unsigned letter_native_hits[5], letter_native_fallbacks[5], letter_native_reject_line[64], letter_native_reject_count[64];
 		if (letter_native_hits[0] || letter_native_fallbacks[0] || letter_native_hits[1] || letter_native_fallbacks[1])
 			debugPrintf("[LETTER] hits %u %u %u %u %u fallbacks %u %u %u %u %u\n", letter_native_hits[0], letter_native_hits[1],
@@ -1284,6 +1298,7 @@ void katana_goto_check(void) {
 // dissolveChunkScale (yyl.cfg, default 4; 1 = original) multiplies chunk_size before that event: a quarter
 // of the chunks, each four times as tall.
 int dissolve_chunk_scale = 4;
+int dancer_glow = 0; // dancerGlow in yyl.cfg: club dancers' rim glow (see patch_performance)
 static event_func orig_dissolver_user0;
 
 static void dissolver_user0(void *self, void *other) {
@@ -1766,6 +1781,23 @@ static void patch_performance() {
 	if (!exp_flag("flashmask0")) {
 		extern int flash_mask_install(void *(*rx_alloc)(size_t));
 		debugPrintf("flashlight mask culling: %s\n", flash_mask_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
+	// Club dancers' rim glow (obj_clubber user event 6): each dancer re-tints itself from every nearby club light
+	// with 2-4 outline sprites per light, each drawn twice: ~285 extra draws per frame in the club, 44 fps vs
+	// 52-56 without it. dancerGlow=0 (default) skips the event; the club light show itself stays. dancerGlow=1
+	// keeps it, with an exact native version of the event (exp_clubbernative0: the original GML).
+	extern int dancer_glow;
+	if (!dancer_glow) {
+		static const uint32_t bx_lr = 0xe12fff1e;
+		uintptr_t entry = so_symbol(&yoyoloader_mod, "_Z31gml_Object_obj_clubber_Other_16P9CInstanceS0_");
+		if (entry) {
+			kuKernelCpuUnrestrictedMemcpy((void *)entry, &bx_lr, 4);
+			kuKernelFlushCaches((void *)entry, 4);
+		}
+		debugPrintf("dancer rim glow: off\n");
+	} else if (!exp_flag("clubbernative0")) {
+		extern int clubber_native_install(void *(*rx_alloc)(size_t));
+		debugPrintf("native dancer rim glow: %s\n", clubber_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
 	if (!exp_flag("lasernative0")) {
 		extern int laser_native_install(void *(*rx_alloc)(size_t));

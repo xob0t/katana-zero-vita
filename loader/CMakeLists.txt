@@ -44,7 +44,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DSTANDALONE_MODE")
 endif(STANDALONE)
 
 # Native replacements must round exactly like the runner (no FMA contraction)
-set_source_files_properties(loader/collision_native.c loader/rope_fast.c loader/rail_native.c loader/flash_mask.c loader/virtual_capture.c loader/input_native.c loader/laser_native.c loader/letter_native.c loader/minecart_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+set_source_files_properties(loader/collision_native.c loader/rope_fast.c loader/rail_native.c loader/flash_mask.c loader/virtual_capture.c loader/input_native.c loader/laser_native.c loader/letter_native.c loader/minecart_native.c loader/clubber_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 
 add_executable(YoYoLoader
   loader/main.c
@@ -79,6 +79,7 @@ add_executable(YoYoLoader
   loader/input_native.c
   loader/laser_native.c
   loader/letter_native.c
+  loader/clubber_native.c
   loader/minecart_native.c
   loader/evprof.c
   loader/screenshot.c

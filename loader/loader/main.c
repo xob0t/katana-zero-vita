@@ -191,6 +191,7 @@ void loadConfig(const char *game) {
 			else if (strcmp("audioGrain", buffer) == 0) { extern int opensles_grain; opensles_grain = value; }
 			else if (strcmp("sameSoundLimit", buffer) == 0) { extern int same_sound_limit; same_sound_limit = value; }
 			else if (strcmp("dissolveChunkScale", buffer) == 0) { extern int dissolve_chunk_scale; dissolve_chunk_scale = value; }
+			else if (strcmp("dancerGlow", buffer) == 0) { extern int dancer_glow; dancer_glow = value; }
 			else if (strcmp("skipNetflixLogo", buffer) == 0) { extern int skip_netflix_logo; skip_netflix_logo = value; }
 			else if (strcmp("noSplash", buffer) == 0) forceSplashSkip = value;
 			else if (strcmp("maximizeMem", buffer) == 0) maximizeMem = value;
