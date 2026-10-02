@@ -61,13 +61,19 @@ enum {
 	S_AUDIO,
 	S_MESSAGES,
 	S_GC,
+	S_LAYER_TILEMAP,
+	S_LAYER_INSTANCE,
+	S_LAYER_BACKGROUND,
+	S_LAYER_SPRITE,
+	S_LAYER_TILE,
 	S_COUNT
 };
 
 static const char *stage_names[S_COUNT] = {
 	"MainLoop_Process", "DoAStep", "DoAStep_Update", "DoAStep_Draw", "HandleStep",
 	"UpdateActiveLists", "Draw_Room", "Graphics::Flush", "Audio_Tick", "ProcessMessages",
-	"MarkAndSweepGen"
+	"MarkAndSweepGen", "DrawLayerTilemap", "DrawLayerInstance", "DrawLayerBackground", "DrawLayerSprite",
+	"DrawLayerTile"
 };
 
 static uint32_t stage_time[S_COUNT];
@@ -92,6 +98,28 @@ STAGE_VOID(S_MESSAGES, ProcessMessages)
 
 static void (*orig_HandleStep)(int type);
 static void prof_HandleStep(int type) { STAGE_BEGIN; orig_HandleStep(type); STAGE_END(S_HANDLE_STEP); }
+
+// Room layer element drawing (inside Draw_Room); up to six argument words, floats passed as words (softfp)
+#define STAGE_LAYER(id, name) 	static void (*orig_##name)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t); 	static void prof_##name(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f) { 		STAGE_BEGIN; orig_##name(a, b, c, d, e, f); STAGE_END(id); }
+STAGE_LAYER(S_LAYER_TILEMAP, DrawLayerTilemap)
+// Per-object breakdown of the instance draws (heavy profiling only)
+#define LAYER_OBJ_MAX 1500
+static uint32_t layer_obj_time[LAYER_OBJ_MAX], layer_obj_calls[LAYER_OBJ_MAX];
+static void (*orig_DrawLayerInstance)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+static void prof_DrawLayerInstance(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f) {
+	STAGE_BEGIN;
+	orig_DrawLayerInstance(a, b, c, d, e, f);
+	STAGE_END(S_LAYER_INSTANCE);
+	char *inst = c ? *(char **)(c + 0x20) : NULL;
+	int obj = inst ? *(int *)(inst + 0x84) : -1;
+	if (obj >= 0 && obj < LAYER_OBJ_MAX) {
+		layer_obj_time[obj] += sceKernelGetProcessTimeLow() - stage_start;
+		layer_obj_calls[obj]++;
+	}
+}
+STAGE_LAYER(S_LAYER_BACKGROUND, DrawLayerBackground)
+STAGE_LAYER(S_LAYER_SPRITE, DrawLayerSprite)
+STAGE_LAYER(S_LAYER_TILE, DrawLayerTile)
 
 static int (*orig_MarkAndSweepGen)(int a, int b, int c);
 static int prof_MarkAndSweepGen(int a, int b, int c) { STAGE_BEGIN; int r = orig_MarkAndSweepGen(a, b, c); STAGE_END(S_GC); return r; }
@@ -251,6 +279,12 @@ static void userprof_hooks(void) {
 }
 
 static void stage_hook(const char *symbol, void **orig, void *wrapper) {
+	// Entry hook first: the deployed runner calls most functions directly (patch_plt_calls.py), past the GOT
+	void *tramp = entry_hook(so_symbol(&yoyoloader_mod, symbol), wrapper);
+	if (tramp) {
+		*orig = tramp;
+		return;
+	}
 	uintptr_t *slot = so_got_slot(&yoyoloader_mod, symbol);
 	if (!slot) {
 		debugPrintf("Stage profiler: no PLT slot for %s\n", symbol);
@@ -558,6 +592,23 @@ void katana_prof_report(int frames) {
 	if (recolor_frames) {
 		debugPrintf("[RECOLOR] global.recolor_timer changed %u times in %u sampled frames (now %.2f)\n", recolor_changes, recolor_frames, last_recolor_timer);
 		recolor_changes = recolor_frames = 0;
+	}
+	{
+		// Top objects by instance-draw time
+		const char *(*object_name)(int) = (void *)so_symbol(&yoyoloader_mod, "_Z11Object_Namei");
+		for (int n = 0; n < 10; n++) {
+			int best = -1;
+			for (int o = 0; o < LAYER_OBJ_MAX; o++)
+				if (layer_obj_calls[o] && (best < 0 || layer_obj_time[o] > layer_obj_time[best]))
+					best = o;
+			if (best < 0)
+				break;
+			debugPrintf("[LAYERDRAW] %-28s %6.1f draws %6.2fms\n", object_name ? object_name(best) : "?",
+				(float)layer_obj_calls[best] / frames, layer_obj_time[best] / 1000.0f / frames);
+			layer_obj_calls[best] = 0;
+		}
+		memset(layer_obj_time, 0, sizeof(layer_obj_time));
+		memset(layer_obj_calls, 0, sizeof(layer_obj_calls));
 	}
 	for (int i = 0; i < S_COUNT; i++) {
 		if (stage_calls[i])
@@ -1973,6 +2024,11 @@ void patch_katana() {
 		stage_hook("_Z10Audio_Tickv", (void **)&orig_Audio_Tick, prof_Audio_Tick);
 		stage_hook("_Z15ProcessMessagesv", (void **)&orig_ProcessMessages, prof_ProcessMessages);
 		stage_hook("_Z15MarkAndSweepGeniib", (void **)&orig_MarkAndSweepGen, prof_MarkAndSweepGen);
+		stage_hook("_Z23DrawLayerTilemapElementP9tagYYRECTP6CLayerP20CLayerTilemapElementfff", (void **)&orig_DrawLayerTilemap, prof_DrawLayerTilemap);
+		stage_hook("_Z24DrawLayerInstanceElementP9tagYYRECTP6CLayerP21CLayerInstanceElement", (void **)&orig_DrawLayerInstance, prof_DrawLayerInstance);
+		stage_hook("_Z26DrawLayerBackgroundElementP9tagYYRECTP6CLayerP23CLayerBackgroundElement", (void **)&orig_DrawLayerBackground, prof_DrawLayerBackground);
+		stage_hook("_Z22DrawLayerSpriteElementP9tagYYRECTP6CLayerP19CLayerSpriteElement", (void **)&orig_DrawLayerSprite, prof_DrawLayerSprite);
+		stage_hook("_Z20DrawLayerTileElementP9tagYYRECTP6CLayerP17CLayerTileElement", (void **)&orig_DrawLayerTile, prof_DrawLayerTile);
 		passthru_hook("DrawRoomLayers", "_Z14DrawRoomLayersP9tagYYRECTi");
 		passthru_hook("DrawLayerTilemap", "_Z23DrawLayerTilemapElementP9tagYYRECTP6CLayerP20CLayerTilemapElementfff");
 		passthru_hook("DrawLayerBackground", "_Z26DrawLayerBackgroundElementP9tagYYRECTP6CLayerP23CLayerBackgroundElement");
