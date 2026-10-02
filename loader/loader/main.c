@@ -76,6 +76,7 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped);
 void gpu_alloc_fail_report(size_t size, size_t alignment, int for_gpu, void *caller);
 void katana_prof_report(int frames);
 int katana_frame_skipped();
+void katana_after_swap(void);
 void katana_clock_probe(void);
 void screenshot_check();
 void callprof_report(int frames);
@@ -984,6 +985,7 @@ void main_loop() {
 				uint64_t prof_t1 = sceKernelGetProcessTimeWide();
 				if (!katana_frame_skipped())
 					vglSwapBuffers(GL_FALSE);
+				katana_after_swap();
 				screenshot_check();
 				// Keep the system from auto-suspending during play without input
 				// (e.g. cutscenes, or unattended benchmark runs)

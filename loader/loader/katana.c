@@ -948,7 +948,7 @@ static void DoAStep_Draw_lighting30(void) {
  * - More often, vitaGL silently places the new page (or a surface) in main RAM, which the GPU reads far more
  *   slowly: room_club_7 became GPU-bound at 33 fps (swap ~11 ms per frame) instead of 52-59. Forcing large
  *   GPU allocations into RAM reproduced exactly that.
- * In both cases the next frame flushes all texture pages (draw_texture_flush; render targets are kept). The
+ * In both cases all texture pages are flushed right after that frame is presented (draw_texture_flush; render targets are kept). The
  * runner reloads each page on first use; the flushed pages are freed right away (GPU finish + garbage
  * collection), so the current room's pages reload into VRAM. After a failed allocation this runs
  * at most every 5 s; after an allocation outside VRAM at most once per room, so a room whose pages really
@@ -956,14 +956,17 @@ static void DoAStep_Draw_lighting30(void) {
  */
 #define TEXFLUSH_MIN_INTERVAL_US 5000000
 #define TEXFLUSH_SPILL_BYTES (1024 * 1024)
-static void (*texflush_orig_draw)(void);
 static builtin_fn texture_flush;
 static int texflush_failures_seen, texflush_spill_room = -2;
 static size_t texflush_spill_seen;
 static uint32_t texflush_last_us;
 unsigned texflush_count;
 
-static void DoAStep_Draw_texflush(void) {
+// Runs right after vglSwapBuffers, between frames: every scene of the frame has been submitted, so the GPU finish
+// and garbage collection below cannot free memory that commands still being recorded refer to
+void katana_after_swap(void) {
+	if (!texture_flush)
+		return;
 	extern int vgl_failed_allocs;
 	extern size_t vgl_gpu_fallback_bytes;
 	const char *reason = NULL;
@@ -993,7 +996,6 @@ static void DoAStep_Draw_texflush(void) {
 		texflush_count++;
 		debugPrintf("[TEXFLUSH] texture pages flushed after %s (%.1f ms)\n", reason, (texflush_last_us - now) / 1000.0f);
 	}
-	texflush_orig_draw();
 }
 
 /*
@@ -1860,15 +1862,9 @@ static void patch_performance() {
 		}
 	}
 
-	// Default on: reload texture pages that failed to allocate in fragmented VRAM
-	if (!exp_flag("texflush0")) {
-		uintptr_t *slot = so_got_slot(&yoyoloader_mod, "_Z12DoAStep_Drawv");
+	// Default on: reload texture pages that failed to allocate or spilled out of VRAM (katana_after_swap)
+	if (!exp_flag("texflush0"))
 		texture_flush = (builtin_fn)so_symbol(&yoyoloader_mod, "_Z23F_YoYo_DrawTextureFlushR6RValueP9CInstanceS2_iPS_");
-		if (slot && texture_flush) {
-			texflush_orig_draw = (void *)*slot;
-			*slot = (uintptr_t)&DoAStep_Draw_texflush;
-		}
-	}
 }
 
 void patch_katana() {
