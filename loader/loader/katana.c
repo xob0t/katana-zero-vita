@@ -982,18 +982,28 @@ static void install_draw_skip(gml_func_entry *table) {
 static void (*lighting30_orig_draw)(void);
 static double lighting30_prev;
 
-// The application surface is rendered at the game's native 640x360 instead of the 1280x720 view
-// port size: a quarter of the pixels and VRAM, same image at our 640x368 output (factory2_4:
-// 36.8 -> 39.9 fps, VRAM use 75% -> 57%). The runner recreates the surface when
-// g_ApplicationWidth/Height change. exp_appsurf1280 keeps the original size.
+// The application surface is rendered at the output size instead of the 1280x720 view port size: 960x540 at
+// renderRes=960 (1:1 with the screen), the game's native 640x360 at lower render resolutions (a quarter of the
+// pixels and VRAM, same image at a 640x368 output; factory2_4: 36.8 -> 39.9 fps, VRAM use 75% -> 57%). Text
+// is drawn at half scale for the 1280x720 surface: at 640x360 every other pixel column of a letter is lost
+// (960x540 costs 0-1 fps over 640x360 in heavy rooms). The runner recreates the surface when
+// g_ApplicationWidth/Height change; the size it asked for is kept for screen copies (surface_copy_scaled).
+// exp_appsurf1280 keeps the original size, exp_appsurf640 forces 640x360.
 static int *app_width, *app_height;
-static int app_surf_native;
+static int app_surf_native, app_surf_w = 640, app_surf_h = 360;
+static int app_full_w = 640, app_full_h = 360; // size outside GPU-bound rooms (see dynamic_res_update)
+static int app_set_w, app_set_h; // size last written by us
+static int app_game_w, app_game_h; // size the game set, before the override
 
 static void DoAStep_Draw_lighting30(void) {
-	if (app_surf_native && app_width && (*app_width != 640 || *app_height != 360)) {
-		debugPrintf("app surface %dx%d -> 640x360\n", *app_width, *app_height);
-		*app_width = 640;
-		*app_height = 360;
+	if (app_surf_native && app_width && (*app_width != app_surf_w || *app_height != app_surf_h)) {
+		debugPrintf("app surface %dx%d -> %dx%d\n", *app_width, *app_height, app_surf_w, app_surf_h);
+		if (*app_width != app_set_w || *app_height != app_set_h) {
+			app_game_w = *app_width;
+			app_game_h = *app_height;
+		}
+		*app_width = app_set_w = app_surf_w;
+		*app_height = app_set_h = app_surf_h;
 	}
 	gml_rvalue *(*vwrite)(void *, int) = (*(void ***)*global_obj_ptr)[3];
 	gml_rvalue *timer = vwrite(*global_obj_ptr, var_recolor_timer[1]);
@@ -1028,9 +1038,54 @@ static size_t texflush_spill_seen;
 static uint32_t texflush_last_us;
 unsigned texflush_count;
 
+/*
+ * Dynamic resolution (dynamicRes, default 1): a 960x540 application surface keeps text sharp, but rooms full of
+ * blended light sprites drawn straight onto it (room_cathedral: window beams, ~65 light glows) can run out of
+ * GPU fill rate: 43-52 fps with 4-9 ms GPU waits at the swap, 59 at 640x360. When at least DYNRES_BOUND_FRAMES
+ * of DYNRES_WINDOW frames wait on the GPU for over DYNRES_SWAP_US at the swap, the room drops to 640x360 until
+ * the next room. The first second of a room (texture loads stall the swap too) is not counted.
+ */
+#define DYNRES_WINDOW 60
+#define DYNRES_BOUND_FRAMES 20
+#define DYNRES_SWAP_US 2000
+#define DYNRES_SETTLE_FRAMES 60
+int dynamic_res = 1;
+unsigned dynres_drops;
+
+static void dynamic_res_update(uint32_t swap_us) {
+	static int room = -2, frames, window, bound, dropped;
+	if (!dynamic_res || !app_surf_native || app_full_w <= 640 || !current_room)
+		return;
+	if (*current_room != room) {
+		room = *current_room;
+		frames = window = bound = 0;
+		if (dropped) {
+			dropped = 0;
+			app_surf_w = app_full_w;
+			app_surf_h = app_full_h;
+		}
+		return;
+	}
+	if (dropped || ++frames <= DYNRES_SETTLE_FRAMES)
+		return;
+	bound += swap_us > DYNRES_SWAP_US;
+	if (++window < DYNRES_WINDOW)
+		return;
+	if (bound >= DYNRES_BOUND_FRAMES) {
+		dropped = 1;
+		dynres_drops++;
+		app_surf_w = 640;
+		app_surf_h = 360;
+		debugPrintf("[DYNRES] room %d GPU-bound (%d of %d frames waited over %.1f ms at the swap): 640x360\n", room,
+			bound, window, DYNRES_SWAP_US / 1000.0f);
+	}
+	window = bound = 0;
+}
+
 // Runs right after vglSwapBuffers, between frames: every scene of the frame has been submitted, so the GPU finish
 // and garbage collection below cannot free memory that commands still being recorded refer to
-void katana_after_swap(void) {
+void katana_after_swap(uint32_t swap_us) {
+	dynamic_res_update(swap_us);
 	if (!texture_flush)
 		return;
 	extern int vgl_failed_allocs;
@@ -1065,11 +1120,28 @@ void katana_after_swap(void) {
 }
 
 /*
- * Screen copies with the 640x360 application surface: effects that copy application_surface into a surface
- * of the original 1280x720 size (obj_drug_sequence, the medicine effect at the psychiatrist) got the image in
- * its top-left quarter and showed the screen at a quarter size. surface_copy to (0, 0) of a surface exactly
- * twice the source's size is drawn stretched instead (blending off, so pixels and alpha are copied as is).
+ * Screen copies with the resized application surface: effects that copy application_surface into a surface
+ * of the size the game set for it (1280x720; obj_drug_sequence, the medicine effect at the psychiatrist) got
+ * the image in its top-left corner and showed the screen shrunk. surface_copy of application_surface to (0, 0)
+ * of a surface of that size is drawn stretched to fill it instead (blending off, so pixels and alpha are copied
+ * as is). Copies into surfaces of any other size, and of other surfaces, are left alone.
  */
+static int *app_surface_id; // g_ApplicationSurface
+
+// application_surface is a surface reference (kind 15, id in the low word, 0x08000004 above it); a stored copy
+// may also be a plain number
+static int is_app_surface(const gml_rvalue *v) {
+	if (!app_surface_id)
+		return 0;
+	if (v->kind == 0)
+		return v->val == (double)*app_surface_id;
+	if ((v->kind & 0xffffff) == 15) {
+		uint32_t words[2];
+		memcpy(words, &v->val, sizeof(words));
+		return words[1] == 0x08000004 && (int)words[0] == *app_surface_id;
+	}
+	return 0;
+}
 static builtin_fn orig_surface_copy, surface_width, surface_height, surface_set_target, surface_reset_target,
 	draw_surface_stretched_ext, gpu_get_blendenable, gpu_set_blendenable;
 unsigned appsurf_scaled_copies;
@@ -1081,10 +1153,11 @@ static double builtin_real(builtin_fn fn, int argc, gml_rvalue *args) {
 }
 
 static void surface_copy_scaled(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) {
-	if (argc == 4 && args[1].kind == 0 && args[2].kind == 0 && args[1].val == 0.0 && args[2].val == 0.0) {
+	if (argc == 4 && app_game_w && args[1].kind == 0 && args[2].kind == 0 && args[1].val == 0.0 &&
+		args[2].val == 0.0 && is_app_surface(&args[3])) {
 		double sw = builtin_real(surface_width, 1, &args[3]), sh = builtin_real(surface_height, 1, &args[3]);
 		double dw = builtin_real(surface_width, 1, &args[0]), dh = builtin_real(surface_height, 1, &args[0]);
-		if (sw == 640.0 && sh == 360.0 && dw == 2 * sw && dh == 2 * sh) {
+		if ((sw != dw || sh != dh) && dw == app_game_w && dh == app_game_h) {
 			gml_rvalue blend = {0}, r = {0};
 			gpu_get_blendenable(&blend, self, other, 0, NULL);
 			gml_rvalue off = {0};
@@ -1094,7 +1167,8 @@ static void surface_copy_scaled(gml_rvalue *result, void *self, void *other, int
 			draw_surface_stretched_ext(&r, self, other, 7, draw);
 			surface_reset_target(&r, self, other, 0, NULL);
 			gpu_set_blendenable(&r, self, other, 1, &blend);
-			appsurf_scaled_copies++;
+			if (!appsurf_scaled_copies++)
+				debugPrintf("app surface copy scaled: %.0fx%.0f -> %.0fx%.0f\n", sw, sh, dw, dh);
 			result->kind = 0;
 			result->val = 0.0;
 			return;
@@ -1904,7 +1978,14 @@ static void patch_performance() {
 
 	app_width = (int *)so_symbol(&yoyoloader_mod, "g_ApplicationWidth");
 	app_height = (int *)so_symbol(&yoyoloader_mod, "g_ApplicationHeight");
+	app_surface_id = (int *)so_symbol(&yoyoloader_mod, "g_ApplicationSurface");
 	app_surf_native = !exp_flag("appsurf1280");
+	// Output size at 16:9 when larger than the game's 640x360 (renderRes=960: 960x540)
+	extern int screen_w;
+	if (screen_w > 640 && !exp_flag("appsurf640")) {
+		app_surf_w = app_full_w = screen_w;
+		app_surf_h = app_full_h = screen_w * 9 / 16;
+	}
 	var_replay_enabled = (int *)so_symbol(&yoyoloader_mod, "g_VAR_replay_enabled");
 	extern int replays;
 	if (!replays && var_replay_enabled && global_obj_ptr &&
@@ -2003,6 +2084,26 @@ static void patch_performance() {
 	} else if (!exp_flag("dustnative0")) {
 		extern int dustspawner_loop_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native cathedral dust: %s\n", dustspawner_loop_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
+	// Debug: ux0:data/gms/shared/stub_events lists object events (obj_name_Draw_0, one per line) that return at
+	// once, to measure what an event costs
+	FILE *stubs = debugMode ? fopen("ux0:data/gms/shared/stub_events", "r") : NULL;
+	if (stubs) {
+		static const uint32_t bx_lr = 0xe12fff1e;
+		char line[96], symbol[160];
+		while (fgets(line, sizeof(line), stubs)) {
+			line[strcspn(line, "\r\n ")] = 0;
+			if (!line[0])
+				continue;
+			snprintf(symbol, sizeof(symbol), "_Z%dgml_Object_%sP9CInstanceS0_", (int)strlen(line) + 11, line);
+			uintptr_t entry = so_symbol(&yoyoloader_mod, symbol);
+			if (entry) {
+				kuKernelCpuUnrestrictedMemcpy((void *)entry, &bx_lr, 4);
+				kuKernelFlushCaches((void *)entry, 4);
+			}
+			debugPrintf("stub_events: %s %s\n", line, entry ? "stubbed" : "NOT found");
+		}
+		fclose(stubs);
 	}
 	if (skip_netflix_logo) {
 		if ((orig = gml_replace(table, "gml_Object_obj_netflixSDKScreen_Create_0", netflix_screen_create)))

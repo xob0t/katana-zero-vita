@@ -48,7 +48,10 @@ touch panel is not used.
 
 - `renderRes=960|720|640|480`: render resolution; lower sizes are scaled up by the Vita (default 960, native).
   Lower resolutions gain no speed: across nine heavy rooms 640 and 960 were within about 1 fps, since the slow
-  rooms are CPU-bound. 960 keeps the pixel art sharp.
+  rooms are CPU-bound. 960 keeps the pixel art sharp, and the game renders at 960x540 so text keeps every pixel
+  column (at 640x360 letters lose columns: "Prison" reads "Prisor").
+- `dynamicRes=1`: a room that keeps the GPU waiting at 960x540 (room_cathedral's blended window light) drops to
+  640x360 until the next room (default 1; `0` stays at 960x540).
 - `replays=0|1`: replay recording (end-of-room VHS replay and the death rewind). Off by default (levels end
   through the game's own skip-replay path and deaths restart without the rewind):
   it runs the Vita out of memory after a few minutes in one room and costs ~2 fps in heavy rooms.
@@ -86,7 +89,8 @@ at ~59.5. What the loader does (details and measurements in the source comments)
 
 - Game thread on CPU core 1; core 0 loses ~2 ms/frame to system work.
 - Texture pages stored as LZ4 inside the runner's QOI container (`prepare_apk.py`), decoded natively.
-- 640x360 application surface (copies of it into 1280x720 effect surfaces are stretched to fit), lighting refresh at 30 Hz, vblank-paced frames, larger vitaGL render-target
+- Application surface at the output size instead of 1280x720 (960x540, 640x360 in GPU-bound rooms or at lower
+  render resolutions; copies of it into effect surfaces of the game's size are stretched to fit), lighting refresh at 30 Hz, vblank-paced frames, larger vitaGL render-target
   scene budgets, VRAM split for large allocations.
 - Texture pages flushed and reloaded when VRAM runs out: the game never unloads its 16 MB texture pages, so
   over a session new pages either fail to allocate (sprites draw black) or land in main RAM, which the GPU reads
