@@ -46,7 +46,9 @@ touch panel is not used.
 
 ### Settings (`yyl.cfg`)
 
-- `renderRes=960|720|640|480`: render resolution; the Vita scales it to the screen (640 recommended).
+- `renderRes=960|720|640|480`: render resolution; lower sizes are scaled up by the Vita (default 960, native).
+  Lower resolutions gain no speed: across nine heavy rooms 640 and 960 were within about 1 fps, since the slow
+  rooms are CPU-bound. 960 keeps the pixel art sharp.
 - `replays=0|1`: replay recording (end-of-room VHS replay and the death rewind). Off by default (levels end
   through the game's own skip-replay path and deaths restart without the rewind):
   it runs the Vita out of memory after a few minutes in one room and costs ~2 fps in heavy rooms.
