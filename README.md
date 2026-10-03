@@ -65,6 +65,9 @@ touch panel is not used.
 - `dancerGlow=0`: the club dancers' coloured rim glow from the club lights (default 0 = off; the light show
   itself stays). It adds ~285 outline draws per frame: about 44 fps with it, 52-56 without. `1` turns it on, using
   an exact native version of the effect.
+- `cathedralDust=0`: the dust motes drifting in room_cathedral's window light (default 0 = off; the light beam
+  itself stays). Each visible spawner redraws every particle: about 41 fps with it, 59 without. `1` turns it on,
+  using an exact native version of the draw loop (about 46 fps).
 - `maxVoices=32`: overall sound voice limit (default 32; `0` keeps the runner's 128).
 - `audioGrain=512`: sound output buffer in sample frames, a multiple of 64 (default 512, ~12 ms). The stock 128
   frames, with the playback thread at normal priority, crackled constantly. A dropped buffer shows in the log as

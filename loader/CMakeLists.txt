@@ -45,6 +45,8 @@ endif(STANDALONE)
 
 # Native replacements must round exactly like the runner (no FMA contraction)
 set_source_files_properties(loader/collision_native.c loader/rope_fast.c loader/rail_native.c loader/flash_mask.c loader/virtual_capture.c loader/input_native.c loader/laser_native.c loader/letter_native.c loader/minecart_native.c loader/clubber_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+# Verified in work/codex/dustspawner_loop_native_verify.py with exactly these flags
+set_source_files_properties(loader/dustspawner_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-marm;-O2")
 
 add_executable(YoYoLoader
   loader/main.c
@@ -81,6 +83,7 @@ add_executable(YoYoLoader
   loader/letter_native.c
   loader/clubber_native.c
   loader/minecart_native.c
+  loader/dustspawner_native.c
   loader/evprof.c
   loader/screenshot.c
   loader/scripts_native.c

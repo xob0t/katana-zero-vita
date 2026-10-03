@@ -497,6 +497,21 @@ void katana_prof_report(int frames) {
 				minecart_rail_native_hits, minecart_rail_native_fallbacks);
 		for (int i = 0; i < 64 && minecart_native_reject_line[i]; i++)
 			debugPrintf("[MINECART] reject at minecart_native.c:%u x%u\n", minecart_native_reject_line[i], minecart_native_reject_count[i]);
+		extern unsigned dustspawner_loop_native_calls, dustspawner_loop_native_hits, dustspawner_loop_native_loops;
+		extern unsigned dustspawner_loop_native_passes, dustspawner_loop_native_draws, dustspawner_loop_native_paused;
+		extern unsigned dustspawner_loop_native_whole_fallbacks, dustspawner_loop_native_particle_fallbacks;
+		if (dustspawner_loop_native_calls)
+			debugPrintf("[DUST] calls %u hits %u loops %u passes %u draws %u paused %u | fallbacks whole %u particle %u\n",
+				dustspawner_loop_native_calls, dustspawner_loop_native_hits, dustspawner_loop_native_loops,
+				dustspawner_loop_native_passes, dustspawner_loop_native_draws, dustspawner_loop_native_paused,
+				dustspawner_loop_native_whole_fallbacks, dustspawner_loop_native_particle_fallbacks);
+		// Order of the reason enum in dustspawner_native.c
+		static const char *const dust_reasons[] = {"profile", "helper", "table", "ids", "missing", "kind", "builtin",
+			"instance", "child", "registry", "alias", "managed", "range", "paused", "event_state", "room", "depth", "tail"};
+		extern unsigned dustspawner_loop_native_reject_count[18];
+		for (int i = 0; i < 18; i++)
+			if (dustspawner_loop_native_reject_count[i])
+				debugPrintf("[DUST] reject %s x%u\n", dust_reasons[i], dustspawner_loop_native_reject_count[i]);
 		extern unsigned flash_mask_hits, flash_mask_fallbacks, flash_mask_culled, flash_mask_draws;
 		extern unsigned flash_mask_fail_line[32], flash_mask_fail_count[32];
 		if (flash_mask_hits || flash_mask_fallbacks)
@@ -1381,6 +1396,7 @@ void katana_goto_check(void) {
 // of the chunks, each four times as tall.
 int dissolve_chunk_scale = 4;
 int dancer_glow = 0; // dancerGlow in yyl.cfg: club dancers' rim glow (see patch_performance)
+int cathedral_dust = 0; // cathedralDust in yyl.cfg: dust motes in room_cathedral's window light (see patch_performance)
 static event_func orig_dissolver_user0;
 
 static void dissolver_user0(void *self, void *other) {
@@ -1966,6 +1982,27 @@ static void patch_performance() {
 	if (!exp_flag("lasernative0")) {
 		extern int laser_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native lasers: %s\n", laser_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
+	// Cathedral dust (obj_cathedral_dustspawner): every visible spawner redraws all ~208 particles through
+	// event_user(0), ~7.4 ms per frame: room_cathedral runs at 41 fps with it, 59 without. cathedralDust=0 (default)
+	// stubs the spawner's Step (creates the particles) and Draw; the window light itself stays. cathedralDust=1
+	// keeps it, with an exact native version of the Draw loop (46 fps; exp_dustnative0: the original GML).
+	extern int cathedral_dust;
+	if (!cathedral_dust) {
+		static const uint32_t bx_lr = 0xe12fff1e;
+		static const char *const events[] = {"_Z43gml_Object_obj_cathedral_dustspawner_Step_0P9CInstanceS0_",
+			"_Z43gml_Object_obj_cathedral_dustspawner_Draw_0P9CInstanceS0_"};
+		for (int i = 0; i < 2; i++) {
+			uintptr_t entry = so_symbol(&yoyoloader_mod, events[i]);
+			if (entry) {
+				kuKernelCpuUnrestrictedMemcpy((void *)entry, &bx_lr, 4);
+				kuKernelFlushCaches((void *)entry, 4);
+			}
+			debugPrintf("cathedral dust: off, %s %s\n", events[i], entry ? "stubbed" : "NOT found");
+		}
+	} else if (!exp_flag("dustnative0")) {
+		extern int dustspawner_loop_native_install(void *(*rx_alloc)(size_t));
+		debugPrintf("native cathedral dust: %s\n", dustspawner_loop_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
 	if (skip_netflix_logo) {
 		if ((orig = gml_replace(table, "gml_Object_obj_netflixSDKScreen_Create_0", netflix_screen_create)))
