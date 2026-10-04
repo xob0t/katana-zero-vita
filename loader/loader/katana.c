@@ -986,24 +986,30 @@ static double lighting30_prev;
 // renderRes=960 (1:1 with the screen), the game's native 640x360 at lower render resolutions (a quarter of the
 // pixels and VRAM, same image at a 640x368 output; factory2_4: 36.8 -> 39.9 fps, VRAM use 75% -> 57%). Text
 // is drawn at half scale for the 1280x720 surface: at 640x360 every other pixel column of a letter is lost
-// (960x540 costs 0-1 fps over 640x360 in heavy rooms). The runner recreates the surface when
-// g_ApplicationWidth/Height change; the size it asked for is kept for screen copies (surface_copy_scaled).
-// exp_appsurf1280 keeps the original size, exp_appsurf640 forces 640x360.
-static int *app_width, *app_height;
+// (960x540 costs 0-1 fps over 640x360 in heavy rooms). The size is requested the way surface_resize on
+// application_surface does it (g_NewApplicationSize, applied at the start of Draw_Room): Draw_Room only creates
+// the surface when there is none, so writing g_ApplicationWidth/Height alone kept the old surface and drew the
+// smaller frame into its corner (a dynamic resolution drop showed the game shrunk). The size the game asked for is
+// kept for screen copies (surface_copy_scaled). exp_appsurf1280 keeps the original size, exp_appsurf640 forces
+// 640x360.
+static int *app_width, *app_height, *app_new_width, *app_new_height;
+static char *app_new_size;
 static int app_surf_native, app_surf_w = 640, app_surf_h = 360;
 static int app_full_w = 640, app_full_h = 360; // size outside GPU-bound rooms (see dynamic_res_update)
 static int app_set_w, app_set_h; // size last written by us
 static int app_game_w, app_game_h; // size the game set, before the override
 
 static void DoAStep_Draw_lighting30(void) {
-	if (app_surf_native && app_width && (*app_width != app_surf_w || *app_height != app_surf_h)) {
+	if (app_surf_native && app_width && !*app_new_size && (*app_width != app_surf_w || *app_height != app_surf_h)) {
 		debugPrintf("app surface %dx%d -> %dx%d\n", *app_width, *app_height, app_surf_w, app_surf_h);
 		if (*app_width != app_set_w || *app_height != app_set_h) {
 			app_game_w = *app_width;
 			app_game_h = *app_height;
 		}
-		*app_width = app_set_w = app_surf_w;
-		*app_height = app_set_h = app_surf_h;
+		// Also the size Draw_Room creates the surface at if there is none yet
+		*app_width = *app_new_width = app_set_w = app_surf_w;
+		*app_height = *app_new_height = app_set_h = app_surf_h;
+		*app_new_size = 1;
 	}
 	gml_rvalue *(*vwrite)(void *, int) = (*(void ***)*global_obj_ptr)[3];
 	gml_rvalue *timer = vwrite(*global_obj_ptr, var_recolor_timer[1]);
@@ -1051,6 +1057,7 @@ unsigned texflush_count;
 #define DYNRES_SETTLE_FRAMES 60
 int dynamic_res = 1;
 unsigned dynres_drops;
+static int dynres_test; // exp_dynrestest: every frame counts as GPU-bound, so each room drops after ~2 s
 
 static void dynamic_res_update(uint32_t swap_us) {
 	static int room = -2, frames, window, bound, dropped;
@@ -1068,7 +1075,7 @@ static void dynamic_res_update(uint32_t swap_us) {
 	}
 	if (dropped || ++frames <= DYNRES_SETTLE_FRAMES)
 		return;
-	bound += swap_us > DYNRES_SWAP_US;
+	bound += swap_us > DYNRES_SWAP_US || dynres_test;
 	if (++window < DYNRES_WINDOW)
 		return;
 	if (bound >= DYNRES_BOUND_FRAMES) {
@@ -1978,8 +1985,14 @@ static void patch_performance() {
 
 	app_width = (int *)so_symbol(&yoyoloader_mod, "g_ApplicationWidth");
 	app_height = (int *)so_symbol(&yoyoloader_mod, "g_ApplicationHeight");
+	app_new_size = (char *)so_symbol(&yoyoloader_mod, "g_NewApplicationSize");
+	app_new_width = (int *)so_symbol(&yoyoloader_mod, "g_NewApplicationWidth");
+	app_new_height = (int *)so_symbol(&yoyoloader_mod, "g_NewApplicationHeight");
+	if (!app_new_size || !app_new_width || !app_new_height)
+		app_width = NULL;
 	app_surface_id = (int *)so_symbol(&yoyoloader_mod, "g_ApplicationSurface");
 	app_surf_native = !exp_flag("appsurf1280");
+	dynres_test = exp_flag("dynrestest");
 	// Output size at 16:9 when larger than the game's 640x360 (renderRes=960: 960x540)
 	extern int screen_w;
 	if (screen_w > 640 && !exp_flag("appsurf640")) {

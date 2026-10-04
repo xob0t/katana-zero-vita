@@ -143,6 +143,9 @@ def main():
     vc(press("cross") + "; wait 4s", timeout=10)
     log = wait_for(rf"Entered Room: {args.room}(?![0-9_])", 120, poke=press("cross"))
     start = [log_time(l) for l in log.splitlines() if re.search(rf"Entered Room: {args.room}(?![0-9_])", l)][-1]
+    # Experiment flags are read at launch: remove them so a later manual launch runs the normal build
+    for name in args.exp:
+        delete(f"{SHARED}/exp_{name}")
 
     if args.gameplay:
         # The opening ends in a time-stop tutorial that only accepts the on-screen attack button
