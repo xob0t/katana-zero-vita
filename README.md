@@ -4,6 +4,23 @@ PS Vita port of Katana ZERO, built from the Netflix Android release (1.1.10). Th
 (`libyoyo.so`) runs on the Vita through [YoYo Loader Vita](https://github.com/Rinnegatamante/yoyoloader_vita),
 vendored in `loader/` from upstream commit `e32f68f`. No game files are included: you need your own APK.
 
+## Current state
+
+The game is playable, but not at full speed everywhere.
+
+- **Light rooms run at 60 fps**, the first level included.
+- **Heavy rooms run at about 30-45 fps.** GameMaker slows the whole game down instead of dropping frames, so these
+  rooms play in slow motion: at 30 fps, half speed. The worst is the haunted minecart ride (~31 fps); factory rooms
+  run at ~38.
+- **The CPU is the limit**, not the GPU. The game logic runs on one core and can't be split across more. The cheap
+  wins are done; what's left would mean weeks of work for about 10% more speed.
+- **Overclocking helps a little.** The loader runs the CPU at 444 MHz. A 500 MHz profile in PSVshell adds a few fps
+  in heavy rooms but doesn't get them to 60.
+- **Some effects are off by default for speed**: rain, clothesline light tint, club dancer glow, cathedral dust and
+  replays. They can be turned back on in the [settings](#settings-yylcfg).
+- **Loading:** the first launch takes about 3 minutes to compile shaders, later launches about 1 minute. A room
+  load can pause for 1-1.5 s when texture memory is cleared.
+
 ## Building (Windows, Git Bash, no WSL)
 
 Requires `gh`, CMake, MinGW `mingw32-make` and Python with Pillow on PATH.
