@@ -122,7 +122,7 @@ def main():
         backup_dir = os.path.join(ROOT, "work", "save_backups", time.strftime("%Y%m%d-%H%M%S"))
         vita_saves.backup(backup_dir)
         print(f"saves on the Vita backed up to {backup_dir}")
-        vita_saves.restore(args.save)
+        vita_saves.restore(args.save, prune=False)  # test saves are partial: keep options etc.
     if not args.no_install:
         put(os.path.join(ROOT, "build", "app", "eboot.bin"), "ux0:/app/KTNZ00001/eboot.bin")
     delete(f"{SHARED}/yyl.log")

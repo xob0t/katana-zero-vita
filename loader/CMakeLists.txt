@@ -47,6 +47,9 @@ endif(STANDALONE)
 set_source_files_properties(loader/collision_native.c loader/rope_fast.c loader/flash_mask.c loader/virtual_capture.c loader/input_native.c loader/laser_native.c loader/letter_native.c loader/minecart_native.c loader/clubber_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 # Verified against the original ARM code with exactly these flags
 set_source_files_properties(loader/dustspawner_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-marm;-O2")
+# Kill-test natives (exp_lightfast, exp_lightfast_inline): Unicorn-verified with exactly these flags. The sibling
+# call keeps the fallback into the original event at the caller's stack depth, as in the verified build.
+set_source_files_properties(loader/light_fast.c loader/light_fast_inline.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-O2;-foptimize-sibling-calls")
 
 add_executable(YoYoLoader
   loader/main.c
@@ -82,6 +85,8 @@ add_executable(YoYoLoader
   loader/clubber_native.c
   loader/minecart_native.c
   loader/dustspawner_native.c
+  loader/light_fast.c
+  loader/light_fast_inline.c
   loader/evprof.c
   loader/screenshot.c
 )

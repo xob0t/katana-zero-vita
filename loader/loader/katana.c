@@ -351,6 +351,40 @@ static void *entry_hook(uintptr_t entry, void *replacement) {
 	return tramp;
 }
 
+// exp_lightfast / exp_lightfast_inline: 0 = original events, 1 = hand native, 2 = inlined variant
+static int light_fast_mode;
+
+// Admission counters of the installed light native, per report window (event 0 = obj_orangelight Step,
+// 1 = obj_lightback Step). Reject lines are source lines of the installed variant's file, counts are totals.
+static void light_fast_report(int frames) {
+	extern unsigned light_fast_hits[2], light_fast_fallbacks[2];
+	extern unsigned light_fast_fail_line[64], light_fast_fail_count[2][64], light_fast_fail_overflow[2];
+	extern unsigned light_fast_inline_hits[2], light_fast_inline_fallbacks[2];
+	extern unsigned light_fast_inline_reject_line[48], light_fast_inline_reject_count[2][48];
+	static const char *const events[2] = { "orangelight", "lightback" };
+	static unsigned last_hits[2], last_fallbacks[2];
+	int inlined = light_fast_mode == 2;
+	const unsigned *hits = inlined ? light_fast_inline_hits : light_fast_hits;
+	const unsigned *fallbacks = inlined ? light_fast_inline_fallbacks : light_fast_fallbacks;
+	if (hits[0] == last_hits[0] && fallbacks[0] == last_fallbacks[0] && hits[1] == last_hits[1] && fallbacks[1] == last_fallbacks[1])
+		return;
+	debugPrintf("[LIGHTFAST] %s: orangelight %.1f native %.1f fallback | lightback %.1f native %.1f fallback (per frame)\n",
+		inlined ? "inline" : "hand", (float)(hits[0] - last_hits[0]) / frames, (float)(fallbacks[0] - last_fallbacks[0]) / frames,
+		(float)(hits[1] - last_hits[1]) / frames, (float)(fallbacks[1] - last_fallbacks[1]) / frames);
+	for (int e = 0; e < 2; e++) {
+		last_hits[e] = hits[e];
+		last_fallbacks[e] = fallbacks[e];
+		for (int i = 0; i < (inlined ? 48 : 64); i++) {
+			unsigned line = inlined ? light_fast_inline_reject_line[i] : light_fast_fail_line[i];
+			unsigned count = inlined ? light_fast_inline_reject_count[e][i] : light_fast_fail_count[e][i];
+			if (line && count)
+				debugPrintf("[LIGHTFAST] %s reject at %s:%u x%u\n", events[e], inlined ? "light_fast_inline.c" : "light_fast.c", line, count);
+		}
+		if (!inlined && light_fast_fail_overflow[e])
+			debugPrintf("[LIGHTFAST] %s reject histogram overflow x%u\n", events[e], light_fast_fail_overflow[e]);
+	}
+}
+
 void katana_prof_report(int frames) {
 	extern uint32_t sound_limit_skipped;
 	if (sound_limit_skipped)
@@ -460,6 +494,8 @@ void katana_prof_report(int frames) {
 		for (int i = 0; i < 64 && laser_native_reject_line[i]; i++)
 			debugPrintf("[LASER] reject at laser_native.c:%u x%u\n", laser_native_reject_line[i], laser_native_reject_count[i]);
 	}
+	if (debugMode && light_fast_mode)
+		light_fast_report(frames);
 	{
 		extern unsigned rope_fast_hits, rope_fast_fallbacks;
 		extern unsigned rf_fail_line[16], rf_fail_count[16];
@@ -1795,6 +1831,19 @@ static void patch_performance() {
 	if (!exp_flag("lasernative0")) {
 		extern int laser_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native lasers: %s\n", laser_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
+	// Static recompiler kill test (work/cpu_research/kill_test/REPORT.md), default off: exact natives of obj_orangelight
+	// Step and obj_lightback Step. exp_lightfast: the hand native (light_fast.c); exp_lightfast_inline: the same
+	// event with the runner's compare/truth/variable helpers inlined (light_fast_inline.c). Both hook the same two
+	// entries, so only one is installed; the inlined variant wins if both flags exist.
+	if (exp_flag("lightfast_inline")) {
+		extern int light_fast_inline_install(void *(*rx_alloc)(size_t));
+		light_fast_mode = light_fast_inline_install(katana_rx_alloc) ? 2 : 0;
+		debugPrintf("light fast: %s (inline)\n", light_fast_mode ? "installed" : "NOT installed");
+	} else if (exp_flag("lightfast")) {
+		extern int light_fast_install(void *(*rx_alloc)(size_t));
+		light_fast_mode = light_fast_install(katana_rx_alloc) ? 1 : 0;
+		debugPrintf("light fast: %s (hand)\n", light_fast_mode ? "installed" : "NOT installed");
 	}
 	// Cathedral dust (obj_cathedral_dustspawner): every visible spawner redraws all ~208 particles through
 	// event_user(0), ~7.4 ms per frame: room_cathedral runs at 41 fps with it, 59 without. cathedralDust=0 (default)

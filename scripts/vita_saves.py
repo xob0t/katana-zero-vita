@@ -2,7 +2,8 @@
 
 Usage: python scripts/vita_saves.py backup <dir> | restore <dir>
 Files named netflix_<name> map to the netflix/ cloud-save folder. backup needs a new or empty directory; restore
-makes the Vita's saves exactly the backup's (save files not in it are deleted).
+makes the Vita's saves exactly the backup's (save files not in it are deleted). bench.py --save overlays a partial
+test save instead (restore(src, prune=False)), keeping the options and other files it doesn't contain.
 """
 import ftplib
 import io
@@ -45,11 +46,11 @@ def backup(dst):
     f.quit()
 
 
-def restore(src):
+def restore(src, prune=True):
     names = [n for n in os.listdir(src) if not n.endswith(".part")]
     f = connect()
     for name, remote in remote_files(f).items():
-        if name not in names:
+        if prune and name not in names:
             f.delete(remote)
     for name in names:
         remote = f"{BASE}/netflix/{name[len('netflix_'):]}" if name.startswith("netflix_") else f"{BASE}/{name}"
