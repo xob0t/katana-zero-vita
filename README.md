@@ -116,6 +116,7 @@ To compare against the original, create an empty file `ux0:data/gms/shared/exp_<
 | `texflush0` | texture page flush |
 | `appsurf1280`, `appsurf640` | output-size application surface (`appsurf640`: force 640x360) |
 | `parambuf16`, `novramsplit`, `sleeppace` | 8 MB GPU parameter buffer, VRAM split, vblank pacing |
+| `pool3k` | 2 MB vitaGL vertex pool (uses upstream's 3 KB) |
 | `touchui` | hidden touch controls (shows them again) |
 
 ## Benchmarking and profiling

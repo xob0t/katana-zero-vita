@@ -3545,7 +3545,11 @@ void *pthread_main(void *arg) {
 	so_initialize(&yoyoloader_mod);
 	
 	// Initializing vitaGL
-	vglSetCircularPoolSize(3 * 1024);
+	// The size is in bytes, split between the display buffers. Upstream's 3 KB (1 KB a frame) is overrun by
+	// every draw: each runner batch is 15-20 KB of client vertex data, so each glDraw* fell back to an mspace
+	// allocation in the RAM pool plus a deferred free on the GC thread. 2 MB holds a heavy room's ~300 KB a
+	// frame with headroom; larger frames still overflow into the old path. squeezeMem and exp_pool3k keep 3 KB.
+	vglSetCircularPoolSize(squeeze_mem || exp_flag("pool3k") ? 3 * 1024 : 2 * 1024 * 1024);
 	vglSetSemanticBindingMode(VGL_MODE_POSTPONED);
 	// YoYo Loader's memory overlay: opt-in (memOverlay=1 in yyl.cfg), also in debug mode
 	if (debugMode && mem_overlay)
