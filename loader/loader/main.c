@@ -2102,6 +2102,35 @@ long long strtoll_l_soloader(const char *s, char **end, int base, void *l) { ret
 unsigned long long strtoull_l_soloader(const char *s, char **end, int base, void *l) { return strtoull(s, end, base); }
 long double strtold_l_soloader(const char *s, char **end, void *l) { return strtold(s, end); }
 
+// Bionic and newlib number their clocks differently (bionic: REALTIME 0, MONOTONIC 1, PROCESS_CPUTIME 2,
+// THREAD_CPUTIME 3, MONOTONIC_RAW 4, REALTIME_COARSE 5, MONOTONIC_COARSE 6, BOOTTIME 7; newlib: REALTIME 1,
+// MONOTONIC 4). Passed straight through, the runner's Timing_Time (bionic MONOTONIC = newlib REALTIME) read the
+// RTC with two SceRtc syscalls per call, ~80 times a frame, and CThread::SleepUntilWoken (bionic REALTIME = 0)
+// got EINVAL and built its pthread_cond_timedwait deadline from an unwritten timespec.
+int clock_gettime_soloader(int clk, struct timespec *ts) {
+	switch (clk) {
+	case 0: // REALTIME
+	case 5: // REALTIME_COARSE
+		// Same epoch as the deadlines pthread_cond_timedwait compares against (libpthread's ftime reads
+		// newlib CLOCK_REALTIME)
+		return clock_gettime(CLOCK_REALTIME, ts);
+	case 1: // MONOTONIC
+	case 2: // PROCESS_CPUTIME_ID
+	case 3: // THREAD_CPUTIME_ID
+	case 4: // MONOTONIC_RAW
+	case 6: // MONOTONIC_COARSE
+	case 7: { // BOOTTIME
+		SceUInt64 us = sceKernelGetProcessTimeWide();
+		ts->tv_sec = us / 1000000;
+		ts->tv_nsec = (us % 1000000) * 1000;
+		return 0;
+	}
+	default:
+		errno = EINVAL;
+		return -1;
+	}
+}
+
 // Bionic struct dirent layout (32-bit)
 typedef struct __attribute__((packed)) {
 	uint64_t d_ino;
@@ -2425,7 +2454,7 @@ static so_default_dynlib default_dynlib[] = {
 	{ "ceil", (uintptr_t)&ceil },
 	{ "ceilf", (uintptr_t)&ceilf },
 	{ "clearerr", (uintptr_t)&clearerr },
-	{ "clock_gettime", (uintptr_t)&clock_gettime },
+	{ "clock_gettime", (uintptr_t)&clock_gettime_soloader },
 	{ "close", (uintptr_t)&close },
 	{ "compress", (uintptr_t)&compress },	
 	//{ "connect", (uintptr_t)&connect },
