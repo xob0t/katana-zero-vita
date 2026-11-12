@@ -1,111 +1,105 @@
 # katana-vita
 
-PS Vita port of Katana ZERO (Netflix Android build), based on
-[YoYo Loader Vita](https://github.com/Rinnegatamante/yoyoloader_vita) (vendored in `loader/`,
-upstream commit `e32f68f`). No game files are included; you need your own APK.
-
-## Changes to the loader
-
-- Imports needed by runners built with NDK r26+ (fortified libc, `*_l` locale functions,
-  `pthread_rwlock_*`, bionic `readdir`, time functions).
-- JNI object arrays hold real element pointers, so extension functions can take multiple strings.
-- `loader/netflix.c`: offline replacement for the `NetflixIntegration` extension. Cloud save
-  slots go to `ux0:data/gms/<game>/assets/netflix/<slot>.sav`; leaderboards/telemetry are no-ops.
+PS Vita port of Katana ZERO, built from the Netflix Android release (1.1.10). The game's Android runner
+(`libyoyo.so`) runs on the Vita through [YoYo Loader Vita](https://github.com/Rinnegatamante/yoyoloader_vita),
+vendored in `loader/` from upstream commit `e32f68f`. No game files are included: you need your own APK.
 
 ## Building (Windows, Git Bash, no WSL)
 
-Requires `gh`, CMake and MinGW `mingw32-make` on PATH.
+Requires `gh`, CMake, MinGW `mingw32-make` and Python with Pillow on PATH.
 
 ```bash
 bash scripts/setup-sdk.sh    # softfp VitaSDK into C:/vitasdk-softfp
-bash scripts/setup-deps.sh   # vitaGL, openal-soft, vitaShaRK, SceShaccCgExt, opensles
-python scripts/make_livearea.py --apk <Katana ZERO APK>   # optional: game art for the bubble/LiveArea
-bash scripts/build.sh        # -> build/app/KatanaZero.vpk (+ build/loader/loader2.bin)
+bash scripts/setup-deps.sh   # vitaGL (+ patches/vitagl.patch), openal-soft, vitaShaRK, SceShaccCgExt, opensles
+python scripts/make_livearea.py <Katana ZERO APK>   # bubble icon, LiveArea and start gate art
+bash scripts/build.sh        # build/app/KatanaZero.vpk and build/loader/loader2.bin
 ```
 
-`make_livearea.py --apk` builds the icon, LiveArea background and startup gate from the game's own title
-screen art (extracted from your APK with `scripts/extract_art.py`) into `livearea/game/`, which is not committed.
-Without it the VPK uses the placeholder art in `livearea/`.
+`make_livearea.py` builds the LiveArea images from the game's title screen art in your APK, into `livearea/`.
+They are game art, so they are not committed, and the app build stops if they are missing.
 
 ## Installing on a Vita
 
 1. Install kubridge, FdFix and `libshacccg.suprx`.
 2. Install `build/app/KatanaZero.vpk` (title ID `KTNZ00001`). It contains only the loader.
 3. Build the game APK with `python scripts/prepare_apk.py <Katana ZERO 1.1.10 APK> game.apk`
-   (needs `pip install lz4 pyelftools`) and put it at `ux0:data/gms/katanazero/game.apk`.
-   It also redraws the game's Xbox button prompts as Vita buttons (`--xbox-glyphs` keeps the originals).
-   Settings: `ux0:data/gms/katanazero/yyl.cfg`.
-4. With `debugMode=1` in `yyl.cfg`, logs go to `ux0:data/gms/shared/yyl.log`.
-5. The first launch compiles all shaders and takes ~3 minutes; they are cached in
-   `ux0:data/shader_cache/KTNZ00001`, so later launches reach the title in about a minute.
+   (needs `pip install lz4 pyelftools`) and copy it to `ux0:data/gms/katanazero/game.apk`. This also redraws the
+   Xbox button prompts as Vita buttons (`--xbox-glyphs` keeps the originals).
+4. The first launch compiles every shader, which takes about 3 minutes. Shaders are cached in
+   `ux0:data/shader_cache/KTNZ00001`, so later launches reach the title screen in about a minute.
+
+Settings are in `ux0:data/gms/katanazero/yyl.cfg`. With `debugMode=1` the log goes to
+`ux0:data/gms/shared/yyl.log`.
 
 ### Controls
 
-The game's controller layout, with the Vita's L and R acting as the triggers: L is slow-mo, R is roll. The rear
-touch panel is not used.
+The game's own controller layout. L and R act as the triggers: L is slow motion, R is roll. The rear touch
+panel is unused.
 
-### Settings (`yyl.cfg`)
+## Settings (`yyl.cfg`)
 
-- `renderRes=960|720|640|480`: render resolution; lower sizes are scaled up by the Vita (default 960, native).
-  Lower resolutions gain no speed: across nine heavy rooms 640 and 960 were within about 1 fps, since the slow
-  rooms are CPU-bound. 960 keeps the pixel art sharp, and the game renders at 960x540 so text keeps every pixel
-  column (at 640x360 letters lose columns: "Prison" reads "Prisor").
-- `dynamicRes=1`: a room that keeps the GPU waiting at 960x540 (room_cathedral's blended window light) drops to
-  640x360 until the next room (default 1; `0` stays at 960x540).
-- `replays=0|1`: replay recording (end-of-room VHS replay and the death rewind). Off by default (levels end
-  through the game's own skip-replay path and deaths restart without the rewind):
-  it runs the Vita out of memory after a few minutes in one room and costs ~2 fps in heavy rooms.
-  With `replays=1` the game's own option in the graphics menu decides.
-- `rain=0|1|2`: rain drops none (default, ~20% faster in rainy levels), half, or all.
-- `ropeLights=0|1`: coloured light tint on clotheslines. Off by default (~7 fps faster near them).
-- `frameSkip=1`: experimental frame skipping (known to break some scenes).
-- `skipNetflixLogo=1|0`: skip the Netflix logo at launch (default 1). The Netflix SDK screen still runs its
-  checks, without the logo and its fades.
-- `sameSoundLimit=3`: at most this many copies of one sound play at once (default 3; `0` disables). Laser deaths
-  spawn dozens of identical chunk sounds; mixing them all held the audio lock for ~30 ms and stalled the game.
-- `dissolveChunkScale=4`: laser deaths dissolve the body into a quarter as many, four times as thick slices
-  (default 4; `1` = original). Each slice is an object with its own physics, sound and five glow draws.
-- `fogScale=4`: prison fog keeps one puff in N, the rest drawn denser to make up (default 4; `1` = original).
-  room_prison_3 ~56 fps originally.
-- `dancerGlow=0`: the club dancers' coloured rim glow from the club lights (default 0 = off; the light show
-  itself stays). It adds ~285 outline draws per frame: about 44 fps with it, 52-56 without. `1` turns it on, using
-  an exact native version of the effect.
-- `cathedralDust=0`: the dust motes drifting in room_cathedral's window light (default 0 = off; the light beam
-  itself stays). Each visible spawner redraws every particle: about 41 fps with it, 59 without. `1` turns it on,
-  using an exact native version of the draw loop (about 46 fps).
-- `maxVoices=32`: overall sound voice limit (default 32; `0` keeps the runner's 128).
-- `audioGrain=512`: sound output buffer in sample frames, a multiple of 64 (default 512, ~12 ms). The stock 128
-  frames, with the playback thread at normal priority, crackled constantly. A dropped buffer shows in the log as
-  `[AUDIO] output late`.
-- `memOverlay=1`: YoYo Loader's on-screen memory overlay (needs `debugMode=1`; off by default).
-- `stickDeadzone=20`: analog stick deadzone in percent (default 20). Vita sticks rest slightly off centre; without
-  a deadzone the camera drifts while standing still. `0` disables it.
+Defaults in brackets.
+
+| Setting | Effect |
+| --- | --- |
+| `renderRes=960\|720\|640\|480` [960] | Output resolution; lower ones are upscaled. Lower is not faster (the heavy rooms are CPU-bound), and below 960 text loses pixel columns. |
+| `dynamicRes=0\|1` [1] | A room that keeps the GPU waiting at 960x540 (room_cathedral's window light) drops to 640x360 until the next room. |
+| `replays=0\|1` [0] | Replay recording: the end-of-level VHS replay and the death rewind. With it on, memory runs out after a few minutes in one room and heavy rooms lose ~2 fps. Off, levels end through the game's skip-replay path. With `1` the game's own graphics option decides. |
+| `rain=0\|1\|2` [0] | Rain drops: none, half, all. None is ~20% faster in rainy levels. |
+| `ropeLights=0\|1` [0] | Coloured light tint on clotheslines (~7 fps near them). |
+| `dancerGlow=0\|1` [0] | Club dancers' rim glow from the club lights, ~285 extra draws per frame (44 fps with it, 52-56 without). The light show stays either way. |
+| `cathedralDust=0\|1` [0] | Dust motes in room_cathedral's window light (41 fps with it, 59 without). |
+| `dissolveChunkScale=N` [4] | Laser deaths cut the body into N times fewer, N times thicker slices. `1` is the original. |
+| `fogScale=N` [4] | Prison fog keeps one puff in N, drawn denser. `1` is the original. |
+| `sameSoundLimit=N` [3] | At most N copies of one sound at once (`0`: no limit). Laser deaths start dozens of identical sounds and stalled the game mixing them. |
+| `maxVoices=N` [32] | Overall voice limit (`0` keeps the runner's 128). |
+| `audioGrain=N` [512] | Sound buffer in sample frames, a multiple of 64. The stock 128 crackled. A dropped buffer is logged as `[AUDIO] output late`. |
+| `stickDeadzone=N` [20] | Analog stick deadzone in percent. Vita sticks rest slightly off centre. |
+| `skipNetflixLogo=0\|1` [1] | Skips the Netflix logo at launch; the Netflix screen's checks still run. |
+| `frameSkip=0\|1` [0] | Experimental frame skipping; breaks some scenes. |
+| `memOverlay=0\|1` [0] | YoYo Loader's memory overlay (needs `debugMode=1`). |
+
+## Changes to the loader
+
+- Imports needed by runners built with NDK r26+: fortified libc, `*_l` locale functions, `pthread_rwlock_*`,
+  bionic `readdir`, time functions.
+- JNI object arrays hold real element pointers, so extension functions can take several strings.
+- `loader/loader/netflix.c` replaces the `NetflixIntegration` extension offline. Cloud save slots are stored in
+  `ux0:data/gms/<game>/assets/netflix/<slot>.sav`; leaderboards and telemetry do nothing.
 
 ## Performance
 
-The Vita runs the Android YYC runner CPU-bound. Below 60 fps GameMaker games slow down rather than drop frames,
-so higher fps also means closer to full game speed. Heavy combat rooms run at roughly 32-44 fps, the first level
-at ~59.5. What the loader does (details and measurements in the source comments):
+The game runs CPU-bound on the Vita, and GameMaker games slow down below 60 fps rather than skip frames. The
+first level runs at ~59.5 fps; heavy combat rooms at roughly 32-44. The source comments have the measurements.
 
-- Game thread on CPU core 1; core 0 loses ~2 ms/frame to system work.
-- Texture pages stored as LZ4 inside the runner's QOI container (`prepare_apk.py`), decoded natively.
-- Application surface at the output size instead of 1280x720 (960x540, 640x360 in GPU-bound rooms or at lower
-  render resolutions; copies of it into effect surfaces of the game's size are stretched to fit), lighting refresh at 30 Hz, vblank-paced frames, larger vitaGL render-target
-  scene budgets, VRAM split for large allocations.
-- Texture pages flushed and reloaded when VRAM runs out: the game never unloads its 16 MB texture pages, so
-  over a session new pages either fail to allocate (sprites draw black) or land in main RAM, which the GPU reads
-  far more slowly (a club room GPU-bound at 33 fps instead of 52-56). Costs a ~1-1.5 s pause at that room load.
-- Off-screen clothesline simulation paused; clothesline/rope solver and bbox computation in native code.
-- Exact native replacements for hot GML (same results, RNG use and collision queries; fallback to the original
-  code for unusual inputs): `controller_check_pressed_ext`, minecart rails/master, ceiling lasers, dialogue
-  letters.
-- Render-only work removed: flashlight mask draws outside the screen, and enemy surface captures replayed
-  directly instead of rendering each enemy into a 70x70 surface (small resampling differences possible).
+- The game thread has CPU core 1 to itself; on core 0 it loses ~2 ms per frame to system work.
+- Texture pages are LZ4-compressed inside the runner's QOI container (`prepare_apk.py`) and decoded natively.
+- The application surface is the output size (960x540) instead of 1280x720. Lighting refreshes at 30 Hz,
+  frames are paced by vblank, and large texture pages get their own VRAM region.
+- When VRAM runs out, all texture pages are flushed and reloaded. The game never unloads its 16 MB pages, so
+  over a session new pages either fail to load (sprites draw black) or land in main RAM, where the GPU reads
+  them much more slowly. The flush costs a 1-1.5 s pause at a room load.
+- Off-screen clotheslines are paused; the rope solver and bounding boxes run as native code.
+- Hot GML is replaced with exact native versions (same results, RNG use and collision queries, with the original
+  code as fallback): controller input, minecart and rails, ceiling lasers, dialogue letters.
+- Render-only work is cut: flashlight masks outside the screen are skipped, and enemy surface captures are
+  replayed directly instead of drawn into a 70x70 surface each (small resampling differences possible).
 
-Each default can be turned off for comparison by creating an empty flag file
-`ux0:data/gms/shared/exp_<name>`: `gamecore0` (core 0), `vcapture0` (real enemy captures; `vcapexact` for the
-pixel-exact mode), `inputnative0`, `flashmask0`, `lasernative0`, `minecartnative0` (rails only; plus `railnative0`
-for none), `letternative0`, `texflush0`.
+To compare against the original, create an empty file `ux0:data/gms/shared/exp_<name>`:
+
+| Flag | Turns off |
+| --- | --- |
+| `gamecore0` | game thread on core 1 (uses core 0) |
+| `vcapture0`, `vcapexact` | replayed enemy captures (`vcapexact`: pixel-exact replay) |
+| `inputnative0`, `lasernative0`, `letternative0`, `minecartnative0` | native input, lasers, dialogue letters, minecart and rails |
+| `nativebbox0`, `ropefast0` | native bounding boxes, native rope solver |
+| `clubbernative0`, `dustnative0` | native dancer glow / cathedral dust when those are turned on |
+| `flashmask0`, `clothall` | flashlight mask culling, off-screen clothesline pause |
+| `lighting60`, `lightmapbig` | 30 Hz lighting, the light map size fix |
+| `texflush0` | texture page flush |
+| `appsurf1280`, `appsurf640` | output-size application surface (`appsurf640`: force 640x360) |
+| `parambuf16`, `novramsplit`, `sleeppace` | 8 MB GPU parameter buffer, VRAM split, vblank pacing |
+| `touchui` | hidden touch controls (shows them again) |
 
 ## Benchmarking and profiling
 
@@ -115,14 +109,25 @@ for none), `letternative0`, `texflush0`.
 python scripts/bench.py --label test --save work/testsaves/bunker2_3 --room room_bunker2_3 --window
 ```
 
-- `--save DIR` installs a test save first (`scripts/vita_saves.py`; back up your own saves before).
-- `--window` prints the `[WINDOW]` line: average frame time over frames 300-899 after entering the room, so A/B
-  runs compare the same game frames. Prefer A/B/B/A runs with it over single wall-clock averages.
-- `--profile` enables the heavy profilers (needs `debugMode=1`); `--exp NAME` creates `exp_NAME`.
+- `--save DIR` installs a test save first, after backing up the saves on the Vita to `work/save_backups/<time>/`.
+  Put them back with `python scripts/vita_saves.py restore <dir>`.
+- `--window` prints a `[WINDOW]` line: the average frame time over frames 300-899 after entering the room, so
+  runs compare the same game frames. Prefer A/B/B/A runs with it to single averages.
+- `--profile` turns on the heavy profilers (needs `debugMode=1`); `--exp NAME` creates `exp_NAME`.
+- `scripts/fast_sweep.py` jumps between rooms in one session (`shared/goto_room`) for quick triage; confirm
+  results with fresh boots.
 
-Log lines (`ux0:data/gms/shared/yyl.log`): `[PROF]` fps / frame time / game-thread run time, `[EVENT]` per-event
-time, `[STAGE]`, `[GLPROF]` GL calls, `[SCENES]` GXM scenes per frame and their CPU cost, `[MEM]`/`[VGLMEM]`
-memory. Opt-in profilers via flag files: `exp_scriptprof` times the scripts or runner functions listed in
-`shared/scriptprof.txt` (entry hooks; functions with at most 12 argument words), `exp_userprof` times the
-user events listed in `shared/userprof.txt`, `exp_builtinprof` times builtins from `shared/builtinprof.txt`,
-`exp_allocprof` counts the runner's malloc family.
+Log lines in `yyl.log`: `[PROF]` fps, frame time and game-thread time; `[EVENT]` time per event; `[STAGE]` time
+per runner stage; `[GLPROF]` GL calls; `[SCENES]` GXM scenes per frame; `[MEM]`, `[VRAM]`, `[VGLMEM]` memory;
+`[TEXFLUSH]` texture page flushes.
+
+Opt-in profilers, as flag files in `ux0:data/gms/shared/` (all need `debugMode=1`; `exp_scriptprof`,
+`exp_userprof` and `callprof` also need `--profile`):
+
+- `exp_scriptprof`: times the scripts or runner functions listed in `scriptprof.txt` (at most 12 argument words).
+- `exp_userprof`: times the user events listed in `userprof.txt`.
+- `exp_builtinprof`: times the builtins listed in `builtinprof.txt`.
+- `exp_allocprof`: counts the runner's malloc family.
+- `exp_spikes`: logs every frame over 20 ms.
+- `callprof`: counts calls through each PLT slot (slow).
+- `stub_events`: object events listed one per line (`obj_name_Draw_0`) return at once, to measure their cost.

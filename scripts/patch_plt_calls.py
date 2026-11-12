@@ -16,7 +16,6 @@ from elftools.elf.elffile import ELFFile
 # Symbols the loader intercepts through their GOT slot must keep going through the PLT
 DEFAULT_EXCLUDE = {
     "_Z12DoAStep_Drawv",  # frame skip / lighting hooks
-    "_Z24gml_Script_inside_screenP9CInstanceS0_R8YYRValueiPPS1_",  # native replacement (scripts_native.c)
     "BZ2_bzBuffToBuffDecompress",  # LZ4 texture pages (katana.c); a missed hook breaks every texture
 }
 
@@ -34,7 +33,7 @@ def main():
     ap.add_argument("dst")
     ap.add_argument("--exclude", nargs="*", default=[])
     ap.add_argument("--keep-scripts", action="store_true",
-                    help="leave every gml_Script_* call on the PLT (profiling builds, see katana.c scriptprof)")
+                    help="leave every gml_Script_* call on the PLT (for hooks through GOT slots)")
     args = ap.parse_args()
     exclude = DEFAULT_EXCLUDE | set(args.exclude)
 

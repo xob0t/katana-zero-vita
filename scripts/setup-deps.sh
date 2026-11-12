@@ -32,7 +32,7 @@ fetch https://github.com/Rinnegatamante/vitaShaRK.git vitaShaRK
 make -C "$BUILD/vitaShaRK" -j "$JOBS" install
 
 fetch https://github.com/Rinnegatamante/vitaGL.git vitaGL
-# Our vitaGL changes (see work/UPSTREAM_TODO.md) are made against this commit
+# Our vitaGL changes (patches/vitagl.patch) are made against this commit
 VITAGL_COMMIT=464876a79cdd00650bb0eb9629b85d81f9908fd8
 if [ "$(git -C "$BUILD/vitaGL" rev-parse HEAD)" != "$VITAGL_COMMIT" ]; then
   git -C "$BUILD/vitaGL" fetch -q --depth 1 origin "$VITAGL_COMMIT"

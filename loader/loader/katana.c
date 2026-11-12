@@ -11,7 +11,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
-#include <malloc.h>
 
 #include "main.h"
 #include "so_util.h"
@@ -32,7 +31,6 @@ static uint32_t recolor_changes, recolor_frames;
 static double last_recolor_timer;
 void callprof_install(so_module *mod);
 void evprof_install(so_module *mod);
-void scripts_native_install(void);
 
 static int (*SaveFileExists)(const char *path, void *unk);
 static int (*BundleFileExists)(const char *path);
@@ -329,110 +327,7 @@ static void builtinprof_hooks(void) {
 	}
 }
 
-// Measures how often collision helper scripts are called again with identical inputs within one
-// frame (same instance, same position, same arguments): an upper bound for per-frame memoization.
-// Needs a runner with script calls on the PLT (patch_plt_calls.py --keep-scripts), exp_dupprof.
-#define DUP_SCRIPTS 2
-#define DUP_SLOTS 4096
-typedef void *(*dup_script_fn)(void *self, void *other, void *result, int argc, gml_rvalue **args);
-static dup_script_fn dup_orig[DUP_SCRIPTS];
-static const char *dup_names[DUP_SCRIPTS] = { "ground_meeting", "block_meeting" };
-static uint32_t dup_keys[DUP_SLOTS], dup_frame_of[DUP_SLOTS], dup_frame;
-static uint32_t dup_calls[DUP_SCRIPTS], dup_repeats[DUP_SCRIPTS];
-
-static void dup_count(int which, void *self, int argc, gml_rvalue **args) {
-	uint32_t h = 2166136261u ^ (which * 0x9e3779b9u) ^ (uintptr_t)self;
-	uint32_t words[2 + 2 * 4];
-	int n = 0;
-	memcpy(&words[n++], (char *)self + 0xb8, 4); // x
-	memcpy(&words[n++], (char *)self + 0xbc, 4); // y
-	for (int i = 0; i < argc && i < 4; i++) {
-		memcpy(&words[n], &args[i]->val, 8);
-		n += 2;
-	}
-	for (int i = 0; i < n; i++)
-		h = (h ^ words[i]) * 16777619u;
-	if (!h)
-		h = 1;
-	dup_calls[which]++;
-	for (int probe = 0; probe < 8; probe++) {
-		uint32_t s = (h + probe) & (DUP_SLOTS - 1);
-		if (dup_frame_of[s] != dup_frame) {
-			dup_frame_of[s] = dup_frame;
-			dup_keys[s] = h;
-			return;
-		}
-		if (dup_keys[s] == h) {
-			dup_repeats[which]++;
-			return;
-		}
-	}
-}
-
-static void *dup_ground_meeting(void *self, void *other, void *result, int argc, gml_rvalue **args) {
-	dup_count(0, self, argc, args);
-	return dup_orig[0](self, other, result, argc, args);
-}
-
-static void *dup_block_meeting(void *self, void *other, void *result, int argc, gml_rvalue **args) {
-	dup_count(1, self, argc, args);
-	return dup_orig[1](self, other, result, argc, args);
-}
-
-void katana_dup_frame(void) {
-	dup_frame++;
-}
-
-static void dupprof_hooks(void) {
-	static const char *syms[DUP_SCRIPTS] = {
-		"_Z25gml_Script_ground_meetingP9CInstanceS0_R8YYRValueiPPS1_",
-		"_Z24gml_Script_block_meetingP9CInstanceS0_R8YYRValueiPPS1_",
-	};
-	void *wrappers[DUP_SCRIPTS] = { dup_ground_meeting, dup_block_meeting };
-	dup_frame = 1;
-	for (int i = 0; i < DUP_SCRIPTS; i++) {
-		uintptr_t *slot = so_got_slot(&yoyoloader_mod, syms[i]);
-		if (slot) {
-			dup_orig[i] = (dup_script_fn)*slot;
-			*slot = (uintptr_t)wrappers[i];
-		}
-	}
-}
-
-// exp_surfacelog: logs surface_create / surface_resize calls with their sizes
 typedef void (*builtin_fn)(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args);
-static builtin_fn orig_surface_create, orig_surface_resize;
-
-static void log_surface_create(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) {
-	orig_surface_create(result, self, other, argc, args);
-	debugPrintf("[SURFACE] create %.0fx%.0f -> %.0f (object %d)\n", argc > 0 ? args[0].val : -1.0,
-		argc > 1 ? args[1].val : -1.0, result->val, self ? *(int *)((char *)self + 0x84) : -1);
-}
-
-static void log_surface_resize(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) {
-	debugPrintf("[SURFACE] resize %.0f to %.0fx%.0f (object %d)\n", argc > 0 ? args[0].val : -1.0,
-		argc > 1 ? args[1].val : -1.0, argc > 2 ? args[2].val : -1.0, self ? *(int *)((char *)self + 0x84) : -1);
-	orig_surface_resize(result, self, other, argc, args);
-}
-
-static void surfacelog_hooks(void) {
-	runner_function **functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
-	int *count = (int *)so_symbol(&yoyoloader_mod, "the_numb");
-	if (!functions || !*functions || !count)
-		return;
-	for (int i = 0; i < *count; i++) {
-		runner_function *f = &(*functions)[i];
-		if (f->name && !strcmp(f->name, "surface_create")) {
-			orig_surface_create = f->func;
-			f->func = log_surface_create;
-		} else if (f->name && !strcmp(f->name, "surface_resize")) {
-			orig_surface_resize = f->func;
-			f->func = log_surface_resize;
-		}
-	}
-}
-
-void katana_colcache_report(int frames);
 
 void katana_cloth_report(int frames);
 
@@ -461,13 +356,6 @@ void katana_prof_report(int frames) {
 	if (sound_limit_skipped)
 		debugPrintf("[AUDIO] same-sound copies skipped: %u\n", sound_limit_skipped);
 	{
-		extern unsigned rail_native_hits, rail_native_bottom_hits, rail_native_fallbacks;
-		extern unsigned rail_native_submitted, rail_native_culled, rail_native_reject_line[64], rail_native_reject_count[64];
-		if (rail_native_hits || rail_native_bottom_hits || rail_native_fallbacks)
-			debugPrintf("[RAIL] native %u bottom %u fallback %u | submitted %u culled %u\n", rail_native_hits,
-				rail_native_bottom_hits, rail_native_fallbacks, rail_native_submitted, rail_native_culled);
-		for (int i = 0; i < 64 && rail_native_reject_line[i]; i++)
-			debugPrintf("[RAIL] reject at rail_native.c:%u x%u\n", rail_native_reject_line[i], rail_native_reject_count[i]);
 		extern unsigned clubber_native_hits, clubber_native_fallbacks, clubber_native_draws, clubber_native_reject_count[13];
 		static unsigned last_hits, last_fallbacks;
 		if (clubber_native_hits != last_hits || clubber_native_fallbacks != last_fallbacks) {
@@ -579,25 +467,11 @@ void katana_prof_report(int frames) {
 			debugPrintf("[ROPE] reject at rope_fast.c:%u x%u\n", rf_fail_line[i], rf_fail_count[i]);
 		if (rope_fast_hits || rope_fast_fallbacks)
 			debugPrintf("[ROPE] fast %u fallback %u\n", rope_fast_hits, rope_fast_fallbacks);
-		extern unsigned collision_fast_hits, collision_fallback_hits, collision_verified, collision_mismatches;
-		if (collision_fast_hits || collision_fallback_hits || collision_verified)
-			debugPrintf("[BBOX] fast %u fallback %u verified %u mismatches %u\n", collision_fast_hits,
-				collision_fallback_hits, collision_verified, collision_mismatches);
+		extern unsigned collision_fast_hits, collision_fallback_hits;
+		if (collision_fast_hits || collision_fallback_hits)
+			debugPrintf("[BBOX] fast %u fallback %u\n", collision_fast_hits, collision_fallback_hits);
 	}
-	katana_colcache_report(frames);
 	katana_cloth_report(frames);
-	static int surfaces_hooked = 0;
-	if (!surfaces_hooked) {
-		surfaces_hooked = 1;
-		if (exp_flag("surfacelog"))
-			surfacelog_hooks();
-	}
-	for (int i = 0; i < DUP_SCRIPTS; i++) {
-		if (dup_calls[i])
-			debugPrintf("[DUP] %-16s %7.1f calls/frame, %5.1f%% repeat an earlier call this frame\n", dup_names[i],
-				(float)dup_calls[i] / frames, 100.0f * dup_repeats[i] / dup_calls[i]);
-		dup_calls[i] = dup_repeats[i] = 0;
-	}
 	static int builtins_hooked = 0;
 	if (!builtins_hooked) {
 		builtins_hooked = 1;
@@ -979,7 +853,7 @@ static void install_draw_skip(gml_func_entry *table) {
  * timer is put back to the previous frame's value before drawing, so lit sprites reuse
  * their cached light colour and lighting refreshes at 30 Hz.
  */
-static void (*lighting30_orig_draw)(void);
+static int lighting30;
 static double lighting30_prev;
 
 // The application surface is rendered at the output size instead of the 1280x720 view port size: 960x540 at
@@ -999,7 +873,10 @@ static int app_full_w = 640, app_full_h = 360; // size outside GPU-bound rooms (
 static int app_set_w, app_set_h; // size last written by us
 static int app_game_w, app_game_h; // size the game set, before the override
 
-static void DoAStep_Draw_lighting30(void) {
+// DoAStep_Draw hook: application surface size, then lighting at 30 Hz
+static void (*katana_orig_draw)(void);
+
+static void DoAStep_Draw_katana(void) {
 	if (app_surf_native && app_width && !*app_new_size && (*app_width != app_surf_w || *app_height != app_surf_h)) {
 		debugPrintf("app surface %dx%d -> %dx%d\n", *app_width, *app_height, app_surf_w, app_surf_h);
 		if (*app_width != app_set_w || *app_height != app_set_h) {
@@ -1011,15 +888,17 @@ static void DoAStep_Draw_lighting30(void) {
 		*app_height = *app_new_height = app_set_h = app_surf_h;
 		*app_new_size = 1;
 	}
-	gml_rvalue *(*vwrite)(void *, int) = (*(void ***)*global_obj_ptr)[3];
-	gml_rvalue *timer = vwrite(*global_obj_ptr, var_recolor_timer[1]);
-	if (timer && timer->kind == 0) {
-		if (*frame_count & 1)
-			timer->val = lighting30_prev;
-		else
-			lighting30_prev = timer->val;
+	if (lighting30) {
+		gml_rvalue *(*vwrite)(void *, int) = (*(void ***)*global_obj_ptr)[3];
+		gml_rvalue *timer = vwrite(*global_obj_ptr, var_recolor_timer[1]);
+		if (timer && timer->kind == 0) {
+			if (*frame_count & 1)
+				timer->val = lighting30_prev;
+			else
+				lighting30_prev = timer->val;
+		}
 	}
-	lighting30_orig_draw();
+	katana_orig_draw();
 }
 
 /*
@@ -1030,13 +909,14 @@ static void DoAStep_Draw_lighting30(void) {
  * - More often, vitaGL silently places the new page (or a surface) in main RAM, which the GPU reads far more
  *   slowly: room_club_7 became GPU-bound at 33 fps (swap ~11 ms per frame) instead of 52-59. Forcing large
  *   GPU allocations into RAM reproduced exactly that.
- * In both cases all texture pages are flushed right after that frame is presented (draw_texture_flush; render targets are kept). The
- * runner reloads each page on first use; the flushed pages are freed right away (GPU finish + garbage
- * collection), so the current room's pages reload into VRAM. After a failed allocation this runs
- * at most every 5 s; after an allocation outside VRAM at most once per room, so a room whose pages really
- * don't fit doesn't thrash. Costs the reload time (~1 s at a room load). exp_texflush0 disables.
+ * In both cases all texture pages are flushed right after that frame is presented (draw_texture_flush; render
+ * targets are kept). The runner reloads each page on first use; the flushed pages are freed right away (GPU finish
+ * + garbage collection), so the current room's pages reload into VRAM. After a failed allocation this runs at most
+ * every 5 s and three times per room; after an allocation outside VRAM at most once per room, so a room whose
+ * pages really don't fit doesn't thrash. Costs the reload time (~1 s at a room load). exp_texflush0 disables.
  */
 #define TEXFLUSH_MIN_INTERVAL_US 5000000
+#define TEXFLUSH_FAILURE_FLUSHES 3
 #define TEXFLUSH_SPILL_BYTES (1024 * 1024)
 static builtin_fn texture_flush;
 static int texflush_failures_seen, texflush_spill_room = -2;
@@ -1049,7 +929,8 @@ unsigned texflush_count;
  * blended light sprites drawn straight onto it (room_cathedral: window beams, ~65 light glows) can run out of
  * GPU fill rate: 43-52 fps with 4-9 ms GPU waits at the swap, 59 at 640x360. When at least DYNRES_BOUND_FRAMES
  * of DYNRES_WINDOW frames wait on the GPU for over DYNRES_SWAP_US at the swap, the room drops to 640x360 until
- * the next room. The first second of a room (texture loads stall the swap too) is not counted.
+ * the next room. The first second of a room (texture loads stall the swap too) is not counted. (A light room at
+ * 60 fps waits ~0.15 ms; texture pages pushed out of VRAM into RAM make ordinary rooms GPU-bound and drop too.)
  */
 #define DYNRES_WINDOW 60
 #define DYNRES_BOUND_FRAMES 20
@@ -1099,14 +980,25 @@ void katana_after_swap(uint32_t swap_us) {
 	extern size_t vgl_gpu_fallback_bytes;
 	const char *reason = NULL;
 	uint32_t now = sceKernelGetProcessTimeLow();
+	// A failure within TEXFLUSH_MIN_INTERVAL_US of the last flush is flushed for once the interval is over: dropping
+	// it left the page that failed (room_mansion_0: the font page, text drawn as solid boxes) missing for good.
+	// At most TEXFLUSH_FAILURE_FLUSHES per room, so a room whose pages never fit doesn't pause every few seconds.
+	static int failure_pending, failure_room = -2, failure_flushes;
+	int room = current_room ? *current_room : -1;
+	if (room != failure_room) {
+		failure_room = room;
+		failure_flushes = 0;
+	}
 	if (vgl_failed_allocs != texflush_failures_seen) {
 		texflush_failures_seen = vgl_failed_allocs;
-		if (!texflush_count || now - texflush_last_us >= TEXFLUSH_MIN_INTERVAL_US)
-			reason = "allocation failure";
+		failure_pending = failure_flushes < TEXFLUSH_FAILURE_FLUSHES;
+	}
+	if (failure_pending && (!texflush_count || now - texflush_last_us >= TEXFLUSH_MIN_INTERVAL_US)) {
+		failure_flushes++;
+		reason = "allocation failure";
 	}
 	if (vgl_gpu_fallback_bytes - texflush_spill_seen >= TEXFLUSH_SPILL_BYTES) {
 		texflush_spill_seen = vgl_gpu_fallback_bytes;
-		int room = current_room ? *current_room : -1;
 		if (room != texflush_spill_room) {
 			texflush_spill_room = room;
 			reason = "texture data outside VRAM";
@@ -1114,6 +1006,7 @@ void katana_after_swap(uint32_t swap_us) {
 	} else
 		texflush_spill_seen = vgl_gpu_fallback_bytes;
 	if (reason) {
+		failure_pending = 0; // the flush reloads every page, including the one that failed
 		gml_rvalue result = {0};
 		texture_flush(&result, NULL, NULL, 0, NULL);
 		// Free the flushed pages now: otherwise vitaGL releases them a few frames later and the reloads,
@@ -1122,7 +1015,8 @@ void katana_after_swap(uint32_t swap_us) {
 		vgl_collect_garbage_now();
 		texflush_last_us = sceKernelGetProcessTimeLow();
 		texflush_count++;
-		debugPrintf("[TEXFLUSH] texture pages flushed after %s (%.1f ms)\n", reason, (texflush_last_us - now) / 1000.0f);
+		debugPrintf("[TEXFLUSH] texture pages flushed after %s (%.1f ms); free vram now %uKB\n", reason,
+			(texflush_last_us - now) / 1000.0f, vglMemFree(VGL_MEM_VRAM) / 1024);
 	}
 }
 
@@ -1314,10 +1208,11 @@ static int lz4_page_decompress(char *dest, unsigned *dest_len, char *src, unsign
 		fatal_error("game.apk has bzip2 texture pages. Rebuild it with scripts/prepare_apk.py.");
 	uint32_t block_len;
 	memcpy(&block_len, src + 4, 4);
+	// The runner passes the QOI size from the page header, which prepare_apk.py sets to the exact decoded size: a
+	// shorter result means a damaged page, and the rest of the buffer would be uninitialised
 	int n = block_len <= src_len - 8 ? LZ4_decompress_safe(src + 8, dest, block_len, *dest_len) : -1;
-	if (n < 0)
+	if (n < 0 || (unsigned)n != *dest_len)
 		fatal_error("LZ4 texture page failed to decode (%u of %u bytes -> %u): %d", block_len, src_len, *dest_len, n);
-	*dest_len = n;
 	return 0; // BZ_OK
 }
 
@@ -1333,29 +1228,10 @@ static void install_lz4_pages(void) {
 		*slot = (uintptr_t)&lz4_page_decompress;
 }
 
-// exp_tilemaplog: logs layer_tilemap_create arguments and free memory
-static void (*orig_tilemap_create)(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args);
-
-static void log_tilemap_create(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) {
-	struct mallinfo mi = mallinfo();
-	debugPrintf("[TILEMAP] create argc %d: %.0f %.0f %.0f %.0f %.0f %.0f | newlib free %uKB of %uKB, vram %uKB ram %uKB phycont %uKB\n",
-		argc, argc > 0 ? args[0].val : 0.0, argc > 1 ? args[1].val : 0.0, argc > 2 ? args[2].val : 0.0,
-		argc > 3 ? args[3].val : 0.0, argc > 4 ? args[4].val : 0.0, argc > 5 ? args[5].val : 0.0,
-		mi.fordblks / 1024, mi.arena / 1024, vglMemFree(VGL_MEM_VRAM) / 1024, vglMemFree(VGL_MEM_RAM) / 1024,
-		vglMemFree(VGL_MEM_PHYCONT) / 1024);
-	debugPrintf("[TILEMAP] arg kinds %u %u %u %u %u %u\n", argc > 0 ? args[0].kind : 99u, argc > 1 ? args[1].kind : 99u,
-		argc > 2 ? args[2].kind : 99u, argc > 3 ? args[3].kind : 99u, argc > 4 ? args[4].kind : 99u, argc > 5 ? args[5].kind : 99u);
-	extern void debug_flush(void);
-	debug_flush();
-	orig_tilemap_create(result, self, other, argc, args);
-	debugPrintf("[TILEMAP] -> kind %u\n", result->kind);
-	debug_flush();
-}
-
 // Game bug fix: obj_new_platform_lighting's User event 0 passes room_width/room_height (pixels) to
 // layer_tilemap_create as TILE counts. With its 32 px tiles the maps are 1024x too large (19-25 MB
 // each, 3-4 per lit room; room_factory2_3 ran out of memory and crashed). Only the first
-// ceil(w/32) x ceil(h/32) cells are ever written or drawn (work/codex/lighting.md), so create the maps
+// ceil(w/32) x ceil(h/32) cells are ever written or drawn so create the maps
 // at that size while that event runs. exp_lightmapbig restores the original sizes.
 static event_func orig_lighting_user0;
 static int in_lighting_user0;
@@ -1510,10 +1386,14 @@ static event_func orig_fog_create, orig_fog_step;
 static void (*fog_instance_destroy)(void *self, void *other, int argc, void **args);
 static int *var_draw_alpha;
 
-// Puffs waiting for their first Step: open-addressing set of instance pointers
+// Puffs waiting for their first Step: open-addressing set of instance pointers. Removed entries leave tombstones,
+// so the set is cleared whenever it holds no puffs and at each room change (puffs destroyed before their first
+// Step, e.g. by the room ending, are never taken out).
 #define FOG_SET_SIZE 4096
 #define FOG_TOMBSTONE ((void *)1)
 static void *doomed_fog[FOG_SET_SIZE];
+static unsigned doomed_fog_count;
+static int doomed_fog_room = -2;
 
 static void **fog_find(void *p) {
 	for (unsigned i = ((uintptr_t)p >> 4) * 2654435761u % FOG_SET_SIZE, n = 0; n < FOG_SET_SIZE; i = (i + 1) % FOG_SET_SIZE, n++) {
@@ -1531,6 +1411,7 @@ static void fog_mark(void *p) {
 	for (unsigned i = ((uintptr_t)p >> 4) * 2654435761u % FOG_SET_SIZE, n = 0; n < FOG_SET_SIZE; i = (i + 1) % FOG_SET_SIZE, n++) {
 		if (!doomed_fog[i] || doomed_fog[i] == FOG_TOMBSTONE) {
 			doomed_fog[i] = p;
+			doomed_fog_count++;
 			return;
 		}
 	}
@@ -1541,13 +1422,22 @@ static int fog_take(void *p) {
 	void **slot = fog_find(p);
 	if (!slot)
 		return 0;
-	*slot = FOG_TOMBSTONE;
+	if (--doomed_fog_count)
+		*slot = FOG_TOMBSTONE;
+	else
+		memset(doomed_fog, 0, sizeof(doomed_fog));
 	return 1;
 }
 
 static void fog_create(void *self, void *other) {
 	static unsigned created;
 	orig_fog_create(self, other);
+	int room = current_room ? *current_room : -1;
+	if (room != doomed_fog_room) {
+		doomed_fog_room = room;
+		doomed_fog_count = 0;
+		memset(doomed_fog, 0, sizeof(doomed_fog));
+	}
 	fog_take(self); // a new instance can reuse the memory of a puff destroyed before its first Step
 	if (created++ % fog_scale)
 		fog_mark(self);
@@ -1603,17 +1493,6 @@ void katana_late_install(void) {
 	dissolve_install();
 	fog_install();
 	appsurf_copy_install();
-	if (exp_flag("tilemaplog")) {
-		runner_function **functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
-		int *count = (int *)so_symbol(&yoyoloader_mod, "the_numb");
-		for (int i = 0; functions && *functions && count && i < *count; i++) {
-			runner_function *f = &(*functions)[i];
-			if (f->name && !strcmp(f->name, "layer_tilemap_create")) {
-				orig_tilemap_create = f->func;
-				f->func = log_tilemap_create;
-			}
-		}
-	}
 	if (orig_lighting_user0) {
 		runner_function **functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
 		int *count = (int *)so_symbol(&yoyoloader_mod, "the_numb");
@@ -1659,8 +1538,7 @@ void katana_texture_selftest(void) {
 	uintptr_t read_qoif = so_symbol(&yoyoloader_mod, "_Z12ReadQOIFFilePviPiS0_b");
 	uint32_t insn = read_qoif ? *(uint32_t *)(read_qoif + 0xdc) : 0;
 	if ((insn & 0xff000000) != 0xeb000000) {
-		debugPrintf("texture self-test: unexpected ReadQOIFFile layout (0x%08X), skipped\n", insn);
-		return;
+		fatal_error("Texture decoder self-test: unexpected ReadQOIFFile layout (0x%08X); not starting to avoid a GPU crash.", insn);
 	}
 	int32_t imm = (int32_t)(insn << 8) >> 6;
 	int (*decompress)(char *, unsigned *, char *, unsigned, int, int) = (void *)(read_qoif + 0xdc + 8 + imm);
@@ -1696,15 +1574,11 @@ static void screen_btn_gui_hidden(void *self, void *other) {
 }
 
 /*
- * Rain thinning (exp_rainhalf): every second obj_rain drop is destroyed right after its Create
- * event, so random number use is unchanged and obj_rain has no Destroy event to trigger.
- * Rain at 30 Hz (exp_rain30): each drop steps only on the frames it is drawn (same instance
- * parity as rain_draw), with global.fr doubled for that call so it keeps its speed.
+ * Rain thinning (rain=0|1 in yyl.cfg): obj_rain drops are destroyed right after their Create event (all of them,
+ * or every second one), so random number use is unchanged and obj_rain has no Destroy event to trigger.
  */
 static event_func orig_rain_create;
-static event_func orig_rain_step;
 static void (*instance_destroy_fn)(void *self, void *other, int argc, void **args);
-static int *var_fr;
 
 static int rain_keep_none;
 
@@ -1719,7 +1593,7 @@ static void rain_create(void *self, void *other) {
 // (global.replay_enabled, also in the graphics options menu) is forced off before the recorder's
 // End Step, which then skips all snapshot recording. No VHS replay / death rewind, but no ~15 MB/min
 // heap growth (it runs the Vita out of memory after a few minutes in a room) and ~2 fps more in
-// heavy rooms. See work/codex/recorder.md.
+// heavy rooms.
 static event_func orig_record_end_step;
 static int *var_replay_enabled;
 
@@ -1780,147 +1654,6 @@ static void record_draw_noreplay(void *self, void *other) {
 		*r = sr;
 }
 
-// Collision query cache (exp_colcache for now). Enemy AI asks ground_meeting / block_meeting the
-// same question repeatedly within a frame (~45% / ~34% repeats in room_bunker2_3). Both scripts
-// are pure queries returning a BOOL (see work/codex/small_scripts.md), so repeated calls with the
-// same inputs are answered from a small cache. Scope: consecutive calls by the same instance in
-// the same frame; any other instance running, a new frame, or remove_doors / restore_doors
-// (which move doors temporarily) resets it. The key covers everything the scripts read from
-// self: position, sprite/mask, scale, angle and draw_layer, plus the arguments.
-// Needs these scripts on the PLT (patch_plt_calls.py excludes them).
-typedef void *(*gml_script_fn)(void *self, void *other, gml_rvalue *result, int argc, gml_rvalue **args);
-#define COLCACHE_ENTRIES 32
-#define COLCACHE_WORDS 16
-typedef struct {
-	uint32_t key[COLCACHE_WORDS];
-	int nwords;
-	double val;
-	uint32_t kind;
-} colcache_entry;
-static colcache_entry colcache[COLCACHE_ENTRIES];
-static int colcache_count;
-static void *colcache_self;
-static uint32_t colcache_frame;
-static gml_script_fn orig_ground_meeting, orig_block_meeting, orig_remove_doors, orig_restore_doors;
-static int *var_draw_layer;
-static uint32_t colcache_hits, colcache_calls;
-
-static void *colcache_call(int which, gml_script_fn orig, void *self, void *other, gml_rvalue *result, int argc, gml_rvalue **args) {
-	uint32_t key[COLCACHE_WORDS];
-	int n = 0;
-	colcache_calls++;
-	if (argc > 4 || !self)
-		return orig(self, other, result, argc, args);
-	for (int i = 0; i < argc; i++) {
-		if (args[i]->kind != 0)
-			return orig(self, other, result, argc, args);
-	}
-	gml_rvalue *layer = gml_vget(self, var_draw_layer[1]);
-	if (!layer || layer->kind != 0)
-		return orig(self, other, result, argc, args);
-
-	if (self != colcache_self || *frame_count != colcache_frame) {
-		colcache_self = self;
-		colcache_frame = *frame_count;
-		colcache_count = 0;
-	}
-	key[n++] = which | (argc << 8);
-	memcpy(&key[n], (char *)self + 0x88, 4); n++;  // sprite_index
-	memcpy(&key[n], (char *)self + 0xa4, 12); n += 3; // image_xscale, image_yscale, image_angle
-	memcpy(&key[n], (char *)self + 0xb8, 8); n += 2;  // x, y
-	memcpy(&key[n], (char *)self + 0x14c, 4); n++; // mask_index
-	memcpy(&key[n], &layer->val, 8); n += 2;
-	for (int i = 0; i < argc; i++) {
-		memcpy(&key[n], &args[i]->val, 8);
-		n += 2;
-	}
-	for (int e = 0; e < colcache_count; e++) {
-		if (colcache[e].nwords == n && !memcmp(colcache[e].key, key, n * 4)) {
-			colcache_hits++;
-			result->val = colcache[e].val;
-			result->kind = colcache[e].kind;
-			return result;
-		}
-	}
-	void *r = orig(self, other, result, argc, args);
-	if ((result->kind == 0 || result->kind == 13) && colcache_count < COLCACHE_ENTRIES && self == colcache_self) {
-		colcache_entry *e = &colcache[colcache_count++];
-		memcpy(e->key, key, n * 4);
-		e->nwords = n;
-		e->val = result->val;
-		e->kind = result->kind;
-	}
-	return r;
-}
-
-static void *colcache_ground_meeting(void *self, void *other, gml_rvalue *result, int argc, gml_rvalue **args) {
-	return colcache_call(0, orig_ground_meeting, self, other, result, argc, args);
-}
-
-static void *colcache_block_meeting(void *self, void *other, gml_rvalue *result, int argc, gml_rvalue **args) {
-	return colcache_call(1, orig_block_meeting, self, other, result, argc, args);
-}
-
-static void *colcache_remove_doors(void *self, void *other, gml_rvalue *result, int argc, gml_rvalue **args) {
-	colcache_count = 0;
-	void *r = orig_remove_doors(self, other, result, argc, args);
-	colcache_count = 0;
-	return r;
-}
-
-static void *colcache_restore_doors(void *self, void *other, gml_rvalue *result, int argc, gml_rvalue **args) {
-	colcache_count = 0;
-	void *r = orig_restore_doors(self, other, result, argc, args);
-	colcache_count = 0;
-	return r;
-}
-
-static int colcache_hook(const char *symbol, gml_script_fn *orig, void *wrapper) {
-	uintptr_t *slot = so_got_slot(&yoyoloader_mod, symbol);
-	if (!slot)
-		return 0;
-	*orig = (gml_script_fn)*slot;
-	*slot = (uintptr_t)wrapper;
-	return 1;
-}
-
-static void install_colcache(void) {
-	var_draw_layer = (int *)so_symbol(&yoyoloader_mod, "g_VAR_draw_layer");
-	if (!var_draw_layer || !frame_count)
-		return;
-	// Door hooks first: without them the cache could survive a temporary door move
-	if (!colcache_hook("_Z23gml_Script_remove_doorsP9CInstanceS0_R8YYRValueiPPS1_", &orig_remove_doors, colcache_remove_doors) ||
-		!colcache_hook("_Z24gml_Script_restore_doorsP9CInstanceS0_R8YYRValueiPPS1_", &orig_restore_doors, colcache_restore_doors)) {
-		debugPrintf("colcache: door scripts not hookable, disabled\n");
-		return;
-	}
-	colcache_hook("_Z25gml_Script_ground_meetingP9CInstanceS0_R8YYRValueiPPS1_", &orig_ground_meeting, colcache_ground_meeting);
-	colcache_hook("_Z24gml_Script_block_meetingP9CInstanceS0_R8YYRValueiPPS1_", &orig_block_meeting, colcache_block_meeting);
-	debugPrintf("colcache: enabled\n");
-}
-
-void katana_colcache_report(int frames) {
-	if (colcache_calls)
-		debugPrintf("[COLCACHE] %.1f calls/frame, %.1f%% answered from cache\n", (float)colcache_calls / frames,
-			100.0f * colcache_hits / colcache_calls);
-	colcache_calls = colcache_hits = 0;
-}
-
-static void rain_step(void *self, void *other) {
-	if (!(INSTANCE_PARITY(self) ^ (*frame_count & 1)))
-		return;
-	gml_rvalue *(*vwrite)(void *, int) = (*(void ***)*global_obj_ptr)[3];
-	gml_rvalue *fr = vwrite(*global_obj_ptr, var_fr[1]);
-	if (!fr || fr->kind != 0) {
-		orig_rain_step(self, other);
-		return;
-	}
-	double saved = fr->val;
-	fr->val = saved * 2.0;
-	orig_rain_step(self, other);
-	fr->val = saved;
-}
-
 static event_func gml_replace(gml_func_entry *table, const char *name, event_func wrapper) {
 	for (int i = 0; i < GML_FUNCS_SIZE / sizeof(gml_func_entry); i++) {
 		if (table[i].name && !strcmp(table[i].name, name)) {
@@ -1966,15 +1699,12 @@ static void patch_performance() {
 		orig_particle_draw = orig;
 
 	instance_destroy_fn = (void *)so_symbol(&yoyoloader_mod, "_Z22YYGML_instance_destroyP9CInstanceS0_iPP8YYRValue");
-	var_fr = (int *)so_symbol(&yoyoloader_mod, "g_VAR_fr");
 	// rain in yyl.cfg: 0 removes rain entirely (default: first level 39 -> 47 fps), 1 keeps every
 	// second drop, 2 keeps all of them
 	extern int rain_level;
 	rain_keep_none = rain_level <= 0;
 	if (rain_level < 2 && instance_destroy_fn && (orig = gml_replace(table, "gml_Object_obj_rain_Create_0", rain_create)))
 		orig_rain_create = orig;
-	if (exp_flag("rain30") && var_fr && global_obj_ptr && (orig = gml_replace(table, "gml_Object_obj_rain_Step_0", rain_step)))
-		orig_rain_step = orig;
 
 	// Skipped by default (buttons are used on Vita); exp_touchui brings the virtual controls back
 	if (!exp_flag("touchui"))
@@ -2015,24 +1745,16 @@ static void patch_performance() {
 			orig_record_draw = orig;
 	}
 
-	if (exp_flag("colcache"))
-		install_colcache();
-
-	// Native bounding-box fast path (work/codex/collision.md): ~0.7 ms/frame in the bunker room;
-	// exp_bboxverify checked it bit-for-bit against the original on ~670k real calls (0 mismatches).
-	// exp_nativebbox0 disables.
-	if (exp_flag("bboxverify")) {
-		extern int collision_verify;
-		collision_verify = 1;
-	}
-	// Fast native rope solver (work/codex/rope_fast.md): Unicorn-verified against the original ARM code,
+	// Fast native rope solver: Unicorn-verified against the original ARM code,
 	// ~100% fast-path hits on hardware; rope active 47.4 -> 50 fps, min 43 -> 48.5. exp_ropefast0 disables.
 	if (!exp_flag("ropefast0")) {
 		extern int rope_fast_install(void *rx, size_t rx_size);
 		void *rx = katana_rx_alloc(16);
 		debugPrintf("fast rope solver: %s\n", rx && rope_fast_install(rx, 16) ? "installed" : "NOT installed");
 	}
-	if (!exp_flag("nativebbox0") || exp_flag("bboxverify")) {
+	// Native bounding-box fast path: ~0.7 ms/frame in the bunker room; checked bit-for-bit against the original on
+	// ~670k real calls on hardware (0 mismatches). exp_nativebbox0 disables.
+	if (!exp_flag("nativebbox0")) {
 		extern int collision_install(void *rx, size_t rx_size);
 		void *rx = katana_rx_alloc(16);
 		debugPrintf("native bbox: %s\n", rx && collision_install(rx, 16) ? "installed" : "NOT installed");
@@ -2045,12 +1767,9 @@ static void patch_performance() {
 		extern int letter_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native dialogue letters: %s\n", letter_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
-	if (!exp_flag("minecartnative0")) { // includes the rail helpers (replaces rail_native.c)
+	if (!exp_flag("minecartnative0")) { // minecart master and its rail helpers
 		extern int minecart_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native minecart master: %s\n", minecart_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
-	} else if (!exp_flag("railnative0")) {
-		extern int rail_native_install(void *(*rx_alloc)(size_t));
-		debugPrintf("native minecart rails: %s\n", rail_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
 	if (!exp_flag("flashmask0")) {
 		extern int flash_mask_install(void *(*rx_alloc)(size_t));
@@ -2136,15 +1855,15 @@ static void patch_performance() {
 		*draw_slot = (uintptr_t)&DoAStep_Draw_frameskip;
 	}
 
-	// Default on: global.recolor_timer is only a lighting-cache generation counter
-	// (see work/codex/recolor_timer_uses.md); exp_lighting60 restores per-frame lighting
-	if (!exp_flag("lighting60")) {
-		uintptr_t *slot = so_got_slot(&yoyoloader_mod, "_Z12DoAStep_Drawv");
-		if (slot && global_obj_ptr && var_recolor_timer) {
-			lighting30_orig_draw = (void *)*slot;
-			*slot = (uintptr_t)&DoAStep_Draw_lighting30;
-		}
+	// Application surface size and dynamic resolution, and lighting at 30 Hz (default on: global.recolor_timer is
+	// only a lighting-cache generation counter; exp_lighting60 restores per-frame lighting)
+	uintptr_t *slot = so_got_slot(&yoyoloader_mod, "_Z12DoAStep_Drawv");
+	if (slot) {
+		lighting30 = global_obj_ptr && var_recolor_timer && !exp_flag("lighting60");
+		katana_orig_draw = (void *)*slot;
+		*slot = (uintptr_t)&DoAStep_Draw_katana;
 	}
+	debugPrintf("draw hook: %s, lighting %s\n", slot ? "installed" : "NOT installed", lighting30 ? "30 Hz" : "60 Hz");
 
 	// Default on: reload texture pages that failed to allocate or spilled out of VRAM (katana_after_swap)
 	if (!exp_flag("texflush0"))
@@ -2153,8 +1872,6 @@ static void patch_performance() {
 
 void patch_katana() {
 	patch_performance();
-	if (exp_flag("nativescripts"))
-		scripts_native_install();
 
 	SaveFileExists = (void *)so_symbol(&yoyoloader_mod, "_ZN8LoadSave14SaveFileExistsEPKcPv");
 	BundleFileExists = (void *)so_symbol(&yoyoloader_mod, "_ZN8LoadSave16BundleFileExistsEPKc");
@@ -2194,12 +1911,8 @@ void patch_katana() {
 		passthru_hook("draw_sprite_ext", "_Z21YYGML_draw_sprite_extP9CInstanceiffffffif");
 		passthru_hook("draw_sprite_recolored", "_Z32gml_Script_draw_sprite_recoloredP9CInstanceS0_R8YYRValueiPPS1_");
 		passthru_hook("update_region", "_Z24gml_Script_update_regionP9CInstanceS0_R8YYRValueiPPS1_");
-		// Enemy AI / recorder scripts (work/codex/enemy_step.md); these need a runner built with
-		// them excluded from patch_plt_calls.py (work/libyoyo_scriptprof.so) to be seen
 		if (exp_flag("scriptprof"))
 			scriptprof_hooks();
-		if (exp_flag("dupprof"))
-			dupprof_hooks();
 		if (exp_flag("userprof"))
 			userprof_hooks();
 		stage_hook("_Z34gml_Script_draw_fastline_width_colP9CInstanceS0_R8YYRValueiPPS1_", (void **)&orig_script_draw_fastline, prof_script_draw_fastline);

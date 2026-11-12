@@ -60,11 +60,15 @@ def main():
             continue
         start = [bench.log_time(l) for l in log.splitlines() if re.search(rf"Entered Room: {name}(?![0-9_])", l)][-1]
         begin, end = start + args.settle, start + args.settle + args.seconds
+        # The log's clock stops if the game crashes or hangs: give up after the window plus a margin
+        deadline = time.time() + args.settle + args.seconds + 60
         while True:
             time.sleep(2)
             log = bench.read_log()
             times = [t for t, _, _ in prof_lines(log)]
             if times and times[-1] >= end:
+                break
+            if time.time() > deadline:
                 break
         window = [(f, p) for t, f, p in prof_lines(log) if begin <= t <= end]
         fps = sum(f for f, _ in window) / len(window) if window else 0.0

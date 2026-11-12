@@ -8,7 +8,7 @@ extern unsigned int _newlib_heap_size_user __attribute__((weak));
 
 static int _newlib_heap_memblock;
 unsigned _newlib_heap_size;
-char *_newlib_heap_base; // exported: mapped for the GPU in main.c
+static char *_newlib_heap_base;
 static char *_newlib_heap_end, *_newlib_heap_cur;
 static SceKernelLwMutexWork _newlib_sbrk_mutex;
 

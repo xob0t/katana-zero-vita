@@ -107,7 +107,8 @@ def main():
     ap.add_argument("--profile", action="store_true", help="enable heavy profilers for this run")
     ap.add_argument("--exp", action="append", default=[], help="experiment flag files to create (exp_<name>)")
     ap.add_argument("--room", default="room_factory_0", help="room to wait for after Continue")
-    ap.add_argument("--save", help="save backup dir (scripts/vita_saves.py layout) to install after quitting the game")
+    ap.add_argument("--save", help="save backup dir (scripts/vita_saves.py layout) to install after quitting the game; "
+                    "the saves on the Vita are backed up to work/save_backups/ first")
     ap.add_argument("--window", action="store_true",
                     help="also wait for the loader's [WINDOW] line (frames 300-899 after entering the room) and print it")
     ap.add_argument("--gameplay", action="store_true",
@@ -118,6 +119,9 @@ def main():
     if args.save:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import vita_saves
+        backup_dir = os.path.join(ROOT, "work", "save_backups", time.strftime("%Y%m%d-%H%M%S"))
+        vita_saves.backup(backup_dir)
+        print(f"saves on the Vita backed up to {backup_dir}")
         vita_saves.restore(args.save)
     if not args.no_install:
         put(os.path.join(ROOT, "build", "app", "eboot.bin"), "ux0:/app/KTNZ00001/eboot.bin")

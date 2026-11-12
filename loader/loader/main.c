@@ -170,7 +170,7 @@ void recursive_mkdir(char *dir) {
 
 void loadConfig(const char *game) {
 	char configFile[512];
-	char buffer[30];
+	char line[128], buffer[64];
 	int value;
 #ifdef STANDALONE_MODE
 	sprintf(configFile, "app0:yyl.cfg");
@@ -180,7 +180,10 @@ void loadConfig(const char *game) {
 	FILE *config = fopen(configFile, "r");
 
 	if (config) {
-		while (EOF != fscanf(config, "%[^=]=%d\n", buffer, &value)) {
+		// Lines are key=value; anything else (comments, typos) is skipped
+		while (fgets(line, sizeof(line), config)) {
+			if (sscanf(line, " %63[^= \t\r\n] = %d", buffer, &value) != 2)
+				continue;
 			if (strcmp("forceGLES1", buffer) == 0) forceGL1 = value;
 			else if (strcmp("forceBilinear", buffer) == 0) forceBilinear = value;
 			else if (strcmp("winMode", buffer) == 0) platTarget = value ? 1 : 0; // Retrocompatibility
@@ -205,7 +208,7 @@ void loadConfig(const char *game) {
 			else if (strcmp("uncachedMem", buffer) == 0) uncached_mem = value;
 			else if (strcmp("doubleBuffering", buffer) == 0) double_buffering = value;
 			else if (strcmp("frameSkip", buffer) == 0) frame_skip = value;
-			else if (strcmp("stickDeadzone", buffer) == 0) { extern double stick_deadzone; stick_deadzone = value / 100.0; }
+			else if (strcmp("stickDeadzone", buffer) == 0) { extern double stick_deadzone; stick_deadzone = (value < 0 ? 0 : value > 90 ? 90 : value) / 100.0; }
 			else if (strcmp("replays", buffer) == 0) replays = value;
 			else if (strcmp("rain", buffer) == 0) rain_level = value;
 			else if (strcmp("ropeLights", buffer) == 0) rope_lights = value;
@@ -247,12 +250,14 @@ int file_exists(const char *path) {
 
 // Reads size bytes at offset in 4MB blocks (large single reads are much faster than
 // the small buffered reads minizip and stdio do)
-void read_file_range(const char *path, uint64_t offset, uint8_t *buf, uint64_t size) {
+// Returns 0 when all of it was read
+int read_file_range(const char *path, uint64_t offset, uint8_t *buf, uint64_t size) {
 	SceUID fd = sceIoOpen(path, SCE_O_RDONLY, 0777);
 	if (fd < 0)
-		return;
+		return -1;
 	sceIoLseek(fd, offset, SCE_SEEK_SET);
-	for (uint64_t done = 0; done < size;) {
+	uint64_t done = 0;
+	while (done < size) {
 		uint32_t chunk = size - done > 4 * 1024 * 1024 ? 4 * 1024 * 1024 : size - done;
 		int r = sceIoRead(fd, &buf[done], chunk);
 		if (r <= 0)
@@ -260,12 +265,13 @@ void read_file_range(const char *path, uint64_t offset, uint8_t *buf, uint64_t s
 		done += r;
 	}
 	sceIoClose(fd);
+	return done == size ? 0 : -1;
 }
 
 #if 1
 /*
- * Log lines are buffered in memory and written by a low priority thread on the
- * secondary cores, so logging never blocks the game thread on memory card writes.
+ * Log lines are buffered in memory and written by a thread on the cores the game thread doesn't use, so logging
+ * never blocks the game thread on memory card writes.
  */
 #define LOG_PATH "ux0:data/gms/shared/yyl.log"
 #define LOG_BUF_SIZE (64 * 1024)
@@ -274,23 +280,27 @@ static char log_buf[LOG_BUF_SIZE];
 static char log_flush_buf[LOG_BUF_SIZE];
 static int log_len = 0;
 static SceKernelLwMutexWork log_mutex;
+static SceKernelLwMutexWork log_flush_mutex; // one flush at a time: they share log_flush_buf and keep lines in order
+static SceKernelLwMutexWork android_log_mutex; // the runner logs from several threads
 static int log_ready = 0;
 
 void debug_flush() {
 	if (!log_ready)
 		return;
+	sceKernelLockLwMutex(&log_flush_mutex, 1, NULL);
 	sceKernelLockLwMutex(&log_mutex, 1, NULL);
 	int len = log_len;
 	sceClibMemcpy(log_flush_buf, log_buf, len);
 	log_len = 0;
 	sceKernelUnlockLwMutex(&log_mutex, 1);
-	if (!len)
-		return;
-	SceUID fd = sceIoOpen(LOG_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0777);
-	if (fd >= 0) {
-		sceIoWrite(fd, log_flush_buf, len);
-		sceIoClose(fd);
+	if (len) {
+		SceUID fd = sceIoOpen(LOG_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0777);
+		if (fd >= 0) {
+			sceIoWrite(fd, log_flush_buf, len);
+			sceIoClose(fd);
+		}
 	}
+	sceKernelUnlockLwMutex(&log_flush_mutex, 1);
 }
 
 static int log_writer_thread(SceSize args, void *argp) {
@@ -303,10 +313,15 @@ static int log_writer_thread(SceSize args, void *argp) {
 
 static int log_sync = 0;
 
+static int game_core_index(void);
+
 static void log_init() {
 	sceKernelCreateLwMutex(&log_mutex, "log mutex", 0, 0, NULL);
+	sceKernelCreateLwMutex(&log_flush_mutex, "log flush mutex", 0, 0, NULL);
+	sceKernelCreateLwMutex(&android_log_mutex, "android log mutex", 0, 0, NULL);
 	log_ready = 1;
-	SceUID thid = sceKernelCreateThread("Log Writer", log_writer_thread, 0x10000100, 0x4000, 0, 0x60000, NULL);
+	SceUID thid = sceKernelCreateThread("Log Writer", log_writer_thread, 0x10000100, 0x4000, 0,
+		0x70000 & ~(0x10000 << game_core_index()), NULL);
 	if (thid < 0 || sceKernelStartThread(thid, 0, NULL) < 0)
 		log_sync = 1; // no writer thread: flush after every line like the original logger
 }
@@ -464,14 +479,15 @@ int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
 	va_list list;
 	static char string[0x8000];
 
+	if (!log_ready)
+		log_init();
+	sceKernelLockLwMutex(&android_log_mutex, 1, NULL);
 	va_start(list, fmt);
 	vsnprintf(string, sizeof(string), fmt, list);
 	va_end(list);
-	if (log_is_repeat(string))
-		return 0;
-
-	debugPrintf("[LOG] %s: %s\n", tag, string);
-
+	if (!log_is_repeat(string))
+		debugPrintf("[LOG] %s: %s\n", tag, string);
+	sceKernelUnlockLwMutex(&android_log_mutex, 1);
 	return 0;
 }
 
@@ -481,12 +497,14 @@ int __android_log_vprint(int prio, const char *tag, const char *fmt, va_list lis
 
 	static char string[0x8000];
 
+	if (!log_ready)
+		log_init();
+	sceKernelLockLwMutex(&android_log_mutex, 1, NULL);
 	vsnprintf(string, sizeof(string), fmt, list);
 	va_end(list);
-	if (log_is_repeat(string))
-		return 0;
-
-	debugPrintf("[LOGV] %s: %s\n", tag, string);
+	if (!log_is_repeat(string))
+		debugPrintf("[LOGV] %s: %s\n", tag, string);
+	sceKernelUnlockLwMutex(&android_log_mutex, 1);
 	return 0;
 }
 
@@ -502,35 +520,22 @@ int ret1(void) {
 #define  MUTEX_TYPE_RECURSIVE  0x4000
 #define  MUTEX_TYPE_ERRORCHECK 0x8000
 
+// Bionic mutexes and condition variables can be statically initialized (a type constant / zero); they get their
+// pthread-embedded object on first use. Installed with a compare-and-swap, so two threads using the same static
+// object for the first time at once end up sharing one.
 static void init_static_mutex(pthread_mutex_t **mutex)
 {
-	pthread_mutex_t *mtxMem = NULL;
-
-	switch ((int)*mutex) {
-	case MUTEX_TYPE_NORMAL: {
-		pthread_mutex_t initTmpNormal = PTHREAD_MUTEX_INITIALIZER;
-		mtxMem = vglCalloc(1, sizeof(pthread_mutex_t));
-		sceClibMemcpy(mtxMem, &initTmpNormal, sizeof(pthread_mutex_t));
-		*mutex = mtxMem;
-		break;
+	pthread_mutex_t *old = *mutex, init;
+	switch ((int)old) {
+	case MUTEX_TYPE_NORMAL: init = PTHREAD_MUTEX_INITIALIZER; break;
+	case MUTEX_TYPE_RECURSIVE: init = PTHREAD_RECURSIVE_MUTEX_INITIALIZER; break;
+	case MUTEX_TYPE_ERRORCHECK: init = PTHREAD_ERRORCHECK_MUTEX_INITIALIZER; break;
+	default: return;
 	}
-	case MUTEX_TYPE_RECURSIVE: {
-		pthread_mutex_t initTmpRec = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
-		mtxMem = vglCalloc(1, sizeof(pthread_mutex_t));
-		sceClibMemcpy(mtxMem, &initTmpRec, sizeof(pthread_mutex_t));
-		*mutex = mtxMem;
-		break;
-	}
-	case MUTEX_TYPE_ERRORCHECK: {
-		pthread_mutex_t initTmpErr = PTHREAD_ERRORCHECK_MUTEX_INITIALIZER;
-		mtxMem = vglCalloc(1, sizeof(pthread_mutex_t));
-		sceClibMemcpy(mtxMem, &initTmpErr, sizeof(pthread_mutex_t));
-		*mutex = mtxMem;
-		break;
-	}
-	default:
-		break;
-	}
+	pthread_mutex_t *mtxMem = vglCalloc(1, sizeof(pthread_mutex_t));
+	sceClibMemcpy(mtxMem, &init, sizeof(pthread_mutex_t));
+	if (!__sync_bool_compare_and_swap(mutex, old, mtxMem))
+		vglFree(mtxMem);
 }
 
 static void init_static_cond(pthread_cond_t **cond)
@@ -539,7 +544,8 @@ static void init_static_cond(pthread_cond_t **cond)
 		pthread_cond_t initTmp = PTHREAD_COND_INITIALIZER;
 		pthread_cond_t *condMem = vglCalloc(1, sizeof(pthread_cond_t));
 		sceClibMemcpy(condMem, &initTmp, sizeof(pthread_cond_t));
-		*cond = condMem;
+		if (!__sync_bool_compare_and_swap(cond, NULL, condMem))
+			vglFree(condMem);
 	}
 }
 
@@ -604,15 +610,14 @@ int pthread_cond_timedwait_soloader(pthread_cond_t **cond,
 	return pthread_cond_timedwait(*cond, *mutex, abstime);
 }
 
-// The game thread owns core 0; threads spawned by the runner (audio mixing,
-// Vorbis decoding, async loading) are kept on cores 1-2 so they don't steal its time.
-// Core layout: game thread alone on one core, everything else on the other two. Core 0 also runs system work:
-// the game thread loses ~1.5-2 ms/frame there (mansion_2_2 39.1 -> 42.0 fps on core 1). exp_gamecore0/2 select
-// core 0/2 instead.
+// Core layout: the game thread alone on one core; threads spawned by the runner (audio mixing, Vorbis decoding,
+// async loading) on the other two so they don't steal its time. Core 0 also runs system work:
+// the game thread loses ~1.5-2 ms/frame there (mansion_2_2 39.1 -> 42.0 fps on core 1). exp_gamecore0 selects
+// core 0 instead.
 static int game_core = -1;
 static int game_core_index(void) {
 	if (game_core < 0)
-		game_core = exp_flag("gamecore0") ? 0 : exp_flag("gamecore2") ? 2 : 1;
+		game_core = exp_flag("gamecore0") ? 0 : 1;
 	return game_core;
 }
 #define GAME_THREAD_CPU_MASK   (0x10000 << game_core_index())
@@ -627,8 +632,6 @@ static void *worker_thread_start(void *arg) {
 	worker_start_t w = *(worker_start_t *)arg;
 	free(arg);
 	sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), WORKER_THREAD_CPU_MASK);
-	if (exp_flag("workerprio")) // experiment: runner threads (audio mixer, ...) above default priority
-		sceKernelChangeThreadPriority(sceKernelGetThreadId(), 96);
 	return w.start(w.param);
 }
 
@@ -720,11 +723,14 @@ int pthread_join_soloader(const pthread_t *thread, void **value_ptr)
 
 int pthread_cond_wait_soloader(pthread_cond_t **cond, pthread_mutex_t **mutex)
 {
+	init_static_cond(cond);
+	init_static_mutex(mutex);
 	return pthread_cond_wait(*cond, *mutex);
 }
 
 int pthread_cond_broadcast_soloader(pthread_cond_t **cond)
 {
+	init_static_cond(cond);
 	return pthread_cond_broadcast(*cond);
 }
 
@@ -1112,8 +1118,6 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 	frames++;
 	extern void glprof_frame(void);
 	glprof_frame();
-	extern void katana_dup_frame(void);
-	katana_dup_frame();
 	extern void katana_goto_check(void);
 	katana_goto_check();
 	// Report GPU memory allocation failures (vitaGL returns NULL, the texture/surface stays empty)
@@ -1162,8 +1166,6 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 			debugPrintf("[MEM] newlib arena %uKB in use %uKB | vitaGL free vram %uKB (small %uKB, large %uKB) ram %uKB phycont %uKB\n",
 				mi.arena / 1024, mi.uordblks / 1024, vglMemFree(VGL_MEM_VRAM) / 1024, vram_small / 1024, vram_large / 1024,
 				vglMemFree(VGL_MEM_RAM) / 1024, vglMemFree(VGL_MEM_PHYCONT) / 1024);
-			extern void memtrace_report(void);
-			memtrace_report();
 		}
 		extern uint32_t vgl_scene_end_us, vgl_scene_begin_us, vgl_scene_count;
 		debugPrintf("[SCENES] %.1f scenes/frame | EndScene %.2fms BeginScene %.2fms per frame\n",
@@ -1185,9 +1187,8 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 	}
 }
 
-void __stack_chk_fail_fake() {
-	// Upstream's "stack smash on Startup" was GetStringUTFChars writing a 4-byte isCopy into Ext_Call's 1-byte
-	// jboolean next to the canary (fixed). Kept as a fallback.
+// Runs once, on the game thread, when the runner's Startup is over
+static void enter_main_loop(const char *how) {
 	extern void katana_texture_selftest(void);
 	katana_texture_selftest();
 	extern void katana_late_install(void);
@@ -1198,8 +1199,18 @@ void __stack_chk_fail_fake() {
 	// Pace the game with vblank-synced swaps instead of the runner's sleep limiter, which
 	// overshoots (58.5 fps on a 59.94 Hz display = a repeated frame every ~0.7 s). exp_sleeppace reverts.
 	vsync_pace = !exp_flag("sleeppace");
-	debugPrintf("Entering main loop after stack smash\n");
+	debugPrintf("Entering main loop %s\n", how);
 	main_loop();
+}
+
+void __stack_chk_fail_fake() {
+	// Upstream's "stack smash on Startup" was GetStringUTFChars writing a 4-byte isCopy into Ext_Call's 1-byte
+	// jboolean next to the canary (fixed). Kept as a fallback for a smash during Startup only; any later one is real
+	// corruption (and may be on another thread): stop instead of starting a second loop.
+	static int entered;
+	if (entered++)
+		fatal_error("Stack corruption detected (called from %p).", __builtin_return_address(0));
+	enter_main_loop("after stack smash");
 }
 
 double GetPlatform() {
@@ -2114,79 +2125,29 @@ struct dirent *readdir_soloader(DIR *dir) {
 }
 
 // Bionic rwlocks are zero-initialized; newlib's is a lazily initialized pointer.
-// With the "fastlock" experiment a small ownerless atomic rwlock is used instead:
-// word 0 = 0 free / -1 writer / >0 readers, word 1 = writer thread id.
-int fast_rwlock = 0;
-
 static pthread_rwlock_t *init_static_rwlock(pthread_rwlock_t *lock) {
 	if (*lock == NULL)
 		*lock = PTHREAD_RWLOCK_INITIALIZER;
 	return lock;
 }
 
-static inline void rwlock_backoff(int *spins) {
-	if (++*spins > 64) {
-		sceKernelDelayThread(1);
-		*spins = 0;
-	}
-}
-
 int pthread_rwlock_init_soloader(pthread_rwlock_t *lock, const pthread_rwlockattr_t *attr) {
-	if (fast_rwlock) {
-		((volatile int *)lock)[0] = 0;
-		((volatile int *)lock)[1] = 0;
-		return 0;
-	}
 	return pthread_rwlock_init(lock, NULL);
 }
 
 int pthread_rwlock_destroy_soloader(pthread_rwlock_t *lock) {
-	if (fast_rwlock)
-		return 0;
 	return pthread_rwlock_destroy(init_static_rwlock(lock));
 }
 
 int pthread_rwlock_rdlock_soloader(pthread_rwlock_t *lock) {
-	if (fast_rwlock) {
-		volatile int *l = (volatile int *)lock;
-		int spins = 0;
-		for (;;) {
-			int state = l[0];
-			if (state >= 0 && __sync_bool_compare_and_swap(&l[0], state, state + 1))
-				return 0;
-			rwlock_backoff(&spins);
-		}
-	}
 	return pthread_rwlock_rdlock(init_static_rwlock(lock));
 }
 
 int pthread_rwlock_wrlock_soloader(pthread_rwlock_t *lock) {
-	if (fast_rwlock) {
-		volatile int *l = (volatile int *)lock;
-		int self = sceKernelGetThreadId();
-		if (l[0] == -1 && l[1] == self)
-			return 35; // EDEADLK, as bionic reports for a recursive write lock
-		int spins = 0;
-		while (!__sync_bool_compare_and_swap(&l[0], 0, -1))
-			rwlock_backoff(&spins);
-		l[1] = self;
-		return 0;
-	}
 	return pthread_rwlock_wrlock(init_static_rwlock(lock));
 }
 
 int pthread_rwlock_unlock_soloader(pthread_rwlock_t *lock) {
-	if (fast_rwlock) {
-		volatile int *l = (volatile int *)lock;
-		if (l[0] == -1) {
-			l[1] = 0;
-			__sync_synchronize();
-			l[0] = 0;
-		} else {
-			__sync_fetch_and_sub(&l[0], 1);
-		}
-		return 0;
-	}
 	return pthread_rwlock_unlock(init_static_rwlock(lock));
 }
 
@@ -2201,7 +2162,7 @@ static so_default_dynlib net_dynlib[] = {
 };
 
 void abort_hook() {
-	debugPrintf("abort called by %p %s\n", __builtin_return_address(0));
+	debugPrintf("abort called by %p\n", __builtin_return_address(0));
 	debug_flush();
 	sceKernelExitProcess(0);
 }
@@ -3462,20 +3423,26 @@ void *pthread_main(void *arg) {
 		sceIoGetstat(so_override, &so_stat);
 		so_size = so_stat.st_size;
 		so_buffer = (uint8_t *)malloc(so_size);
-		read_file_range(so_override, 0, so_buffer, so_size);
+		if (!so_buffer || read_file_range(so_override, 0, so_buffer, so_size))
+			fatal_error("Error: could not read %s.", so_override);
 	} else {
 		unzLocateFile(apk_file, "lib/armeabi-v7a/libyoyo.so", NULL);
 		unzGetCurrentFileInfo(apk_file, &file_info, NULL, 0, NULL, 0, NULL, 0);
 		unzOpenCurrentFile(apk_file);
 		so_size = file_info.uncompressed_size;
 		so_buffer = (uint8_t *)malloc(so_size);
+		if (!so_buffer)
+			fatal_error("Error: not enough memory for libyoyo.so (%llu bytes).", so_size);
+		int ok;
 		if (file_info.compression_method == 0) {
 			// Stored entry: read it straight from the apk in large blocks instead of
 			// minizip's 16KB reads, which dominate startup time for 80MB YYC runners
-			read_file_range(apk_path, unzGetCurrentFileZStreamPos64(apk_file), so_buffer, so_size);
+			ok = !read_file_range(apk_path, unzGetCurrentFileZStreamPos64(apk_file), so_buffer, so_size);
 		} else {
-			unzReadCurrentFile(apk_file, so_buffer, so_size);
+			ok = unzReadCurrentFile(apk_file, so_buffer, so_size) == (int)so_size;
 		}
+		if (!ok)
+			fatal_error("Error: could not read libyoyo.so from %s.", apk_path);
 		unzCloseCurrentFile(apk_file);
 	}
 	debugPrintf("Runner source: %s\n", file_exists(so_override) ? so_override : "game.apk");
@@ -3492,11 +3459,10 @@ void *pthread_main(void *arg) {
 	};
 	loadConfig(game_name);
 	heavy_profiling = debugMode && file_exists("ux0:data/gms/shared/profile");
-	fast_rwlock = exp_flag("fastlock");
 	// Wide surfaces get their own gxm rendertarget; with scenesPerFrame=1 re-targeting the same
 	// surface several times a frame blocks sceGxmBeginScene until the GPU catches up
 	extern int vgl_big_rt_scenes;
-	vgl_big_rt_scenes = exp_flag("rt1") ? 1 : 8;
+	vgl_big_rt_scenes = 8;
 	katana_clock_probe();
 	debugPrintf("+--------------------------------------------+\n");
 	debugPrintf("|YoYo Loader Setup                           |\n");
@@ -3565,23 +3531,6 @@ void *pthread_main(void *arg) {
 		so_initialize(&cpp_mod);
 	}
 
-	// Large allocation tracing (debug): route the runner's allocator imports through memtrace.c
-	if (debugMode && exp_flag("memtrace")) {
-		extern void memtrace_init(int enable);
-		extern void *memtrace_malloc(size_t), *memtrace_calloc(size_t, size_t), *memtrace_memalign(size_t, size_t);
-		extern void *memtrace_realloc(void *, size_t);
-		extern void memtrace_free(void *);
-		memtrace_init(1);
-		for (int i = 0; i < sizeof(default_dynlib) / sizeof(*default_dynlib); i++) {
-			const char *n = default_dynlib[i].symbol;
-			if (!strcmp(n, "malloc")) default_dynlib[i].func = (uintptr_t)&memtrace_malloc;
-			else if (!strcmp(n, "calloc")) default_dynlib[i].func = (uintptr_t)&memtrace_calloc;
-			else if (!strcmp(n, "memalign")) default_dynlib[i].func = (uintptr_t)&memtrace_memalign;
-			else if (!strcmp(n, "realloc")) default_dynlib[i].func = (uintptr_t)&memtrace_realloc;
-			else if (!strcmp(n, "free")) default_dynlib[i].func = (uintptr_t)&memtrace_free;
-		}
-	}
-
 	// Patching the executable
 	so_relocate(&yoyoloader_mod);
 	so_resolve(&yoyoloader_mod, default_dynlib, sizeof(default_dynlib), 0);
@@ -3631,18 +3580,6 @@ void *pthread_main(void *arg) {
 	else
 		vglInitExtended(0, SCREEN_W, SCREEN_H, MEMORY_VITAGL_THRESHOLD_MB * 1024 * 1024, SCE_GXM_MULTISAMPLE_NONE);
 	vgl_booted = 1;
-#ifdef APP_GAME_NAME
-	// vitaGL falls back to newlib memalign (use_extra_mem) when its own pools can't fit an
-	// allocation. Mapping the newlib heap for the GPU makes that fallback usable for textures,
-	// so a 16 MB texture page can take any free hole in the runner's heap instead of failing
-	// on fragmented VRAM/phycont pools. Opt-in (exp_mapheap): mapping the whole 240 MB heap fails
-	// with SCE_GXM_ERROR_DRIVER (0x805B0017) on hardware.
-	if (exp_flag("mapheap")) {
-		extern char *_newlib_heap_base;
-		int r = sceGxmMapMemory(_newlib_heap_base, _newlib_heap_size, SCE_GXM_MEMORY_ATTRIB_RW);
-		debugPrintf("Mapped newlib heap (%u MB) for the GPU: 0x%08X\n", _newlib_heap_size >> 20, r);
-	}
-#endif
 	if (debugMode) {
 		SceKernelFreeMemorySizeInfo post_info;
 		post_info.size = sizeof(post_info);
@@ -3811,9 +3748,7 @@ void *pthread_main(void *arg) {
 	// Starting the Runner
 	Java_com_yoyogames_runner_RunnerJNILib_Startup(fake_env, 0, apk_path, data_path, pkg_name, 0);
 	
-	// Entering main loop
-	debugPrintf("Startup ended\n");
-	main_loop();
+	enter_main_loop("after Startup");
 	
 	return 0;
 }

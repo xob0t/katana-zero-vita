@@ -105,31 +105,9 @@ static int common_box(void *inst, Rect *out, uint32_t *flags) {
     return 1;
 }
 
-/* Hardware equivalence check (loader exp_bboxverify): always run the original, and compare the
- * native result computed from the same input against what the original wrote. */
-int collision_verify;
-unsigned collision_verified, collision_mismatches;
-
 static void AAPCS collision_bbox(void *inst, bool update_tree) {
     Rect box, old;
     uint32_t flags;
-    if (collision_verify) {
-        int ok = common_box(inst, &box, &flags);
-        original_bbox(inst, update_tree);
-        if (ok) {
-            collision_verified++;
-            if (memcmp((uint8_t *)inst + 0xec, &box, sizeof(box)) || (word(inst, 0x7c) & (8u | 0x200u)) != (flags & (8u | 0x200u))) {
-                if (collision_mismatches++ < 20) {
-                    Rect real;
-                    memcpy(&real, (uint8_t *)inst + 0xec, sizeof(real));
-                    debugPrintf("bbox mismatch: native %f %f %f %f flags %X, original %f %f %f %f flags %X\n",
-                        box.left, box.top, box.right, box.bottom, flags & 0x208u,
-                        real.left, real.top, real.right, real.bottom, word(inst, 0x7c) & 0x208u);
-                }
-            }
-        }
-        return;
-    }
     if (!common_box(inst, &box, &flags)) {
         ++collision_fallback_hits;
         original_bbox(inst, update_tree);

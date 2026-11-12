@@ -63,18 +63,34 @@ static void *nfx_return_double(double val) {
 	return &jni_double;
 }
 
-static char *nfx_read_slot(const char *slot) {
-	FILE *f = fopen(nfx_slot_path(slot), "rb");
+static char *nfx_read_file(const char *path) {
+	FILE *f = fopen(path, "rb");
 	if (!f)
 		return NULL;
 	fseek(f, 0, SEEK_END);
 	long size = ftell(f);
 	fseek(f, 0, SEEK_SET);
-	char *buf = malloc(size + 1);
-	fread(buf, 1, size, f);
-	buf[size] = 0;
+	char *buf = size >= 0 ? malloc(size + 1) : NULL;
+	if (buf && fread(buf, 1, size, f) != (size_t)size) {
+		free(buf);
+		buf = NULL;
+	}
+	if (buf)
+		buf[size] = 0;
 	fclose(f);
 	return buf;
+}
+
+static char *nfx_read_slot(const char *slot) {
+	char *path = nfx_slot_path(slot);
+	char *data = nfx_read_file(path);
+	if (!data) {
+		// A crash between nfx_write_slot's remove and rename leaves only the new save in the temp file
+		char tmp[520];
+		snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+		data = nfx_read_file(tmp);
+	}
+	return data;
 }
 
 static int nfx_write_slot(const char *slot, const char *data) {

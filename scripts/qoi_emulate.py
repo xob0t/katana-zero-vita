@@ -10,7 +10,6 @@ import bz2
 import struct
 import sys
 
-sys.path.insert(0, "work/codex/_deps")  # local copy of unicorn, if present
 sys.path.insert(0, "scripts")
 import unicorn as U
 from unicorn.arm_const import UC_ARM_REG_C1_C0_2, UC_ARM_REG_FPEXC, UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, \

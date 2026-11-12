@@ -44,8 +44,8 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DSTANDALONE_MODE")
 endif(STANDALONE)
 
 # Native replacements must round exactly like the runner (no FMA contraction)
-set_source_files_properties(loader/collision_native.c loader/rope_fast.c loader/rail_native.c loader/flash_mask.c loader/virtual_capture.c loader/input_native.c loader/laser_native.c loader/letter_native.c loader/minecart_native.c loader/clubber_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
-# Verified in work/codex/dustspawner_loop_native_verify.py with exactly these flags
+set_source_files_properties(loader/collision_native.c loader/rope_fast.c loader/flash_mask.c loader/virtual_capture.c loader/input_native.c loader/laser_native.c loader/letter_native.c loader/minecart_native.c loader/clubber_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+# Verified against the original ARM code with exactly these flags
 set_source_files_properties(loader/dustspawner_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-marm;-O2")
 
 add_executable(YoYoLoader
@@ -71,11 +71,9 @@ add_executable(YoYoLoader
   loader/stdio_mt.c
   loader/glprof.c
   loader/callprof.c
-  loader/memtrace.c
   loader/lz4/lz4.c
   loader/collision_native.c
   loader/rope_fast.c
-  loader/rail_native.c
   loader/flash_mask.c
   loader/virtual_capture.c
   loader/input_native.c
@@ -86,7 +84,6 @@ add_executable(YoYoLoader
   loader/dustspawner_native.c
   loader/evprof.c
   loader/screenshot.c
-  loader/scripts_native.c
 )
 
 target_link_libraries(YoYoLoader
@@ -135,12 +132,13 @@ target_link_libraries(YoYoLoader
 )
 
 if (KATANA_APP)
-# Game art generated from the user's APK (scripts/make_livearea.py --apk) when present, placeholders otherwise
+# LiveArea art is game art: generated from the user's APK by scripts/make_livearea.py, not committed
 set(LIVEAREA_ART ${CMAKE_SOURCE_DIR}/../livearea)
-if (EXISTS ${CMAKE_SOURCE_DIR}/../livearea/game/icon0.png)
-  set(LIVEAREA_ART ${CMAKE_SOURCE_DIR}/../livearea/game)
-endif()
-message(STATUS "LiveArea art: ${LIVEAREA_ART}")
+foreach(image icon0.png bg0.png startup.png)
+  if (NOT EXISTS ${LIVEAREA_ART}/${image})
+    message(FATAL_ERROR "livearea/${image} missing: run python scripts/make_livearea.py <Katana ZERO APK>")
+  endif()
+endforeach()
 vita_create_self(eboot.bin YoYoLoader UNSAFE)
 vita_create_vpk(KatanaZero.vpk ${VITA_TITLEID} eboot.bin
   VERSION ${VITA_VERSION}

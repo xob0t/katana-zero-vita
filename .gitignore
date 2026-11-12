@@ -9,5 +9,5 @@ build/
 build.log
 *.vpk
 build-*.log
-livearea/game/
+livearea/*.png
 __pycache__/
