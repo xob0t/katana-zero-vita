@@ -3317,8 +3317,14 @@ int main(int argc, char *argv[]) {
 	return sceKernelExitDeleteThread(0);
 }
 
+// openal-soft's Vita backend reads this weak symbol when it starts its playback thread. Unset, the mixer
+// (all of aluMixData) ran on any core one priority step above the game thread and could preempt it.
+unsigned int _oal_thread_affinity;
+
 void *pthread_main(void *arg) {
 	sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), GAME_THREAD_CPU_MASK);
+	// Before the runner opens its OpenAL device
+	_oal_thread_affinity = WORKER_THREAD_CPU_MASK;
 #if 0
 	// Debug
 	sceSysmoduleLoadModule(SCE_SYSMODULE_RAZOR_CAPTURE);
