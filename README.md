@@ -1,4 +1,4 @@
-# katana-vita
+# katana-zero-vita
 
 PS Vita port of Katana ZERO, built from the Netflix Android release (1.1.10). The game's Android runner
 (`libyoyo.so`) runs on the Vita through [YoYo Loader Vita](https://github.com/Rinnegatamante/yoyoloader_vita),
