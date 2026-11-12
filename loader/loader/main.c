@@ -1186,7 +1186,8 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 }
 
 void __stack_chk_fail_fake() {
-	// Some versions of libyoyo.so apparently stack smash on Startup, with this workaround we prevent the app from crashing
+	// Upstream's "stack smash on Startup" was GetStringUTFChars writing a 4-byte isCopy into Ext_Call's 1-byte
+	// jboolean next to the canary (fixed). Kept as a fallback.
 	extern void katana_texture_selftest(void);
 	katana_texture_selftest();
 	extern void katana_late_install(void);
@@ -3040,7 +3041,7 @@ char *NewStringUTF(void *env, char *bytes) {
 	return bytes;
 }
 
-char *GetStringUTFChars(void *env, char *string, int *isCopy) {
+char *GetStringUTFChars(void *env, char *string, unsigned char *isCopy) { // jboolean: one byte
 	if (isCopy)
 		*isCopy = 0;
 	return string;
@@ -3293,7 +3294,7 @@ void *PopLocalFrame(void *env, void *obj) {
     return NULL;
 }
 
-void *GetPrimitiveArrayCritical(void *env, void *arr, int *isCopy) {
+void *GetPrimitiveArrayCritical(void *env, void *arr, unsigned char *isCopy) {
 	if (isCopy)
 		*isCopy = 0;
 
