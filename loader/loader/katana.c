@@ -966,10 +966,15 @@ static void DoAStep_Draw_katana(void) {
  * + garbage collection), so the current room's pages reload into VRAM. After a failed allocation this runs at most
  * every 5 s and three times per room; after an allocation outside VRAM at most once per room, so a room whose
  * pages really don't fit doesn't thrash. Costs the reload time (~1 s at a room load). exp_texflush0 disables.
+ * Both of those react after a page missed VRAM, which can be too late: after ~5 minutes of level hopping VRAM had
+ * 11 MB free (6 MB largest) in room_folder, main RAM 6.6 MB, and loading room_club_0's pages crashed in the
+ * allocator. So pages are also flushed ahead of need when free VRAM falls under TEXFLUSH_LOW_VRAM (checked every
+ * 15 frames, at most once per room and TEXFLUSH_MIN_INTERVAL_US apart): the next room's pages then have space.
  */
 #define TEXFLUSH_MIN_INTERVAL_US 5000000
 #define TEXFLUSH_FAILURE_FLUSHES 3
 #define TEXFLUSH_SPILL_BYTES (1024 * 1024)
+#define TEXFLUSH_LOW_VRAM (48 * 1024 * 1024)  // room for three 16 MB texture pages
 static builtin_fn texture_flush;
 static int texflush_failures_seen, texflush_spill_room = -2;
 static size_t texflush_spill_seen;
@@ -1061,6 +1066,13 @@ void katana_after_swap(uint32_t swap_us) {
 		}
 	} else
 		texflush_spill_seen = vgl_gpu_fallback_bytes;
+	static int low_room = -2;
+	static unsigned low_check;
+	if (!reason && room != low_room && ++low_check % 15 == 0 && vglMemFree(VGL_MEM_VRAM) < TEXFLUSH_LOW_VRAM &&
+			(!texflush_count || now - texflush_last_us >= TEXFLUSH_MIN_INTERVAL_US)) {
+		low_room = room;
+		reason = "low free VRAM";
+	}
 	if (reason) {
 		failure_pending = 0; // the flush reloads every page, including the one that failed
 		gml_rvalue result = {0};
