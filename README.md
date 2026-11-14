@@ -4,6 +4,8 @@ PS Vita port of Katana ZERO, built from the Netflix Android release (1.1.10). Th
 (`libyoyo.so`) runs on the Vita through [YoYo Loader Vita](https://github.com/Rinnegatamante/yoyoloader_vita),
 vendored in `loader/` from upstream commit `e32f68f`. No game files are included. You need your own APK.
 
+**To play, build the VPK from your APK with the [web builder](https://xob0t.github.io/katana-zero-vita/web/).**
+
 The game is playable at full speed. Light rooms run at 60 fps, heavy rooms at 30. The CPU is the limit: the game
 logic runs on one core and can't be split across more. A 500 MHz profile in PSVshell adds a few fps in heavy rooms
 (the loader runs at 444 MHz).
@@ -39,22 +41,15 @@ back the original.
 
 ## Installing on a Vita
 
-You need kubridge, FdFix and `libshacccg.suprx` on the Vita, and the Netflix Android release of Katana ZERO,
-version 1.1.10.
-
-The easy way is the [web builder](https://xob0t.github.io/katana-zero-vita/web/). Choose your APK and it builds
-`KatanaZero.vpk` in your browser in about a minute, with the game inside. Your APK isn't uploaded anywhere.
-Install the VPK with VitaShell.
-
-By hand:
-
-1. Install `build/app/KatanaZero.vpk` (title ID `KTNZ00001`). It contains only the loader.
-2. Build the game APK with `python scripts/prepare_apk.py <Katana ZERO 1.1.10 APK> game.apk`
-   (needs `pip install lz4 pyelftools`) and copy it to `ux0:data/gms/katanazero/game.apk`. This also redraws the
-   Xbox button prompts as Vita buttons (`--xbox-glyphs` keeps the originals).
+1. Install kubridge, FdFix and `libshacccg.suprx` on the Vita.
+2. Open the [web builder](https://xob0t.github.io/katana-zero-vita/web/) and drop in the Netflix Android release of
+   Katana ZERO, version 1.1.10. It builds `KatanaZero.vpk` in your browser in about a minute, with the game inside.
+   Your APK isn't uploaded anywhere.
+3. Copy the VPK to `ux0:VPK/` and install it with VitaShell.
 
 The first launch compiles every shader, which takes about 3 minutes. Shaders are cached in
-`ux0:data/shader_cache/KTNZ00001`, so later launches reach the title screen in about a minute.
+`ux0:data/shader_cache/KTNZ00001`, so later launches reach the title screen in about a minute. To update, build a
+new VPK and install it over the old one. Saves are kept.
 
 With `debugMode=1` in `yyl.cfg` the log goes to `ux0:data/gms/shared/yyl.log`.
 
@@ -76,6 +71,14 @@ bash scripts/build.sh        # build/app/KatanaZero.vpk and build/loader/loader2
 
 `make_livearea.py` builds the LiveArea images from the game's title screen art in your APK, into `livearea/`.
 They are game art, so they are not committed, and the app build stops if they are missing.
+
+To install a source build without the web builder:
+
+1. Install `build/app/KatanaZero.vpk` (title ID `KTNZ00001`). It contains only the loader.
+2. Build the game APK with `python scripts/prepare_apk.py <Katana ZERO 1.1.10 APK> game.apk`
+   (needs `pip install lz4 pyelftools`) and copy it to `ux0:data/gms/katanazero/game.apk`. This also redraws the
+   Xbox button prompts as Vita buttons (`--xbox-glyphs` keeps the originals). A `game.apk` inside the app, as the web
+   builder makes, takes precedence over this one.
 
 The web builder is `web/`, served by GitHub Pages straight from the repository. It runs `web/builder.py` and the
 scripts in `scripts/` under [Pyodide](https://pyodide.org), so it makes the same `game.apk` as the command line. The
