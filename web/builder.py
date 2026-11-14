@@ -8,6 +8,7 @@ reads from app0: when it is there.
 import hashlib
 import io
 import os
+import shutil
 import sys
 import zipfile
 
@@ -73,8 +74,11 @@ class _Stages(io.TextIOBase):
         return len(s)
 
 
-def build(apk, out, base, glyphs=True, log=print, progress=lambda value, label: None):
-    """Writes the VPK to `out` from the APK `apk` and the prebuilt loader files in the folder `base`."""
+def build(apk, out, base, glyphs=True, log=print, progress=lambda value, label: None, art=None):
+    """Writes the VPK to `out` from the APK `apk` and the prebuilt loader files in the folder `base`.
+
+    `art`, if given, receives a copy of the LiveArea background (the page shows it when the build is done).
+    """
     work = os.path.join(os.path.dirname(out) or ".", "work")
     os.makedirs(work, exist_ok=True)
     game_apk = os.path.join(work, "game.apk")
@@ -89,6 +93,8 @@ def build(apk, out, base, glyphs=True, log=print, progress=lambda value, label: 
         progress(0.02, "Recompressing the textures")
         prepare_apk.prepare(apk, game_apk, glyphs)
         make_livearea.game_art(apk, work)
+        if art:
+            shutil.copy(os.path.join(work, "bg0.png"), art)
         files = [(os.path.join(base, src), dst) for src, dst in VPK_FILES]
         files += [(os.path.join(work, src), dst) for src, dst in LIVEAREA]
         files.append((game_apk, "game.apk"))

@@ -7,12 +7,26 @@
   const buildBtn = $('build'), stepBuild = $('step-build'), xbox = $('xbox');
   const progress = $('progress'), fill = $('progress-fill'), ptext = $('progress-text'), ptime = $('progress-time');
   const download = $('download'), logBox = $('log-box'), log = $('log');
+  const osdMode = $('osd-mode'), osdCounter = $('osd-counter'), screen = $('screen'), screenArt = $('screen-art');
 
-  let worker = null, busy = false, downloadUrl = null, timer = null, started = 0;
+  let worker = null, busy = false, downloadUrl = null, artUrl = null, timer = null, started = 0;
+
+  // The on-screen display plays along: deck mode on the left, a blinking 12:00 until there's a tape to count
+  function osd(mode, counter) {
+    osdMode.textContent = mode;
+    osdMode.className = mode.startsWith('●') ? 'recording' : '';
+    osdCounter.textContent = counter || '12:00';
+    osdCounter.className = counter ? '' : 'blink';
+  }
+
+  function tapeTime(ms) {
+    const s = Math.floor(ms / 1000);
+    return Math.floor(s / 3600) + ':' + String(Math.floor(s / 60) % 60).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+  }
 
   function status(el, kind, text) {
     el.hidden = false;
-    el.className = 'status ' + kind;
+    el.className = 'msg ' + kind;
     el.textContent = text;
   }
 
@@ -23,7 +37,7 @@
     if (label) ptext.textContent = label;
   }
 
-  function stopTimer() { clearInterval(timer); timer = null; }
+  function stopTimer() { clearInterval(timer); timer = null; buildBtn.classList.remove('on'); }
 
   function resetBuild() {
     buildBtn.disabled = true;
@@ -31,6 +45,7 @@
     progress.hidden = true;
     buildStatus.hidden = true;
     download.hidden = true;
+    screen.hidden = true;
     if (downloadUrl) { URL.revokeObjectURL(downloadUrl); downloadUrl = null; }
   }
 
@@ -44,6 +59,7 @@
       status(buildStatus, 'err', 'The builder crashed (' + (e.message || 'unknown error') +
         '). The browser may have run out of memory: close other tabs and try again.');
       worker = null;
+      osd('■ STOP');
     };
     return worker;
   }
@@ -54,8 +70,10 @@
       busy = false;
       if (!m.ok) {
         status(fileStatus, 'err', m.error);
+        osd('⏏ EJECT');
         return;
       }
+      osd('■ STOP', '0:00:00');
       if (m.warning) status(fileStatus, 'warn', m.warning);
       else status(fileStatus, 'ok', 'Katana ZERO ' + m.version + '. Ready to build.');
       buildBtn.disabled = false;
@@ -63,6 +81,10 @@
     } else if (m.type === 'log') {
       logBox.hidden = false;
       log.textContent += m.line + '\n';
+    } else if (m.type === 'art') {
+      if (artUrl) URL.revokeObjectURL(artUrl);
+      artUrl = URL.createObjectURL(new Blob([m.data], { type: 'image/png' }));
+      screenArt.src = artUrl;
     } else if (m.type === 'progress') {
       setProgress(m.value, m.label);
     } else if (m.type === 'done') {
@@ -74,11 +96,14 @@
       download.hidden = false;
       status(buildStatus, 'ok', 'KatanaZero.vpk is ready (' + sizeMB(m.blob.size) + ').');
       buildBtn.disabled = false;
+      if (artUrl) screen.hidden = false;
+      osd('▶ PLAY', tapeTime(Date.now() - started));
     } else if (m.type === 'error') {
       busy = false;
       stopTimer();
       status(m.stage === 'inspect' ? fileStatus : buildStatus, 'err', m.message);
       buildBtn.disabled = m.stage === 'inspect';
+      osd('■ STOP');
     }
   }
 
@@ -86,8 +111,9 @@
     if (!file || busy) return;
     resetBuild();
     busy = true;
-    status(fileStatus, '', 'Checking ' + file.name + ' (' + sizeMB(file.size) +
-      '). The first check downloads the builder, about 20 MB.');
+    status(fileStatus, '', 'Reading ' + file.name + ' (' + sizeMB(file.size) +
+      '). The first time also loads the builder, about 20 MB.');
+    osd('◀◀ REW');
     getWorker().postMessage({ cmd: 'inspect', file: file });
   }
 
@@ -116,9 +142,15 @@
     log.textContent = '';
     if (downloadUrl) { URL.revokeObjectURL(downloadUrl); downloadUrl = null; }
     setProgress(0, 'Starting');
+    screen.hidden = true;
+    buildBtn.classList.add('on');
     started = Date.now();
-    ptime.textContent = '';
-    timer = setInterval(() => { ptime.textContent = Math.round((Date.now() - started) / 1000) + ' s'; }, 1000);
+    ptime.textContent = '0:00:00';
+    osd('● REC', '0:00:00');
+    timer = setInterval(() => {
+      ptime.textContent = tapeTime(Date.now() - started);
+      osd('● REC', ptime.textContent);
+    }, 250);
     getWorker().postMessage({ cmd: 'build', glyphs: !xbox.checked });
   });
 })();

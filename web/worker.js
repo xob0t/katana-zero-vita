@@ -1,7 +1,7 @@
 // Builds KatanaZero.vpk in a worker: Pyodide runs builder.py and the repository's own scripts/ on the user's APK.
 // The APK is read in place (WORKERFS) and never leaves the browser.
 //   main -> worker: {cmd: 'inspect', file} | {cmd: 'build', glyphs}
-//   worker -> main: {type: 'inspect', ok, version, warning, error} | {type: 'log', line}
+//   worker -> main: {type: 'inspect', ok, version, warning, error} | {type: 'log', line} | {type: 'art', data}
 //                   {type: 'progress', value, label} | {type: 'done', blob} | {type: 'error', stage, message}
 import { loadPyodide } from 'https://cdn.jsdelivr.net/pyodide/v314.0.8/full/pyodide.mjs';
 
@@ -66,9 +66,13 @@ async function build(glyphs) {
   const py = await getPython();
   const out = '/out/KatanaZero.vpk';
   py.FS.mkdirTree('/out');
+  const art = '/out/bg0.png';
   py.globals.get('builder').build(apkPath, out, '/base', glyphs,
     (line) => post({ type: 'log', line }),
-    (value, label) => post({ type: 'progress', value, label }));
+    (value, label) => post({ type: 'progress', value, label }), art);
+  // the LiveArea background drawn from the user's APK, shown on the page's playback screen
+  post({ type: 'art', data: py.FS.readFile(art) });
+  py.FS.unlink(art);
   // MEMFS keeps the file in a typed array: wrap it without another copy, then drop the file
   const node = py.FS.lookupPath(out).node;
   const data = node.contents instanceof Uint8Array ? node.contents.subarray(0, node.usedBytes) : py.FS.readFile(out);
