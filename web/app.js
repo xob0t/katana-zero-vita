@@ -67,6 +67,8 @@ function render() {
   // INSERT TAPE only while there's no tape to work on: before a build, or after one was rejected or failed
   el.drop.disabled = !accepting();
   el.drop.dataset.tape = tape;
+  const icon = tape === 'recording' ? 'favicon-rec.svg' : 'favicon.svg';
+  if (!el.favicon.href.endsWith(icon)) el.favicon.href = icon;
   el.hint.hidden = !accepting();
   el['drop-label'].textContent = { reading: 'Reading tape', recording: 'Recording', recorded: 'Recorded' }[tape]
     ?? 'Insert tape';

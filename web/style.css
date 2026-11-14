@@ -86,7 +86,11 @@ ol li { counter-increment: n; position: relative; padding-left: 44px; margin-bot
 ol li::before { content: counter(n) "."; position: absolute; left: 0; color: var(--dim); }
 ul li { margin-bottom: 4px; }
 
-footer { margin-top: 64px; font-size: 20px; }
+/* credits and footer: small print */
+.credits { margin-top: 88px; color: var(--dim); font-size: 15px; line-height: 1.25; text-shadow: none; }
+.credits h2 { margin-bottom: 6px; font-size: 15px; letter-spacing: 0.08em; }
+.credits li { margin-bottom: 1px; }
+footer { margin-top: 22px; font-size: 15px; text-shadow: none; }
 
 @media (max-width: 560px) {
   body { font-size: 21px; }
