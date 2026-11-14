@@ -38,13 +38,9 @@ def inspect(path):
         z = zipfile.ZipFile(path)
     except zipfile.BadZipFile:
         return {"ok": False, "error": "This file is not an APK."}
-    names = set(z.namelist())
-    if any(n.endswith(".apk") for n in names) and RUNNER not in names:
-        return {"ok": False, "error": "This looks like an XAPK or APK bundle. Choose the APK inside it."}
-    if RUNNER not in names:
-        return {"ok": False, "error": "This APK has no 32-bit ARM runner (lib/armeabi-v7a/libyoyo.so)."}
-    if "assets/assets/game.droid" not in names and "assets/game.droid" not in names:
-        return {"ok": False, "error": "This APK has no game data (game.droid). Is it Katana ZERO?"}
+    problem = prepare_apk.apk_problem(set(z.namelist()))
+    if problem:
+        return {"ok": False, "error": problem}
     digest = hashlib.sha256()
     with z.open(RUNNER) as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
