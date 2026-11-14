@@ -63,9 +63,9 @@ function render() {
   el.drop.disabled = tape === 'reading' || tape === 'recording';
 
   el.progress.hidden = !['recording', 'recorded', 'jammed'].includes(tape);
-  el['progress-fill'].style.width = `${Math.round(deck.step[0] * 100)}%`;
+  const filled = Math.round(deck.step[0] * 20);  // a VCR menu bar: 20 blocks
+  el['progress-fill'].textContent = '█'.repeat(filled) + '░'.repeat(20 - filled);
   el['progress-text'].textContent = deck.step[1];
-  el['progress-time'].textContent = counter ?? '';
 
   el.download.hidden = tape !== 'recorded';
   if (deck.vpk) el.download.href = deck.vpk.url;
@@ -170,13 +170,25 @@ el.file.addEventListener('change', () => {
   el.file.value = '';  // choosing the same file again still fires 'change'
 });
 
-// Drag and drop: the slot lights up while a file is over it. A file dropped anywhere else on the page is ignored
-// instead of being opened by the browser.
-for (const type of ['dragover', 'drop']) document.addEventListener(type, (e) => e.preventDefault());
-el.drop.addEventListener('dragover', () => el.drop.classList.add('over'));
-el.drop.addEventListener('dragleave', () => el.drop.classList.remove('over'));
-el.drop.addEventListener('drop', (e) => {
-  el.drop.classList.remove('over');
+// A file dropped anywhere on the page goes in. While one is dragged over the page, the screen says so.
+let dragDepth = 0;
+function dragging(on) {
+  document.body.classList.toggle('dragging', on);
+}
+document.addEventListener('dragenter', (e) => {
+  if (![...e.dataTransfer.types].includes('Files')) return;
+  dragDepth += 1;
+  dragging(true);
+});
+document.addEventListener('dragleave', () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dragging(false);
+});
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  dragging(false);
   insert(e.dataTransfer.files[0]);
 });
 

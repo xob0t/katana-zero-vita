@@ -8,85 +8,69 @@
 <meta name="color-scheme" content="dark">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Anton&family=IBM+Plex+Mono:wght@400;600&family=VT323&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div class="fx" aria-hidden="true"></div>
+<div class="crt" aria-hidden="true"></div>
 
-<!-- the VCR's on-screen display: deck mode on the left, tape counter on the right -->
+<!-- the VCR's on-screen display: deck mode on the left, clock or tape counter on the right -->
 <div class="osd" aria-hidden="true">
-  <span id="osd-mode">⏏ NO TAPE</span>
+  <span id="osd-mode"></span>
   <span id="osd-counter"></span>
 </div>
+<div class="release" aria-hidden="true">Release to insert</div>
 
 <main>
-  <header class="hero">
-    <p class="kicker">PS Vita port · VPK builder</p>
-    <h1><span class="t1">Katana</span><span class="t2">Zero</span></h1>
-    <p class="jp" aria-hidden="true">カタナ・ゼロ</p>
+  <header>
+    <h1>Katana Zero</h1>
+    <p class="dim">PS Vita port · VPK builder</p>
   </header>
 
-  <section class="tape">
-    <div class="label"><span class="no">01</span><span class="name">Insert tape</span><span class="hint">about a minute</span></div>
-    <div class="body">
-      <p>You need the Netflix Android release of Katana ZERO, version <b>1.1.10</b>. The game itself is not included.
-        Drop it in and the VPK is built right away.</p>
-      <input type="file" id="file" accept=".apk,application/vnd.android.package-archive" hidden>
-      <button type="button" class="slot" id="drop">
-        <span class="slot-mouth" aria-hidden="true"></span>
-        <span class="slot-main">Drop the <b>.apk</b> here</span>
-        <span class="slot-sub">or click to choose it</span>
-      </button>
-      <div class="meter" id="progress" hidden>
-        <div class="track"><div class="fill" id="progress-fill"></div></div>
-        <div class="meter-row"><span id="progress-text"></span><span id="progress-time"></span></div>
-      </div>
-      <p class="msg" id="status" role="status" aria-live="polite" hidden></p>
-      <a class="eject" id="download" hidden download="KatanaZero.vpk">⏏ Download KatanaZero.vpk</a>
-      <details class="log" id="log-box" hidden><summary>Build log</summary><pre id="log"></pre></details>
-    </div>
+  <section>
+    <input type="file" id="file" accept=".apk,application/vnd.android.package-archive" hidden>
+    <button type="button" class="insert" id="drop">Insert tape<span class="cursor" aria-hidden="true">_</span></button>
+    <p class="dim">Drop the Netflix Android release of Katana ZERO, version 1.1.10, anywhere on this screen, or click
+      above. The game isn't included. The VPK is built in your browser in about a minute.</p>
+    <p class="meter" id="progress" hidden><span id="progress-fill"></span><span id="progress-text"></span></p>
+    <p class="msg" id="status" role="status" aria-live="polite" hidden></p>
+    <a class="eject" id="download" hidden download="KatanaZero.vpk">Download KatanaZero.vpk</a>
+    <details class="log" id="log-box" hidden><summary>Build log</summary><pre id="log"></pre></details>
   </section>
 
-  <section class="tape">
-    <div class="label"><span class="no">02</span><span class="name">Play</span><span class="hint">on the Vita</span></div>
-    <div class="body">
-      <ol class="steps">
-        <li>The Vita needs HENkaku or Ensō, VitaShell, and three plugins:
-          <a href="https://github.com/TheOfficialFloW/kubridge/releases">kubridge</a>,
-          <a href="https://github.com/TheOfficialFloW/FdFix/releases">FdFix</a> and
-          <code>libshacccg.suprx</code>
-          (<a href="https://samilops2.gitbook.io/vita-troubleshooting-guide/shader-compiler/extract-libshacccg.suprx">how to get it</a>).</li>
-        <li>Copy <code>KatanaZero.vpk</code> to <code>ux0:VPK/</code> over USB or FTP. Leave about 550 MB free on the
-          memory card for the install.</li>
-        <li>In VitaShell, press <span class="btn-x" aria-label="cross">✕</span> on the VPK to install it. Delete the
-          VPK afterwards.</li>
-        <li>The first launch compiles every shader and takes about 3 minutes. After that it's about a minute.</li>
-      </ol>
-      <p class="aside">Settings live in <code>ux0:data/gms/katanazero/yyl.cfg</code>; the
-        <a href="https://github.com/xob0t/katana-zero-vita#compromises">README</a> lists them. To update, build a new
-        VPK and install it over the old one. Your saves stay.</p>
-    </div>
+  <section>
+    <h2>Install</h2>
+    <ol>
+      <li>The Vita needs HENkaku or Ensō, VitaShell, and three plugins:
+        <a href="https://github.com/TheOfficialFloW/kubridge/releases">kubridge</a>,
+        <a href="https://github.com/TheOfficialFloW/FdFix/releases">FdFix</a> and libshacccg.suprx
+        (<a href="https://samilops2.gitbook.io/vita-troubleshooting-guide/shader-compiler/extract-libshacccg.suprx">how to get it</a>).</li>
+      <li>Copy KatanaZero.vpk to ux0:VPK/ over USB or FTP. Leave about 550 MB free on the memory card.</li>
+      <li>In VitaShell, press cross on the VPK to install it. Delete the VPK afterwards.</li>
+      <li>The first launch compiles every shader and takes about 3 minutes. After that it's about a minute.</li>
+    </ol>
+    <p class="dim">Settings are in ux0:data/gms/katanazero/yyl.cfg, listed in the
+      <a href="https://github.com/xob0t/katana-zero-vita#compromises">README</a>. To update, build a new VPK and install
+      it over the old one. Your saves stay.</p>
   </section>
 
-  <section class="credits" aria-labelledby="credits-title">
-    <h2 id="credits-title">Credits</h2>
-    <dl>
-      <dt>Katana ZERO</dt><dd>Askiisoft · Devolver Digital</dd>
-      <dt>YoYo Loader · vitaGL · vitaShaRK</dt><dd><a href="https://github.com/Rinnegatamante/yoyoloader_vita">Rinnegatamante</a></dd>
-      <dt>.so loader · kubridge · FdFix · VitaShell</dt><dd><a href="https://github.com/TheOfficialFloW">TheFloW</a></dd>
-      <dt>GMLoader</dt><dd>JohnnyonFlame</dd>
-      <dt>SceShaccCgExt</dt><dd><a href="https://github.com/bythos14/SceShaccCgExt">bythos14</a></dd>
-      <dt>OpenSL ES for Vita</dt><dd><a href="https://github.com/frangarcj/opensles">frangarcj</a></dd>
-      <dt>Toolchain</dt><dd><a href="https://vitasdk.org">VitaSDK</a></dd>
-      <dt>HENkaku · Ensō</dt><dd>Team Molecule</dd>
-      <dt>This builder runs on</dt><dd><a href="https://pyodide.org">Pyodide</a> · Pillow · python-lz4 · pyelftools</dd>
-    </dl>
+  <section>
+    <h2>Credits</h2>
+    <ul class="dim">
+      <li>Katana ZERO by Askiisoft, published by Devolver Digital</li>
+      <li>YoYo Loader, vitaGL and vitaShaRK by <a href="https://github.com/Rinnegatamante/yoyoloader_vita">Rinnegatamante</a></li>
+      <li>The original .so loader, kubridge, FdFix and VitaShell by <a href="https://github.com/TheOfficialFloW">TheFloW</a></li>
+      <li>GMLoader by JohnnyonFlame</li>
+      <li>SceShaccCgExt by <a href="https://github.com/bythos14/SceShaccCgExt">bythos14</a>, OpenSL ES for Vita by
+        <a href="https://github.com/frangarcj/opensles">frangarcj</a></li>
+      <li><a href="https://vitasdk.org">VitaSDK</a>, and HENkaku and Ensō by Team Molecule</li>
+      <li>This page runs on <a href="https://pyodide.org">Pyodide</a>, Pillow, python-lz4 and pyelftools</li>
+    </ul>
   </section>
 
-  <footer>
-    <p>Fan project. Not affiliated with Askiisoft, Devolver Digital or Netflix. ·
-      <a href="https://github.com/xob0t/katana-zero-vita">Source</a></p>
+  <footer class="dim">
+    Fan project. Not affiliated with Askiisoft, Devolver Digital or Netflix.
+    <a href="https://github.com/xob0t/katana-zero-vita">Source</a>
   </footer>
 </main>
 <script src="app.js"></script>

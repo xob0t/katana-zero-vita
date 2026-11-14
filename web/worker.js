@@ -23,7 +23,10 @@ async function download(url) {
 
 async function startPython() {
   const py = await loadPyodide();
-  await py.loadPackage(['lz4', 'pillow', 'micropip'], { messageCallback() {} });
+  // loadPackage reports a failed download to errorCallback instead of throwing
+  const failed = [];
+  await py.loadPackage(['lz4', 'pillow', 'micropip'], { messageCallback() {}, errorCallback: (m) => failed.push(m) });
+  if (failed.length) throw new Error(`Could not download the builder. Check the connection and try again. (${failed[0]})`);
   for (const dir of ['/py', '/base', '/out']) py.FS.mkdirTree(dir);
   const files = [
     ...SCRIPTS.map((url) => [url, '/py/' + url.split('/').pop()]),
@@ -76,6 +79,12 @@ self.onmessage = async ({ data: { id, fn, args } }) => {
   try {
     self.postMessage({ id, result: await api[fn](...args) });
   } catch (e) {
-    self.postMessage({ id, failure: (e && e.message) || String(e) });
+    // A Python traceback goes to the build log; the page shows its last line
+    let failure = (e && e.message) || String(e);
+    if (failure.includes('Traceback (most recent call last)')) {
+      self.postMessage({ event: 'line', text: failure });
+      failure = failure.trim().split('\n').pop();
+    }
+    self.postMessage({ id, failure });
   }
 };
