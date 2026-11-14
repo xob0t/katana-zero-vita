@@ -1,6 +1,6 @@
 // Builds KatanaZero.vpk in a worker: Pyodide runs builder.py and the repository's own scripts/ on the user's APK.
 // The APK is read in place (WORKERFS) and never leaves the browser.
-//   main -> worker: {cmd: 'inspect', file} | {cmd: 'build', glyphs}
+//   main -> worker: {cmd: 'inspect', file} | {cmd: 'build'}
 //   worker -> main: {type: 'inspect', ok, version, warning, error} | {type: 'log', line} | {type: 'art', data}
 //                   {type: 'progress', value, label} | {type: 'done', blob} | {type: 'error', stage, message}
 import { loadPyodide } from 'https://cdn.jsdelivr.net/pyodide/v314.0.8/full/pyodide.mjs';
@@ -61,13 +61,13 @@ async function inspect(file) {
   post({ type: 'inspect', ok: r.ok, version: r.version, warning: r.warning, error: r.error });
 }
 
-async function build(glyphs) {
+async function build() {
   if (!ready) throw new Error('choose your APK first');
   const py = await getPython();
   const out = '/out/KatanaZero.vpk';
   py.FS.mkdirTree('/out');
   const art = '/out/bg0.png';
-  py.globals.get('builder').build(apkPath, out, '/base', glyphs,
+  py.globals.get('builder').build(apkPath, out, '/base', true,
     (line) => post({ type: 'log', line }),
     (value, label) => post({ type: 'progress', value, label }), art);
   // the LiveArea background drawn from the user's APK, shown on the page's playback screen
@@ -83,6 +83,6 @@ async function build(glyphs) {
 
 self.onmessage = (ev) => {
   const m = ev.data;
-  const run = m.cmd === 'inspect' ? inspect(m.file) : m.cmd === 'build' ? build(m.glyphs) : Promise.resolve();
+  const run = m.cmd === 'inspect' ? inspect(m.file) : m.cmd === 'build' ? build() : Promise.resolve();
   run.catch((e) => post({ type: 'error', stage: m.cmd, message: (e && e.message) || String(e) }));
 };

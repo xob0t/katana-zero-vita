@@ -104,12 +104,6 @@ h1 { text-shadow: -3px 0 rgba(46, 230, 255, 0.75), 3px 0 rgba(255, 46, 136, 0.6)
 .msg.err { color: var(--red); }
 .msg.err::before { content: "✕ "; color: var(--red); }
 
-.check { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 22px; cursor: pointer; }
-.check input { position: absolute; opacity: 0; }
-.check .box { flex: none; width: 16px; height: 16px; margin-top: 4px; border: 2px solid var(--cyan); }
-.check input:checked + .box { background: var(--pink); border-color: var(--pink); box-shadow: inset 0 0 0 2px #110a19; }
-.check input:focus-visible + .box { outline: 2px solid var(--paper); outline-offset: 2px; }
-.check i { display: block; color: var(--dim); font-style: normal; font-size: 13px; }
 
 /* buttons with hard offset shadows */
 .rec, .eject { display: inline-flex; align-items: center; gap: 12px; padding: 13px 26px; border: 0; cursor: pointer;

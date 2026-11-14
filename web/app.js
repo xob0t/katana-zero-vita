@@ -4,7 +4,7 @@
   const $ = (id) => document.getElementById(id);
   const drop = $('drop'), input = $('file');
   const fileStatus = $('file-status'), buildStatus = $('build-status');
-  const buildBtn = $('build'), stepBuild = $('step-build'), xbox = $('xbox');
+  const buildBtn = $('build'), stepBuild = $('step-build');
   const progress = $('progress'), fill = $('progress-fill'), ptext = $('progress-text'), ptime = $('progress-time');
   const download = $('download'), logBox = $('log-box'), log = $('log');
   const osdMode = $('osd-mode'), osdCounter = $('osd-counter'), screen = $('screen'), screenArt = $('screen-art');
@@ -151,6 +151,6 @@
       ptime.textContent = tapeTime(Date.now() - started);
       osd('● REC', ptime.textContent);
     }, 250);
-    getWorker().postMessage({ cmd: 'build', glyphs: !xbox.checked });
+    getWorker().postMessage({ cmd: 'build' });
   });
 })();
