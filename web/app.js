@@ -4,11 +4,10 @@
 
 const el = Object.fromEntries([...document.querySelectorAll('[id]')].map((node) => [node.id, node]));
 
-// tape: empty -> reading -> (rejected | loaded) -> recording -> (recorded | jammed)
+// tape: empty -> reading -> (rejected | recording -> (recorded | jammed)). Inserting an APK starts the build.
 const deck = {
   tape: 'empty',
-  fileNote: null,     // [kind, text] under the slot
-  buildNote: null,    // [kind, text] under the build button
+  note: null,         // [kind, text] under the slot
   step: [0, ''],      // progress fraction and label while recording
   started: 0,
   stopped: 0,
@@ -32,10 +31,9 @@ function osdFor(tape) {
     empty: ['⏏ NO TAPE', null],
     reading: ['◀◀ REW', null],
     rejected: ['⏏ EJECT', null],
-    loaded: ['■ STOP', '0:00:00'],
     recording: ['● REC', elapsed],
     recorded: ['▶ PLAY', elapsed],
-    jammed: ['■ STOP', null],
+    jammed: ['⏏ EJECT', null],
   }[tape];
 }
 
@@ -61,13 +59,8 @@ function render() {
   el['osd-mode'].classList.toggle('recording', tape === 'recording');
   el['osd-counter'].textContent = counter ?? wallClock();
 
-  note(el['file-status'], deck.fileNote);
-  note(el['build-status'], deck.buildNote);
-
-  const canRecord = ['loaded', 'recorded', 'jammed'].includes(tape);
-  el['step-build'].setAttribute('aria-disabled', String(!canRecord && tape !== 'recording'));
-  el.build.disabled = !canRecord;
-  el.build.classList.toggle('on', tape === 'recording');
+  note(el.status, deck.note);
+  el.drop.disabled = tape === 'reading' || tape === 'recording';
 
   el.progress.hidden = !['recording', 'recorded', 'jammed'].includes(tape);
   el['progress-fill'].style.width = `${Math.round(deck.step[0] * 100)}%`;
@@ -127,42 +120,41 @@ function call(fn, ...args) {
 
 // --- actions ------------------------------------------------------------------------------------------------------
 
+// An APK went in: check it, then record the VPK straight away
 async function insert(file) {
   if (!file || deck.tape === 'reading' || deck.tape === 'recording') return;
   if (deck.vpk) URL.revokeObjectURL(deck.vpk.url);
   Object.assign(deck, {
-    tape: 'reading', vpk: null, buildNote: null, log: [], step: [0, ''],
-    fileNote: ['', `Reading ${file.name} (${MB(file.size)}). The first time also loads the builder, about 20 MB.`],
+    tape: 'reading', vpk: null, log: [], step: [0, ''],
+    note: ['', `Reading ${file.name} (${MB(file.size)}). The first time also loads the builder, about 20 MB.`],
   });
   render();
+  let verdict;
   try {
-    const verdict = await call('check', file);
-    if (!verdict.ok) {
-      Object.assign(deck, { tape: 'rejected', fileNote: ['err', verdict.error] });
-    } else {
-      deck.tape = 'loaded';
-      deck.fileNote = verdict.warning ? ['warn', verdict.warning] : ['ok', `Katana ZERO ${verdict.version}. Ready to build.`];
-    }
+    verdict = await call('check', file);
   } catch (e) {
-    Object.assign(deck, { tape: 'rejected', fileNote: ['err', e.message] });
+    verdict = { ok: false, error: e.message };
   }
-  render();
+  if (!verdict.ok) {
+    Object.assign(deck, { tape: 'rejected', note: ['err', verdict.error] });
+    render();
+    return;
+  }
+  await record(verdict.warning ? ['warn', verdict.warning] : ['ok', `Katana ZERO ${verdict.version}. Recording.`]);
 }
 
-async function record() {
-  if (deck.vpk) URL.revokeObjectURL(deck.vpk.url);
-  Object.assign(deck, { tape: 'recording', vpk: null, buildNote: null, log: [], step: [0, 'Starting'],
-    started: Date.now(), stopped: 0 });
+async function record(note) {
+  Object.assign(deck, { tape: 'recording', note, step: [0, 'Starting'], started: Date.now(), stopped: 0 });
   const tick = setInterval(render, 250);
   render();
   try {
     const { vpk } = await call('build');
     Object.assign(deck, {
       tape: 'recorded', step: [1, 'Done'], vpk: { url: URL.createObjectURL(vpk), size: vpk.size },
-      buildNote: ['ok', `KatanaZero.vpk is ready (${MB(vpk.size)}).`],
+      note: ['ok', `KatanaZero.vpk is ready (${MB(vpk.size)}).`],
     });
   } catch (e) {
-    Object.assign(deck, { tape: 'jammed', buildNote: ['err', e.message] });
+    Object.assign(deck, { tape: 'jammed', note: ['err', `${e.message} Insert the APK again to retry.`] });
   } finally {
     deck.stopped = Date.now();
     clearInterval(tick);
@@ -187,8 +179,6 @@ el.drop.addEventListener('drop', (e) => {
   el.drop.classList.remove('over');
   insert(e.dataTransfer.files[0]);
 });
-
-el.build.addEventListener('click', record);
 
 setInterval(render, 1000);  // the clock
 render();

@@ -27,36 +27,29 @@
     <p class="jp" aria-hidden="true">カタナ・ゼロ</p>
   </header>
 
-  <section class="tape" id="step-file">
-    <div class="label"><span class="no">01</span><span class="name">Insert tape</span><span class="hint">your APK</span></div>
+  <section class="tape">
+    <div class="label"><span class="no">01</span><span class="name">Insert tape</span><span class="hint">about a minute</span></div>
     <div class="body">
-      <p>You need the Netflix Android release of Katana ZERO, version <b>1.1.10</b>. The game itself is not included.</p>
+      <p>You need the Netflix Android release of Katana ZERO, version <b>1.1.10</b>. The game itself is not included.
+        Drop it in and the VPK is built right away.</p>
       <input type="file" id="file" accept=".apk,application/vnd.android.package-archive" hidden>
       <button type="button" class="slot" id="drop">
         <span class="slot-mouth" aria-hidden="true"></span>
         <span class="slot-main">Drop the <b>.apk</b> here</span>
         <span class="slot-sub">or click to choose it</span>
       </button>
-      <p class="msg" id="file-status" role="status" aria-live="polite" hidden></p>
-    </div>
-  </section>
-
-  <section class="tape" id="step-build" aria-disabled="true">
-    <div class="label"><span class="no">02</span><span class="name">Record</span><span class="hint">about a minute</span></div>
-    <div class="body">
-      <button class="rec" id="build" disabled><span class="dot" aria-hidden="true"></span>Build VPK</button>
       <div class="meter" id="progress" hidden>
         <div class="track"><div class="fill" id="progress-fill"></div></div>
-        <div class="meter-row"><span id="progress-text">Starting</span><span id="progress-time"></span></div>
+        <div class="meter-row"><span id="progress-text"></span><span id="progress-time"></span></div>
       </div>
-      <p class="msg" id="build-status" role="status" aria-live="polite" hidden></p>
+      <p class="msg" id="status" role="status" aria-live="polite" hidden></p>
       <a class="eject" id="download" hidden download="KatanaZero.vpk">⏏ Download KatanaZero.vpk</a>
       <details class="log" id="log-box" hidden><summary>Build log</summary><pre id="log"></pre></details>
     </div>
   </section>
 
   <section class="tape">
-    <div class="label"><span class="no">03</span><span class="name">Play</span><span class="hint">on the Vita</span></div>
+    <div class="label"><span class="no">02</span><span class="name">Play</span><span class="hint">on the Vita</span></div>
     <div class="body">
       <ol class="steps">
         <li>The Vita needs HENkaku or Ensō, VitaShell, and three plugins:

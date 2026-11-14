@@ -45,7 +45,6 @@ body {
   padding: 16px 26px; font: 34px/1 var(--osd); letter-spacing: 0.06em; color: #fff;
   text-shadow: 0 0 8px rgba(255, 255, 255, 0.55), 2px 0 0 rgba(255, 46, 136, 0.5), -2px 0 0 rgba(46, 230, 255, 0.5); }
 #osd-mode.recording::first-letter { color: var(--red); }
-@keyframes blink { 50% { opacity: 0; } }
 
 main { position: relative; max-width: 760px; margin: 0 auto; padding: 120px 22px 60px; }
 
@@ -75,8 +74,6 @@ h1 { text-shadow: -3px 0 rgba(46, 230, 255, 0.75), 3px 0 rgba(255, 46, 136, 0.6)
 .label .hint { margin-left: auto; font: 22px/1 var(--osd); text-transform: uppercase; color: #6d6177; }
 .body { padding: 22px 24px 24px; background: var(--body); border: 1px solid var(--edge); border-top: 0; }
 .body > p:first-child { margin-top: 0; }
-.tape[aria-disabled="true"] .body { opacity: 0.45; }
-.tape[aria-disabled="true"] .label { filter: grayscale(0.7) brightness(0.8); }
 
 /* the APK goes in like a cassette */
 .slot { position: relative; display: flex; flex-direction: column; align-items: center; width: 100%; padding: 30px 16px 24px;
@@ -87,9 +84,12 @@ h1 { text-shadow: -3px 0 rgba(46, 230, 255, 0.75), 3px 0 rgba(255, 46, 136, 0.6)
 .slot-main { font: 32px/1 var(--osd); text-transform: uppercase; letter-spacing: 0.05em; }
 .slot-main b { color: var(--cyan); font-weight: 400; }
 .slot-sub { margin-top: 4px; color: var(--dim); font-size: 13px; }
-.slot:hover, .slot:focus-visible, .slot.over { border-color: var(--pink); outline: none; }
-.slot:hover .slot-mouth, .slot:focus-visible .slot-mouth, .slot.over .slot-mouth {
+.slot:not(:disabled):hover, .slot:focus-visible, .slot.over { border-color: var(--pink); outline: none; }
+.slot:not(:disabled):hover .slot-mouth, .slot:focus-visible .slot-mouth, .slot.over .slot-mouth {
   box-shadow: inset 0 3px 6px #000, 0 0 0 3px var(--pink), 0 0 22px rgba(255, 46, 136, 0.6); }
+/* busy: the tape is in, the slot glows red and takes nothing else */
+.slot:disabled { cursor: progress; }
+.slot:disabled .slot-mouth { box-shadow: inset 0 3px 6px #000, 0 0 0 3px var(--red), 0 0 18px rgba(255, 52, 52, 0.45); }
 
 /* deck messages */
 .msg { margin: 16px 0 0; font: 23px/1.2 var(--osd); letter-spacing: 0.02em; color: var(--text); }
@@ -101,22 +101,14 @@ h1 { text-shadow: -3px 0 rgba(46, 230, 255, 0.75), 3px 0 rgba(255, 46, 136, 0.6)
 .msg.err { color: var(--red); }
 .msg.err::before { content: "✕ "; color: var(--red); }
 
-
-/* buttons with hard offset shadows */
-.rec, .eject { display: inline-flex; align-items: center; gap: 12px; padding: 13px 26px; border: 0; cursor: pointer;
+/* the download button, with a hard offset shadow */
+.eject { display: inline-flex; align-items: center; gap: 12px; margin-top: 20px; padding: 13px 26px; border: 0;
+  background: var(--cyan); color: #04161c; box-shadow: 6px 6px 0 var(--paper); cursor: pointer;
   font: 24px/1 var(--display); text-transform: uppercase; letter-spacing: 0.05em; text-decoration: none;
   transition: transform 0.1s, box-shadow 0.1s; }
-.rec { background: var(--paper); color: var(--ink); box-shadow: 6px 6px 0 var(--pink); }
-.eject { margin-top: 20px; background: var(--cyan); color: #04161c; box-shadow: 6px 6px 0 var(--paper); }
-.rec:not(:disabled):hover, .eject:hover { transform: translate(-2px, -2px); }
-.rec:not(:disabled):hover { box-shadow: 8px 8px 0 var(--pink); }
-.eject:hover { box-shadow: 8px 8px 0 var(--paper); color: #04161c; }
-.rec:not(:disabled):active, .eject:active { transform: translate(4px, 4px); box-shadow: 2px 2px 0 var(--pink); }
-.rec:focus-visible, .eject:focus-visible { outline: 2px solid var(--cyan); outline-offset: 4px; }
-.rec:disabled { background: var(--edge); color: #6d6177; box-shadow: none; cursor: default; }
-.rec .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--red); box-shadow: 0 0 10px var(--red); }
-.rec:disabled .dot { background: #4a3a58; box-shadow: none; }
-.rec.on .dot { background: var(--red); box-shadow: 0 0 10px var(--red); animation: blink 1s steps(1) infinite; }
+.eject:hover { transform: translate(-2px, -2px); box-shadow: 8px 8px 0 var(--paper); color: #04161c; }
+.eject:active { transform: translate(4px, 4px); box-shadow: 2px 2px 0 var(--paper); }
+.eject:focus-visible { outline: 2px solid var(--cyan); outline-offset: 4px; }
 
 /* recording level meter */
 .meter { margin-top: 22px; }
