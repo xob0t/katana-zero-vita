@@ -80,9 +80,9 @@ h1 { text-shadow: -3px 0 rgba(46, 230, 255, 0.75), 3px 0 rgba(255, 46, 136, 0.6)
 .tape[aria-disabled="true"] .label { filter: grayscale(0.7) brightness(0.8); }
 
 /* the APK goes in like a cassette */
-.slot { position: relative; display: flex; flex-direction: column; align-items: center; padding: 30px 16px 24px;
+.slot { position: relative; display: flex; flex-direction: column; align-items: center; width: 100%; padding: 30px 16px 24px;
+  font: inherit; color: inherit;
   background: #07040b; border: 2px solid var(--edge); cursor: pointer; transition: border-color 0.15s; }
-.slot input { display: none; }
 .slot-mouth { width: 72%; height: 14px; margin-bottom: 18px; background: #000; border-radius: 2px;
   box-shadow: inset 0 3px 6px #000, 0 0 0 3px #1d1428; transition: box-shadow 0.15s; }
 .slot-main { font: 32px/1 var(--osd); text-transform: uppercase; letter-spacing: 0.05em; }

@@ -31,12 +31,12 @@
     <div class="label"><span class="no">01</span><span class="name">Insert tape</span><span class="hint">your APK</span></div>
     <div class="body">
       <p>You need the Netflix Android release of Katana ZERO, version <b>1.1.10</b>. The game itself is not included.</p>
-      <label class="slot" id="drop" tabindex="0">
-        <input type="file" id="file" accept=".apk,application/vnd.android.package-archive">
+      <input type="file" id="file" accept=".apk,application/vnd.android.package-archive" hidden>
+      <button type="button" class="slot" id="drop">
         <span class="slot-mouth" aria-hidden="true"></span>
         <span class="slot-main">Drop the <b>.apk</b> here</span>
         <span class="slot-sub">or click to choose it</span>
-      </label>
+      </button>
       <p class="msg" id="file-status" role="status" aria-live="polite" hidden></p>
     </div>
   </section>
@@ -88,7 +88,6 @@
       <dt>Toolchain</dt><dd><a href="https://vitasdk.org">VitaSDK</a></dd>
       <dt>HENkaku · Ensō</dt><dd>Team Molecule</dd>
       <dt>This builder runs on</dt><dd><a href="https://pyodide.org">Pyodide</a> · Pillow · python-lz4 · pyelftools</dd>
-      <dt>Modelled on</dt><dd><a href="https://github.com/thebardockgames/vitalatro-web">vitalatro-web</a></dd>
     </dl>
   </section>
 

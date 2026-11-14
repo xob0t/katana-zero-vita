@@ -1,149 +1,187 @@
-// Page flow: choose the APK -> the worker checks it -> build -> download. The work happens in worker.js.
-(function () {
-  'use strict';
-  const $ = (id) => document.getElementById(id);
-  const drop = $('drop'), input = $('file');
-  const fileStatus = $('file-status'), buildStatus = $('build-status');
-  const buildBtn = $('build'), stepBuild = $('step-build');
-  const progress = $('progress'), fill = $('progress-fill'), ptext = $('progress-text'), ptime = $('progress-time');
-  const download = $('download'), logBox = $('log-box'), log = $('log');
-  const osdMode = $('osd-mode'), osdCounter = $('osd-counter');
+// The page as a VCR: one `deck` object says where things stand, render() puts it on screen, and the work is done
+// by worker.js, whose functions call() runs by name.
+'use strict';
 
-  let worker = null, busy = false, downloadUrl = null, timer = null, started = 0;
+const el = Object.fromEntries([...document.querySelectorAll('[id]')].map((node) => [node.id, node]));
 
-  // The on-screen display plays along: deck mode on the left, a blinking 12:00 until there's a tape to count
-  function osd(mode, counter) {
-    osdMode.textContent = mode;
-    osdMode.className = mode.startsWith('●') ? 'recording' : '';
-    osdCounter.textContent = counter || '12:00';
-    osdCounter.className = counter ? '' : 'blink';
+// tape: empty -> reading -> (rejected | loaded) -> recording -> (recorded | jammed)
+const deck = {
+  tape: 'empty',
+  fileNote: null,     // [kind, text] under the slot
+  buildNote: null,    // [kind, text] under the build button
+  step: [0, ''],      // progress fraction and label while recording
+  started: 0,
+  stopped: 0,
+  vpk: null,          // {url, size} once recorded
+  log: [],
+};
+
+const MB = (bytes) => `${Math.round(bytes / 1048576)} MB`;
+
+function clock(ms) {
+  const t = Math.max(0, Math.floor(ms / 1000));
+  const mm = String(Math.floor(t / 60) % 60).padStart(2, '0');
+  const ss = String(t % 60).padStart(2, '0');
+  return `${Math.floor(t / 3600)}:${mm}:${ss}`;
+}
+
+// What the on-screen display shows for each tape state: [mode, counter]; no counter blinks 12:00
+function osdFor(tape) {
+  const elapsed = clock((deck.stopped || Date.now()) - deck.started);
+  return {
+    empty: ['⏏ NO TAPE', null],
+    reading: ['◀◀ REW', null],
+    rejected: ['⏏ EJECT', null],
+    loaded: ['■ STOP', '0:00:00'],
+    recording: ['● REC', elapsed],
+    recorded: ['▶ PLAY', elapsed],
+    jammed: ['■ STOP', null],
+  }[tape];
+}
+
+function note(node, value) {
+  node.hidden = !value;
+  if (value) {
+    node.className = 'msg ' + value[0];
+    node.textContent = value[1];
   }
+}
 
-  function tapeTime(ms) {
-    const s = Math.floor(ms / 1000);
-    return Math.floor(s / 3600) + ':' + String(Math.floor(s / 60) % 60).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+function render() {
+  const { tape } = deck;
+  const [mode, counter] = osdFor(tape);
+  el['osd-mode'].textContent = mode;
+  el['osd-mode'].classList.toggle('recording', tape === 'recording');
+  el['osd-counter'].textContent = counter ?? '12:00';
+  el['osd-counter'].classList.toggle('blink', counter === null);
+
+  note(el['file-status'], deck.fileNote);
+  note(el['build-status'], deck.buildNote);
+
+  const canRecord = ['loaded', 'recorded', 'jammed'].includes(tape);
+  el['step-build'].setAttribute('aria-disabled', String(!canRecord && tape !== 'recording'));
+  el.build.disabled = !canRecord;
+  el.build.classList.toggle('on', tape === 'recording');
+
+  el.progress.hidden = !['recording', 'recorded', 'jammed'].includes(tape);
+  el['progress-fill'].style.width = `${Math.round(deck.step[0] * 100)}%`;
+  el['progress-text'].textContent = deck.step[1];
+  el['progress-time'].textContent = counter ?? '';
+
+  el.download.hidden = tape !== 'recorded';
+  if (deck.vpk) el.download.href = deck.vpk.url;
+
+  el['log-box'].hidden = deck.log.length === 0;
+  el.log.textContent = deck.log.join('\n');
+}
+
+// --- the worker ---------------------------------------------------------------------------------------------------
+
+let worker = null;
+const waiting = new Map();
+let lastId = 0;
+
+function onWorkerMessage({ data }) {
+  if (data.event === 'line') {
+    deck.log.push(data.text);
+  } else if (data.event === 'step') {
+    deck.step = [data.fraction, data.text];
+  } else {
+    const { resolve, reject } = waiting.get(data.id);
+    waiting.delete(data.id);
+    if ('failure' in data) reject(new Error(data.failure));
+    else resolve(data.result);
+    return;
   }
+  render();
+}
 
-  function status(el, kind, text) {
-    el.hidden = false;
-    el.className = 'msg ' + kind;
-    el.textContent = text;
-  }
+function onWorkerCrash(event) {
+  // usually the tab running out of memory; every pending call fails and the next call starts a fresh worker
+  const reason = `The builder stopped (${event.message || 'no details'}). The browser may have run out of memory: ` +
+    'close other tabs and try again.';
+  for (const { reject } of waiting.values()) reject(new Error(reason));
+  waiting.clear();
+  worker.terminate();
+  worker = null;
+}
 
-  function sizeMB(n) { return (n / 1048576).toFixed(0) + ' MB'; }
-
-  function setProgress(value, label) {
-    fill.style.width = Math.round(Math.max(0, Math.min(1, value)) * 100) + '%';
-    if (label) ptext.textContent = label;
-  }
-
-  function stopTimer() { clearInterval(timer); timer = null; buildBtn.classList.remove('on'); }
-
-  function resetBuild() {
-    buildBtn.disabled = true;
-    stepBuild.setAttribute('aria-disabled', 'true');
-    progress.hidden = true;
-    buildStatus.hidden = true;
-    download.hidden = true;
-    if (downloadUrl) { URL.revokeObjectURL(downloadUrl); downloadUrl = null; }
-  }
-
-  function getWorker() {
-    if (worker) return worker;
+function call(fn, ...args) {
+  if (!worker) {
     worker = new Worker('worker.js', { type: 'module' });
-    worker.onmessage = onMessage;
-    worker.onerror = (e) => {
-      busy = false;
-      stopTimer();
-      status(buildStatus, 'err', 'The builder crashed (' + (e.message || 'unknown error') +
-        '). The browser may have run out of memory: close other tabs and try again.');
-      worker = null;
-      osd('■ STOP');
-    };
-    return worker;
+    worker.addEventListener('message', onWorkerMessage);
+    worker.addEventListener('error', onWorkerCrash);
   }
+  const id = ++lastId;
+  return new Promise((resolve, reject) => {
+    waiting.set(id, { resolve, reject });
+    worker.postMessage({ id, fn, args });
+  });
+}
 
-  function onMessage(ev) {
-    const m = ev.data;
-    if (m.type === 'inspect') {
-      busy = false;
-      if (!m.ok) {
-        status(fileStatus, 'err', m.error);
-        osd('⏏ EJECT');
-        return;
-      }
-      osd('■ STOP', '0:00:00');
-      if (m.warning) status(fileStatus, 'warn', m.warning);
-      else status(fileStatus, 'ok', 'Katana ZERO ' + m.version + '. Ready to build.');
-      buildBtn.disabled = false;
-      stepBuild.setAttribute('aria-disabled', 'false');
-    } else if (m.type === 'log') {
-      logBox.hidden = false;
-      log.textContent += m.line + '\n';
-    } else if (m.type === 'progress') {
-      setProgress(m.value, m.label);
-    } else if (m.type === 'done') {
-      busy = false;
-      stopTimer();
-      setProgress(1, 'Done');
-      downloadUrl = URL.createObjectURL(m.blob);
-      download.href = downloadUrl;
-      download.hidden = false;
-      status(buildStatus, 'ok', 'KatanaZero.vpk is ready (' + sizeMB(m.blob.size) + ').');
-      buildBtn.disabled = false;
-      osd('▶ PLAY', tapeTime(Date.now() - started));
-    } else if (m.type === 'error') {
-      busy = false;
-      stopTimer();
-      status(m.stage === 'inspect' ? fileStatus : buildStatus, 'err', m.message);
-      buildBtn.disabled = m.stage === 'inspect';
-      osd('■ STOP');
+// --- actions ------------------------------------------------------------------------------------------------------
+
+async function insert(file) {
+  if (!file || deck.tape === 'reading' || deck.tape === 'recording') return;
+  if (deck.vpk) URL.revokeObjectURL(deck.vpk.url);
+  Object.assign(deck, {
+    tape: 'reading', vpk: null, buildNote: null, log: [], step: [0, ''],
+    fileNote: ['', `Reading ${file.name} (${MB(file.size)}). The first time also loads the builder, about 20 MB.`],
+  });
+  render();
+  try {
+    const verdict = await call('check', file);
+    if (!verdict.ok) {
+      Object.assign(deck, { tape: 'rejected', fileNote: ['err', verdict.error] });
+    } else {
+      deck.tape = 'loaded';
+      deck.fileNote = verdict.warning ? ['warn', verdict.warning] : ['ok', `Katana ZERO ${verdict.version}. Ready to build.`];
     }
+  } catch (e) {
+    Object.assign(deck, { tape: 'rejected', fileNote: ['err', e.message] });
   }
+  render();
+}
 
-  function choose(file) {
-    if (!file || busy) return;
-    resetBuild();
-    busy = true;
-    status(fileStatus, '', 'Reading ' + file.name + ' (' + sizeMB(file.size) +
-      '). The first time also loads the builder, about 20 MB.');
-    osd('◀◀ REW');
-    getWorker().postMessage({ cmd: 'inspect', file: file });
+async function record() {
+  if (deck.vpk) URL.revokeObjectURL(deck.vpk.url);
+  Object.assign(deck, { tape: 'recording', vpk: null, buildNote: null, log: [], step: [0, 'Starting'],
+    started: Date.now(), stopped: 0 });
+  const tick = setInterval(render, 250);
+  render();
+  try {
+    const { vpk } = await call('build');
+    Object.assign(deck, {
+      tape: 'recorded', step: [1, 'Done'], vpk: { url: URL.createObjectURL(vpk), size: vpk.size },
+      buildNote: ['ok', `KatanaZero.vpk is ready (${MB(vpk.size)}).`],
+    });
+  } catch (e) {
+    Object.assign(deck, { tape: 'jammed', buildNote: ['err', e.message] });
+  } finally {
+    deck.stopped = Date.now();
+    clearInterval(tick);
+    render();
   }
+}
 
-  input.addEventListener('change', () => { choose(input.files[0]); input.value = ''; });
-  drop.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); }
-  });
-  ['dragenter', 'dragover'].forEach((t) => drop.addEventListener(t, (e) => {
-    e.preventDefault(); drop.classList.add('over');
-  }));
-  ['dragleave', 'drop'].forEach((t) => drop.addEventListener(t, (e) => {
-    e.preventDefault(); drop.classList.remove('over');
-  }));
-  drop.addEventListener('drop', (e) => choose(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]));
-  // a file dropped next to the box must not open it in the tab
-  window.addEventListener('dragover', (e) => e.preventDefault());
-  window.addEventListener('drop', (e) => e.preventDefault());
+// --- wiring -------------------------------------------------------------------------------------------------------
 
-  buildBtn.addEventListener('click', () => {
-    if (busy) return;
-    busy = true;
-    buildBtn.disabled = true;
-    download.hidden = true;
-    buildStatus.hidden = true;
-    progress.hidden = false;
-    log.textContent = '';
-    if (downloadUrl) { URL.revokeObjectURL(downloadUrl); downloadUrl = null; }
-    setProgress(0, 'Starting');
-    buildBtn.classList.add('on');
-    started = Date.now();
-    ptime.textContent = '0:00:00';
-    osd('● REC', '0:00:00');
-    timer = setInterval(() => {
-      ptime.textContent = tapeTime(Date.now() - started);
-      osd('● REC', ptime.textContent);
-    }, 250);
-    getWorker().postMessage({ cmd: 'build' });
-  });
-})();
+el.drop.addEventListener('click', () => el.file.click());
+el.file.addEventListener('change', () => {
+  insert(el.file.files[0]);
+  el.file.value = '';  // choosing the same file again still fires 'change'
+});
+
+// Drag and drop: the slot lights up while a file is over it. A file dropped anywhere else on the page is ignored
+// instead of being opened by the browser.
+for (const type of ['dragover', 'drop']) document.addEventListener(type, (e) => e.preventDefault());
+el.drop.addEventListener('dragover', () => el.drop.classList.add('over'));
+el.drop.addEventListener('dragleave', () => el.drop.classList.remove('over'));
+el.drop.addEventListener('drop', (e) => {
+  el.drop.classList.remove('over');
+  insert(e.dataTransfer.files[0]);
+});
+
+el.build.addEventListener('click', record);
+
+render();

@@ -107,5 +107,3 @@ loader it packs is a prebuilt copy in `web/base/`. After changing the loader, co
   [OpenSL ES](https://github.com/frangarcj/opensles) on the Vita.
 - The [VitaSDK](https://vitasdk.org) team, and Team Molecule for HENkaku and Ensō.
 - [Pyodide](https://pyodide.org), Pillow, python-lz4 and pyelftools, which run the web builder.
-- thebardockgames for [vitalatro-web](https://github.com/thebardockgames/vitalatro-web), the model for the web
-  builder.
