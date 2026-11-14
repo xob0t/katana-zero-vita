@@ -1653,6 +1653,44 @@ static void rain_create(void *self, void *other) {
 static event_func orig_record_end_step;
 static int *var_replay_enabled;
 
+// The bunker chapter ends with a replay of its levels: in room_bunker_10_2 the replay master's (persistent through the
+// chapter) user event 0 starts it (room_bunker_replay, then the recorded rooms), and room_stage_results follows. With
+// nothing recorded its playback (user event 2) read past the end of an empty recording and the game crashed. Without
+// replays the chapter ends like every other level: the replay master goes and the game moves on to the results.
+// exp_bunkerreplay keeps the original (which then needs replays=1 to have a recording).
+static event_func orig_replaymaster_user0;
+static void replaymaster_user0_noreplay(void *self, void *other) {
+	int (*room_find)(const char *) = (void *)so_symbol(&yoyoloader_mod, "_Z9Room_FindPKc");
+	void (*room_goto)(gml_rvalue *, void *, void *, int, gml_rvalue *) =
+		(void *)so_symbol(&yoyoloader_mod, "_Z10F_RoomGotoR6RValueP9CInstanceS2_iPS_");
+	int here = room_find ? room_find("room_bunker_10_2") : -1;
+	int results = room_find ? room_find("room_stage_results") : -1;
+	if (here < 0 || results < 0 || !current_room || *current_room != here || !room_goto || !instance_destroy_fn) {
+		orig_replaymaster_user0(self, other);
+		return;
+	}
+	debugPrintf("bunker replay: skipped (replays off), to room_stage_results\n");
+	instance_destroy_fn(self, other, 0, NULL);
+	gml_rvalue result = {0}, arg = {0};
+	arg.val = results;
+	room_goto(&result, self, other, 1, &arg);
+}
+
+// exp_bunkertrace (debugMode): logs the replay master's Room End and user events 0-2 with the room they run in
+static event_func replaymaster_ev[4];
+static void replaymaster_trace(int ev, const char *name, void *self, void *other) {
+	static unsigned lines;
+	const char *(*room_name)(int) = (void *)so_symbol(&yoyoloader_mod, "_Z9Room_Namei");
+	if (lines++ < 400 || ev != 3)
+		debugPrintf("[BUNKERTRACE] tick %u room %s: %s\n", *frame_count,
+			room_name && current_room ? room_name(*current_room) : "?", name);
+	replaymaster_ev[ev](self, other);
+}
+static void replaymaster_trace4(void *s, void *o) { replaymaster_trace(0, "Room End", s, o); }
+static void replaymaster_trace10(void *s, void *o) { replaymaster_trace(1, "user 0", s, o); }
+static void replaymaster_trace11(void *s, void *o) { replaymaster_trace(2, "user 1", s, o); }
+static void replaymaster_trace12(void *s, void *o) { replaymaster_trace(3, "user 2", s, o); }
+
 static void record_end_step_noreplay(void *self, void *other) {
 	gml_rvalue *(*vwrite)(void *, int) = (*(void ***)*global_obj_ptr)[3];
 	gml_rvalue *v = vwrite(*global_obj_ptr, var_replay_enabled[1]);
@@ -2210,6 +2248,16 @@ static void patch_performance() {
 			orig_level_complete_create = orig;
 		if (var_skip_rewind && (orig = gml_replace(table, "gml_Object_obj_record_Draw_0", record_draw_noreplay)))
 			orig_record_draw = orig;
+		if (debugMode && exp_flag("bunkertrace")) {
+			replaymaster_ev[0] = gml_replace(table, "gml_Object_obj_bunker_replaymaster_Other_4", replaymaster_trace4);
+			replaymaster_ev[1] = gml_replace(table, "gml_Object_obj_bunker_replaymaster_Other_10", replaymaster_trace10);
+			replaymaster_ev[2] = gml_replace(table, "gml_Object_obj_bunker_replaymaster_Other_11", replaymaster_trace11);
+			replaymaster_ev[3] = gml_replace(table, "gml_Object_obj_bunker_replaymaster_Other_12", replaymaster_trace12);
+		}
+		if (!exp_flag("bunkerreplay") && (orig = gml_replace(table, "gml_Object_obj_bunker_replaymaster_Other_10",
+				replaymaster_user0_noreplay)))
+			orig_replaymaster_user0 = orig;
+		debugPrintf("replays: off (bunker chapter replay %s)\n", orig_replaymaster_user0 ? "skipped" : "kept");
 	}
 
 	// Fast native rope solver: Unicorn-verified against the original ARM code,
