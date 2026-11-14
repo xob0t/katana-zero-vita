@@ -39,13 +39,22 @@ back the original.
 
 ## Installing on a Vita
 
-1. Install kubridge, FdFix and `libshacccg.suprx`.
-2. Install `build/app/KatanaZero.vpk` (title ID `KTNZ00001`). It contains only the loader.
-3. Build the game APK with `python scripts/prepare_apk.py <Katana ZERO 1.1.10 APK> game.apk`
+You need kubridge, FdFix and `libshacccg.suprx` on the Vita, and the Netflix Android release of Katana ZERO,
+version 1.1.10.
+
+The easy way is the [web builder](https://xob0t.github.io/katana-zero-vita/web/). Choose your APK and it builds
+`KatanaZero.vpk` in your browser in about a minute, with the game inside. Your APK isn't uploaded anywhere.
+Install the VPK with VitaShell.
+
+By hand:
+
+1. Install `build/app/KatanaZero.vpk` (title ID `KTNZ00001`). It contains only the loader.
+2. Build the game APK with `python scripts/prepare_apk.py <Katana ZERO 1.1.10 APK> game.apk`
    (needs `pip install lz4 pyelftools`) and copy it to `ux0:data/gms/katanazero/game.apk`. This also redraws the
    Xbox button prompts as Vita buttons (`--xbox-glyphs` keeps the originals).
-4. The first launch compiles every shader, which takes about 3 minutes. Shaders are cached in
-   `ux0:data/shader_cache/KTNZ00001`, so later launches reach the title screen in about a minute.
+
+The first launch compiles every shader, which takes about 3 minutes. Shaders are cached in
+`ux0:data/shader_cache/KTNZ00001`, so later launches reach the title screen in about a minute.
 
 With `debugMode=1` in `yyl.cfg` the log goes to `ux0:data/gms/shared/yyl.log`.
 
@@ -67,6 +76,11 @@ bash scripts/build.sh        # build/app/KatanaZero.vpk and build/loader/loader2
 
 `make_livearea.py` builds the LiveArea images from the game's title screen art in your APK, into `livearea/`.
 They are game art, so they are not committed, and the app build stops if they are missing.
+
+The web builder is `web/`, served by GitHub Pages straight from the repository. It runs `web/builder.py` and the
+scripts in `scripts/` under [Pyodide](https://pyodide.org), so it makes the same `game.apk` as the command line. The
+loader it packs is a prebuilt copy in `web/base/`. After changing the loader, copy `build/app/eboot.bin` and
+`build/app/KatanaZero.vpk_param.sfo` (as `param.sfo`) there and commit them.
 
 ## Changes to the loader
 

@@ -15,13 +15,11 @@ Usage: python scripts/prepare_apk.py [--xbox-glyphs] <input.apk> <output.apk>
 import bz2
 
 import lz4.block
-import os
 import struct
-import subprocess
 import sys
-import tempfile
 import zipfile
 
+import patch_plt_calls
 from vita_glyphs import encode_gm_qoi, patched_pages
 
 KEEP_LIB = "lib/armeabi-v7a/libyoyo.so"
@@ -105,23 +103,14 @@ def recompress_textures(data, vita_glyphs=True):
 
 
 def patch_runner(payload):
-    """Runs patch_plt_calls.py on the runner and returns the patched bytes."""
-    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "patch_plt_calls.py")
-    with tempfile.TemporaryDirectory() as tmp:
-        src, dst = os.path.join(tmp, "in.so"), os.path.join(tmp, "out.so")
-        open(src, "wb").write(payload)
-        out = subprocess.run([sys.executable, script, src, dst], check=True, capture_output=True, text=True).stdout
-        print("libyoyo.so: " + out.splitlines()[0])
-        return open(dst, "rb").read()
+    """Rewrites the runner's PLT calls (scripts/patch_plt_calls.py) and returns the patched bytes."""
+    data, lines = patch_plt_calls.patch(payload)
+    print("libyoyo.so: " + lines[0])
+    return data
 
 
-def main():
-    args = sys.argv[1:]
-    vita_glyphs = "--xbox-glyphs" not in args
-    args = [a for a in args if a != "--xbox-glyphs"]
-    if len(args) != 2:
-        raise SystemExit(__doc__)
-    src, dst = args
+def prepare(src, dst, vita_glyphs=True):
+    """Writes the loader's game.apk to `dst` (a path or a writable file) from the Android APK `src`."""
     with zipfile.ZipFile(src) as zi:
         names = set(zi.namelist())
         nested = any(n.startswith("assets/assets/") for n in names)
@@ -149,6 +138,15 @@ def main():
                           + (", Vita button glyphs)" if vita_glyphs else ")"))
                 zo.writestr(zipfile.ZipInfo(out_name, (2020, 1, 1, 0, 0, 0)), payload)
     print(f"wrote {dst} ({len(entries)} entries)")
+
+
+def main():
+    args = sys.argv[1:]
+    vita_glyphs = "--xbox-glyphs" not in args
+    args = [a for a in args if a != "--xbox-glyphs"]
+    if len(args) != 2:
+        raise SystemExit(__doc__)
+    prepare(*args, vita_glyphs)
 
 
 if __name__ == "__main__":

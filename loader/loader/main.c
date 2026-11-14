@@ -1805,10 +1805,9 @@ FILE *fopen_hook(char *file, char *mode) {
 	else {
 		s = strstr(file, "ux0:");
 		if (!s) {
-#ifdef STANDALONE_MODE
+			// app0: paths are used as they are (game.apk can be inside the app, see apk_path)
 			s = strstr(file, "app0:");
 			if (!s)
-#endif
 			{
 #ifdef STANDALONE_MODE
 				FILE *f = NULL;
@@ -3404,7 +3403,11 @@ void *pthread_main(void *arg) {
 #ifdef STANDALONE_MODE
 	sprintf(apk_path, "app0:game.apk");
 #else
-	sprintf(apk_path, "%s/%s/game.apk", DATA_PATH, game_name);
+	// The web builder packs game.apk into the app (one VPK to install); a game.apk copied to ux0:data still works
+	if (file_exists("app0:game.apk"))
+		sprintf(apk_path, "app0:game.apk");
+	else
+		sprintf(apk_path, "%s/%s/game.apk", DATA_PATH, game_name);
 #endif
 	sprintf(data_path_root, "%s/%s/", DATA_PATH, game_name);
 	sprintf(data_path, "%s/%s/assets/", DATA_PATH, game_name);
@@ -3500,6 +3503,7 @@ void *pthread_main(void *arg) {
 	extern int vgl_big_rt_scenes;
 	vgl_big_rt_scenes = 8;
 	katana_clock_probe();
+	debugPrintf("Game: %s\n", apk_path);
 	debugPrintf("+--------------------------------------------+\n");
 	debugPrintf("|YoYo Loader Setup                           |\n");
 	debugPrintf("+--------------------------------------------+\n");

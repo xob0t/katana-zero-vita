@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Katana ZERO for PS Vita: VPK builder</title>
+<meta name="description" content="Build the Katana ZERO PS Vita VPK from your own Android APK. Everything happens in your browser.">
+<meta name="color-scheme" content="dark">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1>Katana ZERO <span>for PS Vita</span></h1>
+    <p class="tagline">VPK builder</p>
+  </header>
+
+  <section class="card">
+    <p>A fan port of Katana ZERO to the PS Vita. <strong>The game is not included.</strong> You need your own copy:
+      the Netflix Android release, version <span class="mono">1.1.10</span>.</p>
+    <p><span class="badge">Local</span> Your APK never leaves this computer. The VPK is built in your browser.
+      Use a desktop browser: the build takes about a minute and holds the 250 MB VPK in memory.</p>
+  </section>
+
+  <section class="card step" id="step-file">
+    <h2><span class="num">1</span> Choose your APK</h2>
+    <label class="drop" id="drop" tabindex="0">
+      <input type="file" id="file" accept=".apk,application/vnd.android.package-archive">
+      <span class="drop-main">Drop the Katana ZERO <span class="mono">.apk</span> here</span>
+      <span class="drop-sub">or click to choose it</span>
+    </label>
+    <div class="status" id="file-status" role="status" aria-live="polite" hidden></div>
+  </section>
+
+  <section class="card step" id="step-build" aria-disabled="true">
+    <h2><span class="num">2</span> Build the VPK</h2>
+    <label class="option"><input type="checkbox" id="xbox"> Keep the Xbox button prompts
+      (by default they are redrawn as Vita buttons)</label>
+    <button class="btn primary" id="build" disabled>Build VPK</button>
+    <div class="progress" id="progress" hidden>
+      <div class="bar"><div class="fill" id="progress-fill"></div></div>
+      <div class="progress-label"><span id="progress-text">Starting</span><span id="progress-time"></span></div>
+    </div>
+    <div class="status" id="build-status" role="status" aria-live="polite" hidden></div>
+    <a class="btn download" id="download" hidden download="KatanaZero.vpk">Download KatanaZero.vpk</a>
+    <details class="log" id="log-box" hidden><summary>Build log</summary><pre id="log"></pre></details>
+  </section>
+
+  <section class="card step">
+    <h2><span class="num">3</span> Install it on your Vita</h2>
+    <ol>
+      <li>Your Vita needs HENkaku or Ensō, VitaShell, and these plugins:
+        <a href="https://github.com/TheOfficialFloW/kubridge/releases">kubridge</a>,
+        <a href="https://github.com/TheOfficialFloW/FdFix/releases">FdFix</a> and
+        <span class="mono">libshacccg.suprx</span>
+        (<a href="https://samilops2.gitbook.io/vita-troubleshooting-guide/shader-compiler/extract-libshacccg.suprx">how to get it</a>).</li>
+      <li>Copy <span class="mono">KatanaZero.vpk</span> to <span class="mono">ux0:VPK/</span> over USB or FTP. The
+        memory card needs about 550 MB free while installing.</li>
+      <li>In VitaShell, press cross on the VPK and confirm. Delete the VPK afterwards.</li>
+      <li>The first launch compiles every shader, which takes about 3 minutes. Later launches take about a minute.</li>
+    </ol>
+    <p class="note">Settings are in <span class="mono">ux0:data/gms/katanazero/yyl.cfg</span>. The
+      <a href="https://github.com/xob0t/katana-zero-vita#compromises">README</a> lists them. To update the port, build a
+      new VPK here and install it over the old one. Your saves stay.</p>
+  </section>
+
+  <footer>
+    <p>A fan project, not affiliated with Askiisoft, Devolver Digital or Netflix.
+      <a href="https://github.com/xob0t/katana-zero-vita">Source on GitHub</a></p>
+  </footer>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
