@@ -47,10 +47,15 @@ a:hover { background: var(--white); color: var(--black); text-decoration: none; 
 .insert::before { content: "▶ "; }
 .insert:not(:disabled):hover, .insert:focus-visible, body.dragging .insert {
   background: var(--white); color: var(--black); text-shadow: none; outline: none; }
-.insert:disabled { color: var(--dim); cursor: progress; }
-.insert:disabled::before { content: "● "; color: var(--red); }
+/* once a tape is in, the line shows what the deck is doing and takes no clicks */
+.insert:disabled { cursor: default; }
+.insert:disabled .cursor { display: none; }
+.insert[data-tape="reading"] { color: var(--dim); cursor: progress; }
+.insert[data-tape="reading"]::before { content: "◀◀ "; }
+.insert[data-tape="recording"] { cursor: progress; }
+.insert[data-tape="recording"]::before { content: "● "; color: var(--red); text-shadow: 0 0 8px var(--red); }
+.insert[data-tape="recorded"]::before { content: "■ "; }
 .cursor { animation: blink 1s steps(1) infinite; }
-.insert:disabled .cursor { visibility: hidden; }
 @keyframes blink { 50% { opacity: 0; } }
 
 /* dragging a file over the page */

@@ -29,8 +29,8 @@
 
   <section>
     <input type="file" id="file" accept=".apk,application/vnd.android.package-archive" hidden>
-    <button type="button" class="insert" id="drop">Insert tape<span class="cursor" aria-hidden="true">_</span></button>
-    <p class="dim">Drop the Netflix Android release of Katana ZERO, version 1.1.10, anywhere on this screen, or click
+    <button type="button" class="insert" id="drop"><span id="drop-label">Insert tape</span><span class="cursor" aria-hidden="true">_</span></button>
+    <p class="dim" id="hint">Drop the Netflix Android release of Katana ZERO, version 1.1.10, anywhere on this screen, or click
       above. The game isn't included. The VPK is built in your browser in about a minute.</p>
     <p class="meter" id="progress" hidden><span id="progress-fill"></span><span id="progress-text"></span></p>
     <p class="msg" id="status" role="status" aria-live="polite" hidden></p>

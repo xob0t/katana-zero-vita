@@ -44,6 +44,10 @@ function wallClock() {
   return now.getSeconds() % 2 ? time.replace(':', ' ') : time;
 }
 
+function accepting() {
+  return ['empty', 'rejected', 'jammed'].includes(deck.tape);
+}
+
 function note(node, value) {
   node.hidden = !value;
   if (value) {
@@ -60,7 +64,12 @@ function render() {
   el['osd-counter'].textContent = counter ?? wallClock();
 
   note(el.status, deck.note);
-  el.drop.disabled = tape === 'reading' || tape === 'recording';
+  // INSERT TAPE only while there's no tape to work on: before a build, or after one was rejected or failed
+  el.drop.disabled = !accepting();
+  el.drop.dataset.tape = tape;
+  el.hint.hidden = !accepting();
+  el['drop-label'].textContent = { reading: 'Reading tape', recording: 'Recording', recorded: 'Recorded' }[tape]
+    ?? 'Insert tape';
 
   el.progress.hidden = !['recording', 'recorded', 'jammed'].includes(tape);
   const filled = Math.round(deck.step[0] * 20);  // a VCR menu bar: 20 blocks
@@ -122,7 +131,7 @@ function call(fn, ...args) {
 
 // An APK went in: check it, then record the VPK straight away
 async function insert(file) {
-  if (!file || deck.tape === 'reading' || deck.tape === 'recording') return;
+  if (!file || !accepting()) return;
   if (deck.vpk) URL.revokeObjectURL(deck.vpk.url);
   Object.assign(deck, {
     tape: 'reading', vpk: null, log: [], step: [0, ''],
@@ -140,7 +149,7 @@ async function insert(file) {
     render();
     return;
   }
-  await record(verdict.warning ? ['warn', verdict.warning] : ['ok', `Katana ZERO ${verdict.version}. Recording.`]);
+  await record(verdict.warning ? ['warn', verdict.warning] : ['ok', `Katana ZERO ${verdict.version}.`]);
 }
 
 async function record(note) {
@@ -176,7 +185,7 @@ function dragging(on) {
   document.body.classList.toggle('dragging', on);
 }
 document.addEventListener('dragenter', (e) => {
-  if (![...e.dataTransfer.types].includes('Files')) return;
+  if (!accepting() || ![...e.dataTransfer.types].includes('Files')) return;
   dragDepth += 1;
   dragging(true);
 });
