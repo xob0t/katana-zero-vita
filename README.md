@@ -81,10 +81,12 @@ To install a source build without the web builder:
    Xbox button prompts as Vita buttons (`--xbox-glyphs` keeps the originals). A `game.apk` inside the app, as the web
    builder makes, takes precedence over this one.
 
-The web builder is `web/`, served by GitHub Pages straight from the repository. It runs `web/builder.py` and the
-scripts in `scripts/` under [Pyodide](https://pyodide.org), so it makes the same `game.apk` as the command line. The
-loader it packs is a prebuilt copy in `web/base/`. After changing the loader, copy `build/app/eboot.bin` and
-`build/app/KatanaZero.vpk_param.sfo` (as `param.sfo`) there and commit them.
+The web builder is `web/`. It runs `web/builder.py` and the scripts in `scripts/` under [Pyodide](https://pyodide.org),
+so it makes the same `game.apk` as the command line. Pushing a version tag (`v*`) runs
+`.github/workflows/web-builder.yml`, which builds the loader and publishes the page with it to GitHub Pages; pull
+requests only build it, as an artifact to test first. To try the page locally, copy `build/app/eboot.bin` and
+`build/app/KatanaZero.vpk_param.sfo` (as `param.sfo`) to `web/base/` and serve the repository root
+(`python -m http.server`), then open `/web/`.
 
 ## Changes to the loader
 

@@ -1,0 +1,75 @@
+# Builds the loader and publishes the web VPK builder (web/) to GitHub Pages when a version tag (v*) is pushed.
+# Pull requests and manual runs only build, and upload the site as an artifact to try first: the loader comes from a
+# Linux softfp VitaSDK here, not the Windows one used locally, so test a build on a Vita before tagging it.
+name: Web builder
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths: ['loader/**', 'patches/**', 'scripts/**', 'web/**', 'livearea/template.xml', '.github/workflows/web-builder.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: atamanenko/vitasdk-softfp:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Dependencies (vitaGL, openal-soft, vitaShaRK, SceShaccCgExt, opensles)
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          BUILD_DIR="$RUNNER_TEMP/deps" bash scripts/setup-deps.sh
+
+      - name: Loader
+        run: |
+          # The app build packs LiveArea art, which is game art and not in the repository. The web builder draws its
+          # own from the user's APK, so 1x1 placeholders do here.
+          for f in icon0 bg0 startup; do
+            echo iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg== | base64 -d > livearea/$f.png
+          done
+          cmake -S loader -B build/app -DKATANA_APP=1
+          cmake --build build/app -j "$(nproc)"
+          test -s build/app/eboot.bin && test -s build/app/KatanaZero.vpk_param.sfo
+
+      - name: Site
+        run: |
+          # The page loads web/, the APK scripts from scripts/ and the LiveArea template, all relative to the site root
+          mkdir -p site/web/base site/scripts site/livearea
+          cp -r web/. site/web/
+          cp scripts/prepare_apk.py scripts/patch_plt_calls.py scripts/vita_glyphs.py scripts/extract_art.py \
+             scripts/make_livearea.py site/scripts/
+          cp livearea/template.xml site/livearea/
+          cp build/app/eboot.bin site/web/base/eboot.bin
+          cp build/app/KatanaZero.vpk_param.sfo site/web/base/param.sfo
+          git describe --tags --always > site/web/base/version.txt
+          printf '<!doctype html><meta http-equiv="refresh" content="0; url=web/">\n' > site/index.html
+          touch site/.nojekyll
+          ls -la site/web/base
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}web/
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

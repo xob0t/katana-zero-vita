@@ -11,3 +11,6 @@ build.log
 build-*.log
 livearea/*.png
 __pycache__/
+
+# The web builder's prebuilt loader: built and deployed by .github/workflows/web-builder.yml
+web/base/
