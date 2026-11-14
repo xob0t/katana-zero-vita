@@ -45,7 +45,6 @@ body {
   padding: 16px 26px; font: 34px/1 var(--osd); letter-spacing: 0.06em; color: #fff;
   text-shadow: 0 0 8px rgba(255, 255, 255, 0.55), 2px 0 0 rgba(255, 46, 136, 0.5), -2px 0 0 rgba(46, 230, 255, 0.5); }
 #osd-mode.recording::first-letter { color: var(--red); }
-.blink { animation: blink 1s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
 
 main { position: relative; max-width: 760px; margin: 0 auto; padding: 120px 22px 60px; }

@@ -25,7 +25,7 @@ function clock(ms) {
   return `${Math.floor(t / 3600)}:${mm}:${ss}`;
 }
 
-// What the on-screen display shows for each tape state: [mode, counter]; no counter blinks 12:00
+// What the on-screen display shows for each tape state: [mode, counter]; without a counter it shows the time
 function osdFor(tape) {
   const elapsed = clock((deck.stopped || Date.now()) - deck.started);
   return {
@@ -37,6 +37,13 @@ function osdFor(tape) {
     recorded: ['▶ PLAY', elapsed],
     jammed: ['■ STOP', null],
   }[tape];
+}
+
+// The VCR clock: local time, the colon blinking every second
+function wallClock() {
+  const now = new Date();
+  const time = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return now.getSeconds() % 2 ? time.replace(':', ' ') : time;
 }
 
 function note(node, value) {
@@ -52,8 +59,7 @@ function render() {
   const [mode, counter] = osdFor(tape);
   el['osd-mode'].textContent = mode;
   el['osd-mode'].classList.toggle('recording', tape === 'recording');
-  el['osd-counter'].textContent = counter ?? '12:00';
-  el['osd-counter'].classList.toggle('blink', counter === null);
+  el['osd-counter'].textContent = counter ?? wallClock();
 
   note(el['file-status'], deck.fileNote);
   note(el['build-status'], deck.buildNote);
@@ -184,4 +190,5 @@ el.drop.addEventListener('drop', (e) => {
 
 el.build.addEventListener('click', record);
 
+setInterval(render, 1000);  // the clock
 render();
