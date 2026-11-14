@@ -9,6 +9,7 @@ Usage: python scripts/patch_plt_calls.py <in.so> <out.so> [--exclude sym ...] [-
 """
 import argparse
 import bisect
+import io
 import struct
 
 from elftools.elf.elffile import ELFFile
@@ -27,18 +28,11 @@ def rot_imm(ins):
     return ((imm >> r) | (imm << (32 - r))) & 0xffffffff
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("src")
-    ap.add_argument("dst")
-    ap.add_argument("--exclude", nargs="*", default=[])
-    ap.add_argument("--keep-scripts", action="store_true",
-                    help="leave every gml_Script_* call on the PLT (for hooks through GOT slots)")
-    args = ap.parse_args()
-    exclude = DEFAULT_EXCLUDE | set(args.exclude)
-
-    data = bytearray(open(args.src, "rb").read())
-    elf = ELFFile(open(args.src, "rb"))
+def patch(src, exclude=(), keep_scripts=False):
+    """Returns the patched library bytes and the summary lines for the runner bytes `src`."""
+    exclude = DEFAULT_EXCLUDE | set(exclude)
+    data = bytearray(src)
+    elf = ELFFile(io.BytesIO(src))
     text = elf.get_section_by_name(".text")
     plt = elf.get_section_by_name(".plt")
     dynsym = elf.get_section_by_name(".dynsym")
@@ -53,7 +47,7 @@ def main():
     slot_target = {}
     for rel in elf.get_section_by_name(".rel.plt").iter_relocations():
         sym = dynsym.get_symbol(rel["r_info_sym"])
-        if sym["st_shndx"] != "SHN_UNDEF" and sym["st_value"] and sym.name not in exclude                 and not (args.keep_scripts and "gml_Script_" in sym.name):
+        if sym["st_shndx"] != "SHN_UNDEF" and sym["st_value"] and sym.name not in exclude                 and not (keep_scripts and "gml_Script_" in sym.name):
             slot_target[rel["r_offset"]] = (sym["st_value"], sym.name)
 
     # ARM-mode function ranges (thumb functions have bit 0 set)
@@ -140,11 +134,23 @@ def main():
         struct.pack_into("<I", data, addr + 4, 0xe340c000 | ((hi >> 12) << 16) | (hi & 0xfff))
         veneers += 1
 
+    lines = [f"patched {patched} call sites ({out_of_range} out of range, {thumb_target} thumb targets skipped)",
+             f"retargeted {veneers} veneers straight to their functions"]
+    lines += [f"  {n:6d} {name}" for name, n in sorted(names.items(), key=lambda kv: -kv[1])[:15]]
+    return bytes(data), lines
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("src")
+    ap.add_argument("dst")
+    ap.add_argument("--exclude", nargs="*", default=[])
+    ap.add_argument("--keep-scripts", action="store_true",
+                    help="leave every gml_Script_* call on the PLT (for hooks through GOT slots)")
+    args = ap.parse_args()
+    data, lines = patch(open(args.src, "rb").read(), args.exclude, args.keep_scripts)
     open(args.dst, "wb").write(data)
-    print(f"patched {patched} call sites ({out_of_range} out of range, {thumb_target} thumb targets skipped)")
-    print(f"retargeted {veneers} veneers straight to their functions")
-    for name, n in sorted(names.items(), key=lambda kv: -kv[1])[:15]:
-        print(f"  {n:6d} {name}")
+    print("\n".join(lines))
 
 
 if __name__ == "__main__":

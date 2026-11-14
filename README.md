@@ -4,6 +4,8 @@ PS Vita port of Katana ZERO, built from the Netflix Android release (1.1.10). Th
 (`libyoyo.so`) runs on the Vita through [YoYo Loader Vita](https://github.com/Rinnegatamante/yoyoloader_vita),
 vendored in `loader/` from upstream commit `e32f68f`. No game files are included. You need your own APK.
 
+**To play, build the VPK from your APK with the [web builder](https://xob0t.github.io/katana-zero-vita/web/).**
+
 The game is playable at full speed. Light rooms run at 60 fps, heavy rooms at 30. The CPU is the limit: the game
 logic runs on one core and can't be split across more. A 500 MHz profile in PSVshell adds a few fps in heavy rooms
 (the loader runs at 444 MHz).
@@ -39,13 +41,15 @@ back the original.
 
 ## Installing on a Vita
 
-1. Install kubridge, FdFix and `libshacccg.suprx`.
-2. Install `build/app/KatanaZero.vpk` (title ID `KTNZ00001`). It contains only the loader.
-3. Build the game APK with `python scripts/prepare_apk.py <Katana ZERO 1.1.10 APK> game.apk`
-   (needs `pip install lz4 pyelftools`) and copy it to `ux0:data/gms/katanazero/game.apk`. This also redraws the
-   Xbox button prompts as Vita buttons (`--xbox-glyphs` keeps the originals).
-4. The first launch compiles every shader, which takes about 3 minutes. Shaders are cached in
-   `ux0:data/shader_cache/KTNZ00001`, so later launches reach the title screen in about a minute.
+1. Install kubridge, FdFix and `libshacccg.suprx` on the Vita.
+2. Open the [web builder](https://xob0t.github.io/katana-zero-vita/web/) and drop in the Netflix Android release of
+   Katana ZERO, version 1.1.10. It builds `KatanaZero.vpk` in your browser in about a minute, with the game inside.
+   Your APK isn't uploaded anywhere.
+3. Copy the VPK to `ux0:VPK/` and install it with VitaShell.
+
+The first launch compiles every shader, which takes about 3 minutes. Shaders are cached in
+`ux0:data/shader_cache/KTNZ00001`, so later launches reach the title screen in about a minute. To update, build a
+new VPK and install it over the old one. Saves are kept.
 
 With `debugMode=1` in `yyl.cfg` the log goes to `ux0:data/gms/shared/yyl.log`.
 
@@ -68,6 +72,19 @@ bash scripts/build.sh        # build/app/KatanaZero.vpk and build/loader/loader2
 `make_livearea.py` builds the LiveArea images from the game's title screen art in your APK, into `livearea/`.
 They are game art, so they are not committed, and the app build stops if they are missing.
 
+To install a source build without the web builder:
+
+1. Install `build/app/KatanaZero.vpk` (title ID `KTNZ00001`). It contains only the loader.
+2. Build the game APK with `python scripts/prepare_apk.py <Katana ZERO 1.1.10 APK> game.apk`
+   (needs `pip install lz4 pyelftools`) and copy it to `ux0:data/gms/katanazero/game.apk`. This also redraws the
+   Xbox button prompts as Vita buttons (`--xbox-glyphs` keeps the originals). A `game.apk` inside the app, as the web
+   builder makes, takes precedence over this one.
+
+The web builder is `web/`, served by GitHub Pages straight from the repository. It runs `web/builder.py` and the
+scripts in `scripts/` under [Pyodide](https://pyodide.org), so it makes the same `game.apk` as the command line. The
+loader it packs is a prebuilt copy in `web/base/`. After changing the loader, copy `build/app/eboot.bin` and
+`build/app/KatanaZero.vpk_param.sfo` (as `param.sfo`) there and commit them.
+
 ## Changes to the loader
 
 - Imports needed by runners built with NDK r26+: fortified libc, `*_l` locale functions, `pthread_rwlock_*`,
@@ -77,3 +94,19 @@ They are game art, so they are not committed, and the app build stops if they ar
   `ux0:data/gms/<game>/assets/netflix/<slot>.sav`. Leaderboards and telemetry do nothing.
 - `loader/loader/katana.c` holds the game-specific speedups and the 30 fps mode. Its comments have the
   measurements and the `exp_*` flags that turn each change off for comparison.
+
+## Acknowledgements
+
+- Askiisoft and Devolver Digital for Katana ZERO, and Netflix for the Android release this port runs.
+- Rinnegatamante for [YoYo Loader Vita](https://github.com/Rinnegatamante/yoyoloader_vita), which this port is
+  built on, and for [vitaGL](https://github.com/Rinnegatamante/vitaGL),
+  [vitaShaRK](https://github.com/Rinnegatamante/vitaShaRK), the Vita port of
+  [OpenAL Soft](https://github.com/Rinnegatamante/openal-soft) and the softfp VitaSDK packages.
+- TheFloW for the original .so loader that YoYo Loader grew from, and for
+  [kubridge](https://github.com/TheOfficialFloW/kubridge), [FdFix](https://github.com/TheOfficialFloW/FdFix) and
+  VitaShell.
+- JohnnyonFlame for GMLoader, which YoYo Loader uses as a reference.
+- bythos14 for [SceShaccCgExt](https://github.com/bythos14/SceShaccCgExt) and frangarcj for
+  [OpenSL ES](https://github.com/frangarcj/opensles) on the Vita.
+- The [VitaSDK](https://vitasdk.org) team, and Team Molecule for HENkaku and Ensō.
+- [Pyodide](https://pyodide.org), Pillow, python-lz4 and pyelftools, which run the web builder.

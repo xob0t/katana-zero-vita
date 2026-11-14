@@ -95,7 +95,8 @@ def place(canvas, img, cx, cy, width):
     canvas.alpha_composite(img, (int(cx - img.width / 2), int(cy - img.height / 2)))
 
 
-def game_art(apk):
+def game_art(apk, out=None):
+    out = out or OUT
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from extract_art import GameData, load_game_data
 
@@ -110,8 +111,8 @@ def game_art(apk):
         img = game_background(game, w, h)
         if logo_at:
             place(img, logo, *logo_at)
-        img.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=256).save(os.path.join(OUT, name), optimize=True)
-    print(f"LiveArea art written to {os.path.normpath(OUT)}")
+        img.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=256).save(os.path.join(out, name), optimize=True)
+    print(f"LiveArea art written to {os.path.normpath(out)}")
 
 
 def main():

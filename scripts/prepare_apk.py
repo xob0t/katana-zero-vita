@@ -15,13 +15,11 @@ Usage: python scripts/prepare_apk.py [--xbox-glyphs] <input.apk> <output.apk>
 import bz2
 
 import lz4.block
-import os
 import struct
-import subprocess
 import sys
-import tempfile
 import zipfile
 
+import patch_plt_calls
 from vita_glyphs import encode_gm_qoi, patched_pages
 
 KEEP_LIB = "lib/armeabi-v7a/libyoyo.so"
@@ -105,25 +103,37 @@ def recompress_textures(data, vita_glyphs=True):
 
 
 def patch_runner(payload):
-    """Runs patch_plt_calls.py on the runner and returns the patched bytes."""
-    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "patch_plt_calls.py")
-    with tempfile.TemporaryDirectory() as tmp:
-        src, dst = os.path.join(tmp, "in.so"), os.path.join(tmp, "out.so")
-        open(src, "wb").write(payload)
-        out = subprocess.run([sys.executable, script, src, dst], check=True, capture_output=True, text=True).stdout
-        print("libyoyo.so: " + out.splitlines()[0])
-        return open(dst, "rb").read()
+    """Rewrites the runner's PLT calls (scripts/patch_plt_calls.py) and returns the patched bytes."""
+    data, lines = patch_plt_calls.patch(payload)
+    print("libyoyo.so: " + lines[0])
+    return data
 
 
-def main():
-    args = sys.argv[1:]
-    vita_glyphs = "--xbox-glyphs" not in args
-    args = [a for a in args if a != "--xbox-glyphs"]
-    if len(args) != 2:
-        raise SystemExit(__doc__)
-    src, dst = args
+def apk_problem(names):
+    """Returns why an APK with these entry names can't be used, or None. Shared with the web builder."""
+    if KEEP_LIB not in names:
+        if any(n.endswith(".apk") for n in names):
+            return ("This is an APK bundle (XAPK, APKM or APKS), split by device. Use a single APK that includes "
+                    "the 32-bit runner, lib/armeabi-v7a/libyoyo.so.")
+        if "lib/arm64-v8a/libyoyo.so" in names:
+            return ("This APK only has the 64-bit runner (lib/arm64-v8a); APKs copied off a 64-bit phone often do. "
+                    "The Vita needs the 32-bit one, lib/armeabi-v7a/libyoyo.so, so use a universal APK.")
+        if not any(n.startswith("lib/") for n in names):
+            return ("This APK has no runner library. It is probably the base APK of a split install, which keeps "
+                    "the runner in a separate APK. Use a single APK that includes lib/armeabi-v7a/libyoyo.so.")
+        return "This APK has no 32-bit ARM runner, lib/armeabi-v7a/libyoyo.so."
+    if "assets/assets/game.droid" not in names and "assets/game.droid" not in names:
+        return "This APK has no game data (assets/game.droid). Is it Katana ZERO?"
+    return None
+
+
+def prepare(src, dst, vita_glyphs=True):
+    """Writes the loader's game.apk to `dst` (a path or a writable file) from the Android APK `src`."""
     with zipfile.ZipFile(src) as zi:
         names = set(zi.namelist())
+        problem = apk_problem(names)
+        if problem:
+            raise SystemExit(problem)
         nested = any(n.startswith("assets/assets/") for n in names)
         entries = {}
         for info in zi.infolist():
@@ -134,9 +144,6 @@ def main():
                 entries["assets/" + n[len("assets/assets/"):]] = n
             elif n in ("assets/splash.png", "assets/portrait_splash.png") or (not nested and n.startswith("assets/")):
                 entries.setdefault(n, n)
-        if KEEP_LIB not in entries or "assets/game.droid" not in entries:
-            raise SystemExit("input is missing the armeabi-v7a runner or game.droid")
-
         with zipfile.ZipFile(dst, "w", zipfile.ZIP_STORED) as zo:
             for out_name, in_name in sorted(entries.items()):
                 payload = zi.read(in_name)
@@ -149,6 +156,15 @@ def main():
                           + (", Vita button glyphs)" if vita_glyphs else ")"))
                 zo.writestr(zipfile.ZipInfo(out_name, (2020, 1, 1, 0, 0, 0)), payload)
     print(f"wrote {dst} ({len(entries)} entries)")
+
+
+def main():
+    args = sys.argv[1:]
+    vita_glyphs = "--xbox-glyphs" not in args
+    args = [a for a in args if a != "--xbox-glyphs"]
+    if len(args) != 2:
+        raise SystemExit(__doc__)
+    prepare(*args, vita_glyphs)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Katana ZERO for PS Vita · VPK builder</title>
+<meta name="description" content="Build the Katana ZERO PS Vita VPK from your own Android APK. Everything happens in your browser.">
+<meta name="color-scheme" content="dark">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" id="favicon" href="favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<div class="crt" aria-hidden="true"></div>
+
+<!-- the VCR's on-screen display: deck mode on the left, clock or tape counter on the right -->
+<div class="osd" aria-hidden="true">
+  <span id="osd-mode"></span>
+  <span id="osd-counter"></span>
+</div>
+<div class="release" aria-hidden="true">Release to insert</div>
+
+<main>
+  <header>
+    <h1>Katana Zero</h1>
+    <p class="dim">PS Vita port · VPK builder</p>
+  </header>
+
+  <section>
+    <input type="file" id="file" accept=".apk,application/vnd.android.package-archive" hidden>
+    <button type="button" class="insert" id="drop"><span id="drop-label">Insert tape</span><span class="cursor" aria-hidden="true">_</span></button>
+    <p class="dim" id="hint">Drop the Netflix Android release of Katana ZERO, version 1.1.10, anywhere on this screen, or click
+      above. The game isn't included. The VPK is built in your browser in about a minute.</p>
+    <p class="meter" id="progress" hidden><span id="progress-fill"></span><span id="progress-text"></span></p>
+    <p class="msg" id="status" role="status" aria-live="polite" hidden></p>
+    <a class="eject" id="download" hidden download="KatanaZero.vpk">Download KatanaZero.vpk</a>
+    <details class="log" id="log-box" hidden><summary>Build log</summary><pre id="log"></pre></details>
+  </section>
+
+  <section>
+    <h2>Install</h2>
+    <ol>
+      <li>The Vita needs HENkaku or Ensō, VitaShell, and three plugins:
+        <a href="https://github.com/TheOfficialFloW/kubridge/releases">kubridge</a>,
+        <a href="https://github.com/TheOfficialFloW/FdFix/releases">FdFix</a> and libshacccg.suprx
+        (<a href="https://samilops2.gitbook.io/vita-troubleshooting-guide/shader-compiler/extract-libshacccg.suprx">how to get it</a>).</li>
+      <li>Copy KatanaZero.vpk to ux0:VPK/ over USB or FTP. Leave about 550 MB free on the memory card.</li>
+      <li>In VitaShell, press cross on the VPK to install it. Delete the VPK afterwards.</li>
+      <li>The first launch compiles every shader and takes about 3 minutes. After that it's about a minute.</li>
+    </ol>
+    <p class="dim">Settings are in ux0:data/gms/katanazero/yyl.cfg, listed in the
+      <a href="https://github.com/xob0t/katana-zero-vita#compromises">README</a>. To update, build a new VPK and install
+      it over the old one. Your saves stay.</p>
+  </section>
+
+  <section class="credits">
+    <h2>Credits</h2>
+    <ul>
+      <li>Katana ZERO by Askiisoft, published by Devolver Digital</li>
+      <li>YoYo Loader, vitaGL and vitaShaRK by <a href="https://github.com/Rinnegatamante/yoyoloader_vita">Rinnegatamante</a></li>
+      <li>The original .so loader, kubridge, FdFix and VitaShell by <a href="https://github.com/TheOfficialFloW">TheFloW</a></li>
+      <li>GMLoader by JohnnyonFlame</li>
+      <li>SceShaccCgExt by <a href="https://github.com/bythos14/SceShaccCgExt">bythos14</a>, OpenSL ES for Vita by
+        <a href="https://github.com/frangarcj/opensles">frangarcj</a></li>
+      <li><a href="https://vitasdk.org">VitaSDK</a>, and HENkaku and Ensō by Team Molecule</li>
+      <li>This page runs on <a href="https://pyodide.org">Pyodide</a>, Pillow, python-lz4 and pyelftools</li>
+    </ul>
+  </section>
+
+  <footer class="dim">
+    Fan project. Not affiliated with Askiisoft, Devolver Digital or Netflix.
+    <a href="https://github.com/xob0t/katana-zero-vita">Source</a>
+  </footer>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
