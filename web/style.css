@@ -129,22 +129,6 @@ h1 { text-shadow: -3px 0 rgba(46, 230, 255, 0.75), 3px 0 rgba(255, 46, 136, 0.6)
 .meter-row { display: flex; justify-content: space-between; margin-top: 6px; font: 22px/1 var(--osd);
   text-transform: uppercase; color: var(--dim); }
 
-/* playback: the LiveArea art from the user's APK on a CRT */
-.screen { position: relative; margin-top: 22px; border: 12px solid #1b1324; border-radius: 22px; overflow: hidden;
-  background: #000; box-shadow: 0 0 0 2px var(--edge), 0 18px 40px rgba(0, 0, 0, 0.5);
-  animation: power-on 0.55s ease-out; }
-.screen img { display: block; width: 100%; image-rendering: pixelated; filter: saturate(1.15) contrast(1.05); }
-.screen::after { content: ""; position: absolute; inset: 0;
-  background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.3) 0 1px, transparent 1px 3px),
-    radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.6) 100%); }
-.screen-osd { position: absolute; top: 12px; left: 18px; z-index: 1; font: 34px/1 var(--osd); color: #fff;
-  text-shadow: 0 0 8px rgba(255, 255, 255, 0.6); }
-@keyframes power-on {
-  0% { transform: scaleY(0.01) scaleX(0.6); filter: brightness(4); }
-  45% { transform: scaleY(0.01) scaleX(1); filter: brightness(3); }
-  100% { transform: none; filter: none; }
-}
-
 .log { margin-top: 20px; }
 .log summary { font: 21px/1 var(--osd); text-transform: uppercase; color: var(--dim); cursor: pointer; }
 .log pre { max-height: 220px; overflow: auto; margin: 10px 0 0; padding: 10px 12px; background: #07040b;

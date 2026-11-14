@@ -7,9 +7,9 @@
   const buildBtn = $('build'), stepBuild = $('step-build');
   const progress = $('progress'), fill = $('progress-fill'), ptext = $('progress-text'), ptime = $('progress-time');
   const download = $('download'), logBox = $('log-box'), log = $('log');
-  const osdMode = $('osd-mode'), osdCounter = $('osd-counter'), screen = $('screen'), screenArt = $('screen-art');
+  const osdMode = $('osd-mode'), osdCounter = $('osd-counter');
 
-  let worker = null, busy = false, downloadUrl = null, artUrl = null, timer = null, started = 0;
+  let worker = null, busy = false, downloadUrl = null, timer = null, started = 0;
 
   // The on-screen display plays along: deck mode on the left, a blinking 12:00 until there's a tape to count
   function osd(mode, counter) {
@@ -45,7 +45,6 @@
     progress.hidden = true;
     buildStatus.hidden = true;
     download.hidden = true;
-    screen.hidden = true;
     if (downloadUrl) { URL.revokeObjectURL(downloadUrl); downloadUrl = null; }
   }
 
@@ -81,10 +80,6 @@
     } else if (m.type === 'log') {
       logBox.hidden = false;
       log.textContent += m.line + '\n';
-    } else if (m.type === 'art') {
-      if (artUrl) URL.revokeObjectURL(artUrl);
-      artUrl = URL.createObjectURL(new Blob([m.data], { type: 'image/png' }));
-      screenArt.src = artUrl;
     } else if (m.type === 'progress') {
       setProgress(m.value, m.label);
     } else if (m.type === 'done') {
@@ -96,7 +91,6 @@
       download.hidden = false;
       status(buildStatus, 'ok', 'KatanaZero.vpk is ready (' + sizeMB(m.blob.size) + ').');
       buildBtn.disabled = false;
-      if (artUrl) screen.hidden = false;
       osd('▶ PLAY', tapeTime(Date.now() - started));
     } else if (m.type === 'error') {
       busy = false;
@@ -142,7 +136,6 @@
     log.textContent = '';
     if (downloadUrl) { URL.revokeObjectURL(downloadUrl); downloadUrl = null; }
     setProgress(0, 'Starting');
-    screen.hidden = true;
     buildBtn.classList.add('on');
     started = Date.now();
     ptime.textContent = '0:00:00';
