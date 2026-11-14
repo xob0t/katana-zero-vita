@@ -205,3 +205,9 @@ document.addEventListener('drop', (e) => {
 
 setInterval(render, 1000);  // the clock
 render();
+
+// The loader's version, written by the deploy workflow (absent in a local checkout)
+fetch('base/version.txt', { cache: 'no-cache' })
+  .then((r) => (r.ok ? r.text() : ''))
+  .then((v) => { if (v.trim()) el.version.textContent = ` · loader ${v.trim()}`; })
+  .catch(() => {});
