@@ -1996,6 +1996,22 @@ static void t30_install(gml_func_entry *table) {
 		t30_freeze ? "x2" : "x1");
 }
 
+// obj_interaction is the yes/no prompt behind interact_binary (pause, title and level-select confirms, interactable
+// objects). Its Create ends with selection = -1 for touch: nothing is highlighted until a d-pad press, and the first
+// press only reaches choice 0. Start on defaultSelect like the PC build; confirming with no selection already picked
+// defaultSelect (Step), so only the starting highlight changes. Dialogue choices (obj_choicebox) start at 0 already.
+static event_func orig_interaction_create;
+static int *var_selection, *var_default_select;
+
+static void interaction_create_preselect(void *self, void *other) {
+	orig_interaction_create(self, other);
+	gml_rvalue *def = instance_var(self, var_default_select);
+	double d = def ? def->val : 0.0;  // copy before the next lookup
+	gml_rvalue *sel = instance_var(self, var_selection);
+	if (sel && sel->val == -1.0)
+		sel->val = d;
+}
+
 static void patch_performance() {
 	gml_func_entry *table = (gml_func_entry *)so_symbol(&yoyoloader_mod, "g_GMLFuncs");
 	frame_count = (uint32_t *)so_symbol(&yoyoloader_mod, "g_IOFrameCount");
@@ -2042,6 +2058,12 @@ static void patch_performance() {
 	graphics_flush = (void *)so_symbol(&yoyoloader_mod, "_ZN8Graphics5FlushEv");
 	if (!exp_flag("touchui") && graphics_flush && (orig = gml_replace(table, "gml_Object_obj_screenBtn_Draw_64", screen_btn_gui_hidden)))
 		orig_screen_btn_gui = orig;
+	var_selection = (int *)so_symbol(&yoyoloader_mod, "g_VAR_selection");
+	var_default_select = (int *)so_symbol(&yoyoloader_mod, "g_VAR_defaultSelect");
+	if (var_selection && var_default_select && !exp_flag("touchui") &&
+		(orig = gml_replace(table, "gml_Object_obj_interaction_Create_0", interaction_create_preselect)))
+		orig_interaction_create = orig;
+	debugPrintf("prompts: default choice highlight %s\n", orig_interaction_create ? "on" : "NOT hooked");
 
 	app_width = (int *)so_symbol(&yoyoloader_mod, "g_ApplicationWidth");
 	app_height = (int *)so_symbol(&yoyoloader_mod, "g_ApplicationHeight");
