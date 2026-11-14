@@ -6,20 +6,45 @@ vendored in `loader/` from upstream commit `e32f68f`. No game files are included
 
 ## Current state
 
-The game is playable, but not at full speed everywhere.
+The game is playable at full speed.
 
 - **Light rooms run at 60 fps**, the first level included.
-- **Heavy rooms run at about 30-45 fps.** GameMaker slows the whole game down instead of dropping frames, so these
-  rooms play in slow motion: at 30 fps, half speed. The worst is the haunted minecart ride (~31 fps); factory rooms
-  run at ~38.
+- **Heavy rooms run at 30 fps.** These rooms can't hold 60 on the Vita, and GameMaker slows the whole game down
+  instead of dropping frames, so they used to play in slow motion. The minecart ride ran at 31 fps, half speed. Now a
+  room that stays under 50 fps for a second and a half switches to 30 frames a second with the game's clock doubled.
+  The heaviest rooms hold 27-30 fps, so they play at 90-100% speed.
 - **The CPU is the limit**, not the GPU. The game logic runs on one core and can't be split across more. The cheap
-  wins are done; what's left would mean weeks of work for about 10% more speed.
+  wins are done. What's left would mean weeks of work for about 10% more speed.
 - **Overclocking helps a little.** The loader runs the CPU at 444 MHz. A 500 MHz profile in PSVshell adds a few fps
-  in heavy rooms but doesn't get them to 60.
-- **Some effects are off by default for speed**: rain, clothesline light tint, club dancer glow, cathedral dust and
-  replays. They can be turned back on in the [settings](#settings-yylcfg).
-- **Loading:** the first launch takes about 3 minutes to compile shaders, later launches about 1 minute. A room
-  load can pause for 1-1.5 s when texture memory is cleared.
+  in heavy rooms.
+- **Loading takes a while.** The first launch spends about 3 minutes compiling shaders, later launches about 1
+  minute. A room load can pause for 1-1.5 s when texture memory is cleared.
+
+Getting here cost some effects and some accuracy. See [compromises](#compromises).
+
+## Compromises
+
+Each one is a setting in `ux0:data/gms/katanazero/yyl.cfg`. The value after the description brings back the original.
+
+- **30 fps in heavy rooms.** Less smooth, and input is read 30 times a second. Some of the game's timers count frames
+  instead of time, so they run differently at 30. The slow motion ramp takes 0.3 s instead of 0.16 s, and hit-stops,
+  enemy reactions and dialogue typing are slightly off. Cutscenes and scripted sequences, like the tutorial, always
+  run at 60 because they break at 30. `fps30=0` brings back slow motion. `fps30=2` runs 30 everywhere.
+- **No rain.** Rainy levels run about 20% faster without it. `rain=2`, or `rain=1` for half the drops.
+- **No replays.** No end-of-level VHS replay and no death rewind. With them on, memory runs out after a few minutes
+  in one room and heavy rooms lose about 2 fps. `replays=1` leaves it to the game's own graphics option.
+- **No coloured light tint on clotheslines.** It cost about 7 fps near them. `ropeLights=1`.
+- **No rim glow on club dancers.** It's about 285 extra draws per frame, 44 fps with it and 52-56 without. The light
+  show stays. `dancerGlow=1`.
+- **No dust in the cathedral's window light.** 41 fps with it, 59 without. `cathedralDust=1`.
+- **Lower resolution in the cathedral.** A room that keeps the GPU waiting at 960x540, which so far is only the
+  cathedral's window light, drops to 640x360 until the next room. `dynamicRes=0`.
+- **Coarser laser deaths.** The body is cut into 4 times fewer, 4 times thicker slices. `dissolveChunkScale=1`.
+- **Thinner prison fog.** One puff in 4 is kept and drawn denser. `fogScale=1`.
+- **Sound limits.** At most 3 copies of one sound and 32 voices at once. Laser deaths start dozens of identical
+  sounds and stalled the game mixing them. `sameSoundLimit=0` and `maxVoices=0`.
+- **Lighting updates 30 times a second** in rooms that run at 60. This one has no setting. The `exp_lighting60`
+  test flag turns it off, see [performance](#performance).
 
 ## Building (Windows, Git Bash, no WSL)
 
@@ -45,36 +70,13 @@ They are game art, so they are not committed, and the app build stops if they ar
 4. The first launch compiles every shader, which takes about 3 minutes. Shaders are cached in
    `ux0:data/shader_cache/KTNZ00001`, so later launches reach the title screen in about a minute.
 
-Settings are in `ux0:data/gms/katanazero/yyl.cfg`. With `debugMode=1` the log goes to
-`ux0:data/gms/shared/yyl.log`.
+Settings are in `ux0:data/gms/katanazero/yyl.cfg`, see [compromises](#compromises). With `debugMode=1` the log
+goes to `ux0:data/gms/shared/yyl.log`.
 
 ### Controls
 
 The game's own controller layout. L and R act as the triggers: L is slow motion, R is roll. The rear touch
 panel is unused.
-
-## Settings (`yyl.cfg`)
-
-Defaults in brackets.
-
-| Setting | Effect |
-| --- | --- |
-| `renderRes=960\|720\|640\|480` [960] | Output resolution; lower ones are upscaled. Lower is not faster (the heavy rooms are CPU-bound), and below 960 text loses pixel columns. |
-| `dynamicRes=0\|1` [1] | A room that keeps the GPU waiting at 960x540 (room_cathedral's window light) drops to 640x360 until the next room. |
-| `replays=0\|1` [0] | Replay recording: the end-of-level VHS replay and the death rewind. With it on, memory runs out after a few minutes in one room and heavy rooms lose ~2 fps. Off, levels end through the game's skip-replay path. With `1` the game's own graphics option decides. |
-| `rain=0\|1\|2` [0] | Rain drops: none, half, all. None is ~20% faster in rainy levels. |
-| `ropeLights=0\|1` [0] | Coloured light tint on clotheslines (~7 fps near them). |
-| `dancerGlow=0\|1` [0] | Club dancers' rim glow from the club lights, ~285 extra draws per frame (44 fps with it, 52-56 without). The light show stays either way. |
-| `cathedralDust=0\|1` [0] | Dust motes in room_cathedral's window light (41 fps with it, 59 without). |
-| `dissolveChunkScale=N` [4] | Laser deaths cut the body into N times fewer, N times thicker slices. `1` is the original. |
-| `fogScale=N` [4] | Prison fog keeps one puff in N, drawn denser. `1` is the original. |
-| `sameSoundLimit=N` [3] | At most N copies of one sound at once (`0`: no limit). Laser deaths start dozens of identical sounds and stalled the game mixing them. |
-| `maxVoices=N` [32] | Overall voice limit (`0` keeps the runner's 128). |
-| `audioGrain=N` [512] | Sound buffer in sample frames, a multiple of 64. The stock 128 crackled. A dropped buffer is logged as `[AUDIO] output late`. |
-| `stickDeadzone=N` [20] | Analog stick deadzone in percent. Vita sticks rest slightly off centre. |
-| `skipNetflixLogo=0\|1` [1] | Skips the Netflix logo at launch; the Netflix screen's checks still run. |
-| `frameSkip=0\|1` [0] | Experimental frame skipping; breaks some scenes. |
-| `memOverlay=0\|1` [0] | YoYo Loader's memory overlay (needs `debugMode=1`). |
 
 ## Changes to the loader
 
@@ -87,7 +89,8 @@ Defaults in brackets.
 ## Performance
 
 The game runs CPU-bound on the Vita, and GameMaker games slow down below 60 fps rather than skip frames. The
-first level runs at ~59.5 fps; heavy combat rooms at roughly 32-44. The source comments have the measurements.
+first level runs at ~59.5 fps. Heavy combat rooms run at roughly 32-44 at 60 Hz, which is why they switch to 30 fps
+mode. The source comments have the measurements.
 
 - The game thread has CPU core 1 to itself; on core 0 it loses ~2 ms per frame to system work.
 - Texture pages are LZ4-compressed inside the runner's QOI container (`prepare_apk.py`) and decoded natively.

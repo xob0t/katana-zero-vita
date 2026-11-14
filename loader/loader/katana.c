@@ -386,6 +386,9 @@ static void light_fast_report(int frames) {
 }
 
 void katana_prof_report(int frames) {
+	extern unsigned t30_letter_skips;
+	if (t30_letter_skips)
+		debugPrintf("[FPS30] %u letter steps skipped on frozen ticks\n", t30_letter_skips);
 	extern uint32_t sound_limit_skipped;
 	if (sound_limit_skipped)
 		debugPrintf("[AUDIO] same-sound copies skipped: %u\n", sound_limit_skipped);
@@ -589,6 +592,13 @@ static event_func orig_particle_draw;
 // Instance pointers are 16-byte aligned; use them for a stable per-instance parity bit
 #define INSTANCE_PARITY(self) (((uintptr_t)(self) >> 4) & 1)
 
+// 30 fps mode (see t30_install) is active: ticks run at 30 Hz, so every-other-tick work runs on every tick
+int t30_active;
+
+static inline int half_rate_tick(void) {
+	return t30_active || !(*frame_count & 1);
+}
+
 // Cloth simulation (clothesline + its softbody nodes) runs at 30Hz, and not at all while the
 // instance is far outside the view: the clothesline alone costs ~5.5 ms/frame (its Draw is
 // 49 KB of GML) even when it isn't on screen. Anything within CLOTH_MARGIN of the view keeps
@@ -639,7 +649,7 @@ static int cloth_far_from_view(void *self) {
 }
 
 static void clothesline_end_step(void *self, void *other) {
-	if (!(*frame_count & 1) && !cloth_far_from_view(self))
+	if (half_rate_tick() && !cloth_far_from_view(self))
 		orig_clothesline_end_step(self, other);
 }
 
@@ -675,7 +685,7 @@ static void clothesline_draw(void *self, void *other) {
 static event_func orig_clothesline_custom_draw, orig_clothesline_custom_end_step;
 
 static void clothesline_custom_end_step(void *self, void *other) {
-	if (!(*frame_count & 1) && !cloth_far_from_view(self))
+	if (half_rate_tick() && !cloth_far_from_view(self))
 		orig_clothesline_custom_end_step(self, other);
 }
 
@@ -688,7 +698,7 @@ static void clothesline_custom_draw(void *self, void *other) {
 }
 
 static void softbody_node_step(void *self, void *other) {
-	if (!(*frame_count & 1) && !cloth_far_from_view(self))
+	if (half_rate_tick() && !cloth_far_from_view(self))
 		orig_softbody_node_step(self, other);
 }
 
@@ -703,7 +713,7 @@ void katana_cloth_report(int frames) {
 
 // Each rain emitter is drawn every other frame, alternating between emitters
 static void rain_draw(void *self, void *other) {
-	if (INSTANCE_PARITY(self) ^ (*frame_count & 1))
+	if (t30_active || (INSTANCE_PARITY(self) ^ (*frame_count & 1)))
 		orig_rain_draw(self, other);
 }
 
@@ -741,7 +751,7 @@ static void particle_draw(void *self, void *other) {
 		if (heavy_profiling)
 			sample_recolor_timer();
 	}
-	if (drawn++ < PARTICLES_ALWAYS_DRAWN || (INSTANCE_PARITY(self) ^ (*frame_count & 1)))
+	if (t30_active || drawn++ < PARTICLES_ALWAYS_DRAWN || (INSTANCE_PARITY(self) ^ (*frame_count & 1)))
 		orig_particle_draw(self, other);
 }
 
@@ -924,7 +934,7 @@ static void DoAStep_Draw_katana(void) {
 		*app_height = *app_new_height = app_set_h = app_surf_h;
 		*app_new_size = 1;
 	}
-	if (lighting30) {
+	if (lighting30 && !t30_active) {
 		gml_rvalue *(*vwrite)(void *, int) = (*(void ***)*global_obj_ptr)[3];
 		gml_rvalue *timer = vwrite(*global_obj_ptr, var_recolor_timer[1]);
 		if (timer && timer->kind == 0) {
@@ -990,7 +1000,8 @@ static void dynamic_res_update(uint32_t swap_us) {
 		}
 		return;
 	}
-	if (dropped || ++frames <= DYNRES_SETTLE_FRAMES)
+	// In 30 fps mode the swap also waits for the second vblank of each frame: not GPU load
+	if (dropped || t30_active || ++frames <= DYNRES_SETTLE_FRAMES)
 		return;
 	bound += swap_us > DYNRES_SWAP_US || dynres_test;
 	if (++window < DYNRES_WINDOW)
@@ -1008,7 +1019,10 @@ static void dynamic_res_update(uint32_t swap_us) {
 
 // Runs right after vglSwapBuffers, between frames: every scene of the frame has been submitted, so the GPU finish
 // and garbage collection below cannot free memory that commands still being recorded refer to
+static void t30_update(void);
+
 void katana_after_swap(uint32_t swap_us) {
+	t30_update();
 	dynamic_res_update(swap_us);
 	if (!texture_flush)
 		return;
@@ -1702,6 +1716,286 @@ static event_func gml_replace(gml_func_entry *table, const char *name, event_fun
 	return NULL;
 }
 
+/*
+ * 30 fps mode (fps30 in yyl.cfg: 0 off, 1 in rooms that can't hold 60 fps (default), 2 everywhere). GameMaker games run one
+ * logic tick per frame, so a CPU-bound room at 31 fps plays at half speed. In this mode such a room runs 30 ticks a
+ * second (paced by the display: two vblanks per frame) and each tick advances the game twice as far, so it plays at
+ * full speed at 30 fps. Not exact: input is read 30 times a second, movement takes steps twice as long, and anything
+ * the game counts in ticks without its time factor runs at half speed (enemy search timeouts, dialogue typing, some
+ * effect lifetimes). What is converted:
+ * - The game's time factor global.fr (slow motion; 0 during hit-stop) is doubled right after obj_master and
+ *   obj_cutscene_master user event 0 set it each tick. Before those run, a value we doubled is put back, so a
+ *   controller that keeps the previous value (pause) does not double it again.
+ * - The hit-stop counter (freeze_timer of those controllers) counts two ticks per tick.
+ * - The player's animation runs with fr = 1 (player_animation overrides it around animation_code): 2 in this mode.
+ * - The runner's built-in clocks run twice per tick: sprite animation (Instance_Animate, image_speed) and alarms
+ *   (HandleAlarm). Built-in motion (speed/hspeed/vspeed, HandleInstanceMovement) too with exp_t30move: off by default,
+ *   since much of the game's motion already multiplies its own speeds by fr.
+ * - The loader's every-other-tick work (lighting refresh, cloth physics, rain and particle drawing) runs every tick,
+ *   and dynamic resolution doesn't count the wait for the second vblank as GPU load.
+ * - Dialogue letters don't start on frozen ticks (t30_letter_step).
+ * Scripted sequences (the game drives the player: the first level's tutorial, cutscenes) count ticks exactly and break
+ * at 30 Hz (the tutorial's slow motion came too late and the player was shot), so they always run at 60 ticks/s.
+ * In mode 1 a room switches after T30_SETTLE_FRAMES once T30_SLOW_FRAMES of a T30_WINDOW-frame window took over
+ * T30_SLOW_US, and stays at 30 Hz until the next room; rooms that switched once start at 30 Hz the next time (death
+ * restarts keep the room). exp_t30anim0, exp_t30alarm0 and exp_t30freeze0 turn the respective conversion off.
+ * Debug: exp_t30trace logs the player's position, exp_t30never keeps 60 ticks/s with the hooks installed (a baseline
+ * for traces), exp_t30watchdog crashes the game (for a core dump) when ticks stop for 3 s in 30 fps mode.
+ */
+int fps30 = 1;
+#define T30_SETTLE_FRAMES 45
+#define T30_WINDOW 45
+#define T30_SLOW_FRAMES 40
+#define T30_SLOW_US 20000
+#define T30_MAX_ROOMS 1024
+static int t30_anim, t30_alarm, t30_move, t30_freeze;
+static int *var_fr, *var_freeze_timer;
+static int t30_fr_scaled; // global.fr currently holds t30_scaled_fr, our doubling of the game's t30_game_fr
+static double t30_game_fr, t30_scaled_fr;
+static unsigned char t30_heavy_room[T30_MAX_ROOMS];
+static event_func orig_master_user0, orig_cutscene_master_user0;
+typedef void *(*gml_script_fn)(void *self, void *other, void *result, int argc, void **args);
+static gml_script_fn orig_player_animation, orig_animation_code;
+static void (*orig_instance_animate)(void *inst);
+static void (*orig_handle_alarm)(void);
+static void (*orig_handle_movement)(int);
+static void (*update_active_lists)(void);
+static int in_player_animation;
+unsigned t30_switches;
+
+static int t30_never; // exp_t30never: hooks (and exp_t30trace) installed, 30 ticks/s never used: a baseline for traces
+static uint32_t t30_scripted_tick; // last tick a cutscene script drove the player
+static volatile int t30_stage; // debug: where the 30 fps hooks were last (the exp_t30watchdog report)
+static gml_script_fn orig_override_control_init;
+
+static void *t30_override_control_init(void *self, void *other, void *result, int argc, void **args) {
+	t30_scripted_tick = *frame_count ? *frame_count : 1;
+	return orig_override_control_init(self, other, result, argc, args);
+}
+
+static void t30_set(int on) {
+	if (on == t30_active)
+		return;
+	t30_active = on;
+	eglSwapInterval(NULL, on ? 2 : 1);
+	t30_switches++;
+	debugPrintf("[FPS30] room %d: %s\n", current_room ? *current_room : -1, on ? "30 ticks/s, double time step" : "60 ticks/s");
+}
+
+// Once per presented frame (katana_after_swap)
+static void t30_update(void) {
+	static int room = -2, frames, slow;
+	static uint64_t last;
+	uint64_t now = sceKernelGetProcessTimeWide();
+	uint64_t interval = last ? now - last : 0;
+	last = now;
+	if (!fps30 || t30_never || !current_room)
+		return;
+	if (*current_room != room) {
+		room = *current_room;
+		frames = slow = 0;
+	}
+	// Scripted sequences (the game drives the player through override_control_init every tick) count ticks with
+	// exact comparisons: keep them at 60 ticks/s
+	if (t30_scripted_tick && *frame_count - t30_scripted_tick < 3) {
+		t30_set(0);
+		frames = slow = 0;
+		return;
+	}
+	if (fps30 >= 2 || (room >= 0 && room < T30_MAX_ROOMS && t30_heavy_room[room])) {
+		t30_set(1);
+		return;
+	}
+	t30_set(0);
+	if (++frames <= T30_SETTLE_FRAMES)
+		return;
+	slow += interval > T30_SLOW_US;
+	if (frames < T30_SETTLE_FRAMES + T30_WINDOW)
+		return;
+	if (slow >= T30_SLOW_FRAMES) {
+		if (room >= 0 && room < T30_MAX_ROOMS)
+			t30_heavy_room[room] = 1;
+		debugPrintf("[FPS30] room %d: %d of %d frames over %.0f ms\n", room, slow, T30_WINDOW, T30_SLOW_US / 1000.0f);
+		t30_set(1);
+	}
+	frames = T30_SETTLE_FRAMES;
+	slow = 0;
+}
+
+static gml_rvalue *instance_var(void *self, int *var) {
+	gml_rvalue *(*vwrite)(void *, int) = (*(void ***)self)[3];
+	gml_rvalue *v = var ? vwrite(self, var[1]) : NULL;
+	return v && v->kind == 0 ? v : NULL;
+}
+
+static void t30_time_controller(event_func orig, void *self, void *other) {
+	t30_stage = 30;
+	gml_rvalue *fr = global_var(var_fr);
+	if (t30_fr_scaled && fr && fr->kind == 0 && fr->val == t30_scaled_fr)
+		fr->val = t30_game_fr;
+	t30_fr_scaled = 0;
+	gml_rvalue *freeze;
+	if (t30_active && t30_freeze && (freeze = instance_var(self, var_freeze_timer)) && freeze->val >= 1)
+		freeze->val -= 1;
+	orig(self, other);
+	if (t30_active && (fr = global_var(var_fr)) && fr->kind == 0) {
+		t30_game_fr = fr->val;
+		t30_scaled_fr = fr->val *= 2;
+		t30_fr_scaled = 1;
+	}
+	t30_stage = 0;
+}
+
+static void t30_master_user0(void *self, void *other) {
+	t30_time_controller(orig_master_user0, self, other);
+}
+
+static void t30_cutscene_master_user0(void *self, void *other) {
+	t30_time_controller(orig_cutscene_master_user0, self, other);
+}
+
+// exp_t30trace (debugMode): the player's position every 6th tick, to compare movement over real time between modes
+static int t30_trace;
+
+static void *t30_player_animation(void *self, void *other, void *result, int argc, void **args) {
+	if (t30_trace) {
+		static uint32_t last_tick;
+		if (*frame_count - last_tick >= (t30_active ? 3u : 6u)) {
+			last_tick = *frame_count;
+			float x, y;
+			memcpy(&x, (char *)self + 0xb8, 4);
+			memcpy(&y, (char *)self + 0xbc, 4);
+			gml_rvalue *fr = global_var(var_fr);
+			debugPrintf("[T30POS] %llu us tick %u x %.2f y %.2f fr %.3f\n", sceKernelGetProcessTimeWide(), *frame_count, x, y,
+				fr && fr->kind == 0 ? fr->val : -1.0);
+		}
+	}
+	in_player_animation++;
+	void *r = orig_player_animation(self, other, result, argc, args);
+	in_player_animation--;
+	return r;
+}
+
+static void *t30_animation_code(void *self, void *other, void *result, int argc, void **args) {
+	gml_rvalue *fr;
+	if (!t30_active || !in_player_animation || !(fr = global_var(var_fr)) || fr->kind != 0 || fr->val != 1.0)
+		return orig_animation_code(self, other, result, argc, args);
+	fr->val = 2.0;
+	void *r = orig_animation_code(self, other, result, argc, args);
+	if ((fr = global_var(var_fr)) && fr->kind == 0 && fr->val == 2.0)
+		fr->val = 1.0;
+	return r;
+}
+
+// obj_letter Step (dialogue letters) first runs `while (oscillate_delay > 0) { ...; oscillate_delay -= 1 * fr; }`:
+// endless while time is frozen (fr = 0, hit-stop), and the club's sign letters start with delays in the thousands.
+// The original never steps a new letter on a frozen tick; with the shifted timing of 30 fps mode it can (the game
+// hung in room_club_4_2 after a death). Such a letter skips its Step until time moves again.
+static event_func orig_letter_step;
+static int *var_oscillate_delay;
+unsigned t30_letter_skips;
+
+static void t30_letter_step(void *self, void *other) {
+	gml_rvalue *fr, *delay;
+	if (t30_active && (fr = global_var(var_fr)) && fr->kind == 0 && fr->val < 0.001 && (delay = gml_vget(self, var_oscillate_delay[1])) &&
+			delay->kind == 0 && delay->val > 0) {
+		t30_letter_skips++;
+		return;
+	}
+	orig_letter_step(self, other);
+}
+
+static void t30_instance_animate(void *inst) {
+	t30_stage = 10;
+	orig_instance_animate(inst);
+	if (t30_active && t30_anim) {
+		t30_stage = 11;
+		orig_instance_animate(inst);
+	}
+	t30_stage = 0;
+}
+
+static void t30_handle_alarm(void) {
+	t30_stage = 20;
+	orig_handle_alarm();
+	if (t30_active && t30_alarm) {
+		t30_stage = 21;
+		update_active_lists();
+		t30_stage = 22;
+		orig_handle_alarm();
+	}
+	t30_stage = 0;
+}
+
+static int t30_watchdog(SceSize args, void *argp) {
+	uint32_t last = 0, still = 0;
+	for (;;) {
+		sceKernelDelayThread(500000);
+		uint32_t now = *frame_count;
+		if (now != last || !t30_active) { // loading screens stop ticks for seconds: armed in 30 fps mode only
+			last = now;
+			still = 0;
+		} else if (++still == 6) {
+			gml_rvalue *fr = global_var(var_fr);
+			debugPrintf("[WATCHDOG] no tick for 3 s at tick %u: 30 fps stage %d, active %d, scripted tick %u, fr %f kind %u, "
+				"game fr %f scaled %f (%d)\n", now, t30_stage, t30_active, t30_scripted_tick, fr ? fr->val : -1.0,
+				fr ? fr->kind : 99, t30_game_fr, t30_scaled_fr, t30_fr_scaled);
+			// A core dump records where every thread is
+			sceKernelDelayThread(500000);
+			*(volatile int *)0 = 0;
+		}
+	}
+	return 0;
+}
+
+static void t30_handle_movement(int arg) {
+	orig_handle_movement(arg);
+	if (t30_active && t30_move) {
+		update_active_lists();
+		orig_handle_movement(arg);
+	}
+}
+
+static void t30_install(gml_func_entry *table) {
+	var_fr = (int *)so_symbol(&yoyoloader_mod, "g_VAR_fr");
+	var_freeze_timer = (int *)so_symbol(&yoyoloader_mod, "g_VAR_freeze_timer");
+	update_active_lists = (void *)so_symbol(&yoyoloader_mod, "_Z17UpdateActiveListsv");
+	if (!var_fr || !var_freeze_timer || !update_active_lists || !global_obj_ptr || !current_room) {
+		fps30 = 0;
+		debugPrintf("30 fps mode: NOT installed (symbols)\n");
+		return;
+	}
+	orig_master_user0 = gml_replace(table, "gml_Object_obj_master_Other_10", t30_master_user0);
+	var_oscillate_delay = (int *)so_symbol(&yoyoloader_mod, "g_VAR_oscillate_delay");
+	if (var_oscillate_delay)
+		orig_letter_step = gml_replace(table, "gml_Object_obj_letter_Step_0", t30_letter_step);
+	orig_cutscene_master_user0 = gml_replace(table, "gml_Object_obj_cutscene_master_Other_10", t30_cutscene_master_user0);
+	orig_player_animation = entry_hook(so_symbol(&yoyoloader_mod, "_Z27gml_Script_player_animationP9CInstanceS0_R8YYRValueiPPS1_"), t30_player_animation);
+	orig_animation_code = orig_player_animation ? entry_hook(so_symbol(&yoyoloader_mod, "_Z25gml_Script_animation_codeP9CInstanceS0_R8YYRValueiPPS1_"), t30_animation_code) : NULL;
+	orig_override_control_init = entry_hook(so_symbol(&yoyoloader_mod, "_Z32gml_Script_override_control_initP9CInstanceS0_R8YYRValueiPPS1_"), t30_override_control_init);
+	orig_instance_animate = entry_hook(so_symbol(&yoyoloader_mod, "_Z16Instance_AnimateP9CInstance"), t30_instance_animate);
+	orig_handle_alarm = entry_hook(so_symbol(&yoyoloader_mod, "_Z11HandleAlarmv"), t30_handle_alarm);
+	orig_handle_movement = entry_hook(so_symbol(&yoyoloader_mod, "_Z22HandleInstanceMovementb"), t30_handle_movement);
+	t30_anim = orig_instance_animate && !exp_flag("t30anim0");
+	t30_alarm = orig_handle_alarm && !exp_flag("t30alarm0");
+	t30_move = orig_handle_movement && exp_flag("t30move");
+	t30_freeze = !exp_flag("t30freeze0");
+	t30_trace = debugMode && exp_flag("t30trace");
+	if (debugMode && exp_flag("t30watchdog")) {
+		SceUID th = sceKernelCreateThread("t30 watchdog", t30_watchdog, 0x10000100, 0x2000, 0, 0, NULL);
+		if (th >= 0)
+			sceKernelStartThread(th, 0, NULL);
+	}
+	t30_never = exp_flag("t30never");
+	if (exp_flag("t30force")) // testing: 30 ticks/s everywhere
+		fps30 = 2;
+	debugPrintf("30 fps mode %d: master %s, cutscene master %s, player animation %s, scripts %s, letters %s, animate %s, alarms %s, motion %s, hit-stop %s\n",
+		fps30, orig_master_user0 ? "hooked" : "NOT hooked", orig_cutscene_master_user0 ? "hooked" : "NOT hooked",
+		orig_animation_code ? "hooked" : "NOT hooked", orig_override_control_init ? "hooked" : "NOT hooked",
+		orig_letter_step ? "hooked" : "NOT hooked", t30_anim ? "x2" : "x1", t30_alarm ? "x2" : "x1", t30_move ? "x2" : "x1",
+		t30_freeze ? "x2" : "x1");
+}
+
 static void patch_performance() {
 	gml_func_entry *table = (gml_func_entry *)so_symbol(&yoyoloader_mod, "g_GMLFuncs");
 	frame_count = (uint32_t *)so_symbol(&yoyoloader_mod, "g_IOFrameCount");
@@ -1895,6 +2189,9 @@ static void patch_performance() {
 	}
 	if (!exp_flag("lightmapbig") && (orig = gml_replace(table, "gml_Object_obj_new_platform_lighting_Other_10", lighting_user0)))
 		orig_lighting_user0 = orig;
+
+	if (fps30 || exp_flag("t30force"))
+		t30_install(table);
 
 	// Frame skipping (and its guard stubs) only when opted in with frameSkip=1
 	uintptr_t *draw_slot = frame_skip ? so_got_slot(&yoyoloader_mod, "_Z12DoAStep_Drawv") : NULL;
