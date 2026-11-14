@@ -16,12 +16,13 @@ Most items below are a setting in `ux0:data/gms/katanazero/yyl.cfg`, and the val
 back the original.
 
 - **30 fps in heavy rooms.** GameMaker slows the whole game down instead of dropping frames, so rooms that can't hold
-  60 used to play in slow motion. The minecart ride ran at 31 fps, half speed. Now a room that stays under 50 fps for
-  a second and a half switches to 30 frames a second with the game's clock doubled, and the heaviest rooms hold
-  27-30 fps. The cost is smoothness, and input is read 30 times a second. Some of the game's timers count frames
-  instead of time, so the slow motion ramp takes 0.3 s instead of 0.16 s, and hit-stops, enemy reactions and dialogue
-  typing are slightly off. Cutscenes and scripted sequences, like the tutorial, always run at 60 because they break
-  at 30. `fps30=0` brings back slow motion. `fps30=2` runs 30 everywhere.
+  60 used to play in slow motion. Now a room that stays under 50 fps for a second and a half switches to 30 frames a
+  second with the game's clock doubled; the heaviest rooms switch as soon as their opening cutscene ends and hold
+  27-30 fps. The cost is smoothness, and input is read 30 times a second. Most of the game's own frame counters are
+  converted, dialogue typing and enemy search times among them, but a few still run at half speed: the slow motion
+  ramp takes 0.3 s instead of 0.16 s, and a finished line from an NPC stays on screen a little longer. Cutscenes and
+  scripted sequences, like the tutorial, always run at 60 because they break at 30. `fps30=0` brings back slow motion.
+  `fps30=2` runs 30 everywhere.
 - **No rain.** Rainy levels run about 20% faster without it. `rain=2`, or `rain=1` for half the drops.
 - **No replays.** No end-of-level VHS replay and no death rewind. With them on, memory runs out after a few minutes
   in one room and heavy rooms lose about 2 fps. `replays=1` leaves it to the game's own graphics option.
