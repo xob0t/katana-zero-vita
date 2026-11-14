@@ -51,22 +51,20 @@ body {
 main { position: relative; max-width: 760px; margin: 0 auto; padding: 120px 22px 60px; }
 
 /* title */
-.hero { position: relative; margin-bottom: 54px; }
+.hero { position: relative; margin-bottom: 40px; }
 .kicker { margin: 0 0 10px; font: 24px/1 var(--osd); letter-spacing: 0.18em; text-transform: uppercase; color: var(--cyan); }
-h1 { margin: 0; font: 400 clamp(72px, 15vw, 150px)/0.84 var(--display); text-transform: uppercase;
+h1 { margin: 0; font: 400 clamp(52px, 11vw, 112px)/0.9 var(--display); text-transform: uppercase;
   transform: skewX(-9deg); transform-origin: left bottom; animation: glitch 7s infinite; }
-h1 span { display: block; }
 .t1 { color: var(--paper); }
-.t2 { color: var(--pink); padding-left: 0.42em; }
+.t2 { color: var(--pink); margin-left: 0.18em; }
 h1 { text-shadow: -3px 0 rgba(46, 230, 255, 0.75), 3px 0 rgba(255, 46, 136, 0.6); }
 @keyframes glitch {
   0%, 94%, 100% { text-shadow: -3px 0 rgba(46, 230, 255, 0.75), 3px 0 rgba(255, 46, 136, 0.6); transform: skewX(-9deg); }
   95% { text-shadow: -9px 0 rgba(46, 230, 255, 0.9), 7px 0 rgba(255, 46, 136, 0.9); transform: skewX(-9deg) translateX(4px); }
   97% { text-shadow: 6px 0 rgba(46, 230, 255, 0.9), -8px 0 rgba(255, 46, 136, 0.9); transform: skewX(-9deg) translateX(-3px); }
 }
-.jp { position: absolute; top: 34px; right: 0; margin: 0; writing-mode: vertical-rl; font-size: 30px; font-weight: 600;
+.jp { position: absolute; top: 0; right: 0; margin: 0; font-size: 20px; font-weight: 600;
   letter-spacing: 0.35em; color: rgba(239, 232, 220, 0.14); }
-.lede { max-width: 520px; margin: 26px 0 0; color: #cbbfd8; font-size: 16px; }
 
 /* each step is a tape with a paper label */
 .tape { margin: 0 0 30px; }
@@ -146,6 +144,16 @@ a { color: var(--cyan); text-underline-offset: 3px; }
 a:hover { color: var(--pink); }
 .aside { margin: 18px 0 0; padding-left: 14px; border-left: 2px solid var(--edge); color: var(--dim); font-size: 14px; }
 
+/* end credits */
+.credits { margin-top: 56px; text-align: center; }
+.credits h2 { display: block; margin: 0 0 22px; font: 26px/1 var(--osd); letter-spacing: 0.3em; text-transform: uppercase;
+  color: var(--cyan); }
+.credits dl { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 22px; margin: 0; }
+.credits dt { text-align: right; font: 20px/1.3 var(--osd); text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); }
+.credits dd { margin: 0; text-align: left; font-size: 14px; line-height: 1.85; color: var(--paper); }
+.credits a { color: var(--paper); text-decoration-color: var(--pink); }
+.credits a:hover { color: var(--pink); }
+
 footer { margin-top: 40px; text-align: center; font: 20px/1.3 var(--osd); color: var(--dim); }
 
 @media (max-width: 560px) {
@@ -153,6 +161,9 @@ footer { margin-top: 40px; text-align: center; font: 20px/1.3 var(--osd); color:
   main { padding-top: 90px; }
   .jp { display: none; }
   .label .hint { display: none; }
+  .credits dl { grid-template-columns: 1fr; gap: 2px; }
+  .credits dt, .credits dd { text-align: center; }
+  .credits dd { margin-bottom: 10px; }
   .body { padding: 18px 16px 20px; }
 }
 

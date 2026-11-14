@@ -91,3 +91,21 @@ loader it packs is a prebuilt copy in `web/base/`. After changing the loader, co
   `ux0:data/gms/<game>/assets/netflix/<slot>.sav`. Leaderboards and telemetry do nothing.
 - `loader/loader/katana.c` holds the game-specific speedups and the 30 fps mode. Its comments have the
   measurements and the `exp_*` flags that turn each change off for comparison.
+
+## Acknowledgements
+
+- Askiisoft and Devolver Digital for Katana ZERO, and Netflix for the Android release this port runs.
+- Rinnegatamante for [YoYo Loader Vita](https://github.com/Rinnegatamante/yoyoloader_vita), which this port is
+  built on, and for [vitaGL](https://github.com/Rinnegatamante/vitaGL),
+  [vitaShaRK](https://github.com/Rinnegatamante/vitaShaRK), the Vita port of
+  [OpenAL Soft](https://github.com/Rinnegatamante/openal-soft) and the softfp VitaSDK packages.
+- TheFloW for the original .so loader that YoYo Loader grew from, and for
+  [kubridge](https://github.com/TheOfficialFloW/kubridge), [FdFix](https://github.com/TheOfficialFloW/FdFix) and
+  VitaShell.
+- JohnnyonFlame for GMLoader, which YoYo Loader uses as a reference.
+- bythos14 for [SceShaccCgExt](https://github.com/bythos14/SceShaccCgExt) and frangarcj for
+  [OpenSL ES](https://github.com/frangarcj/opensles) on the Vita.
+- The [VitaSDK](https://vitasdk.org) team, and Team Molecule for HENkaku and Ensō.
+- [Pyodide](https://pyodide.org), Pillow, python-lz4 and pyelftools, which run the web builder.
+- thebardockgames for [vitalatro-web](https://github.com/thebardockgames/vitalatro-web), the model for the web
+  builder.
