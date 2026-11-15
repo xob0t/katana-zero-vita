@@ -1050,9 +1050,11 @@ static void dynamic_res_update(uint32_t swap_us) {
 // Runs right after vglSwapBuffers, between frames: every scene of the frame has been submitted, so the GPU finish
 // and garbage collection below cannot free memory that commands still being recorded refer to
 static void t30_update(uint32_t work_us);
+static void text_smooth_sync(void);
 
 void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
 	t30_update(work_us);
+	text_smooth_sync();
 	dynamic_res_update(swap_us);
 	if (!texture_flush)
 		return;
@@ -1839,6 +1841,8 @@ static event_func gml_replace(gml_func_entry *table, const char *name, event_fun
  * Debug: exp_t30trace logs the player's position, exp_t30never keeps 60 ticks/s with the hooks installed (a baseline
  * for traces), exp_t30watchdog crashes the game (for a core dump) when ticks stop for 3 s in 30 fps mode, exp_t30diag
  * logs which objects run scripted sequences, enemies' search_timeout changes and passive textbox timers.
+ * The hooks are installed whatever fps30 says, since the game's GRAPHICS menu can choose the mode at runtime (see
+ * fps_menu_install); with fps30 0 every hook is gated on t30_active and changes nothing.
  */
 int fps30 = 1;
 #define T30_SETTLE_FRAMES 45
@@ -1869,6 +1873,7 @@ static void (*update_active_lists)(void);
 static int in_player_animation;
 unsigned t30_switches;
 
+static int t30_installed; // t30_install found its symbols: the time conversion is in place for any mode
 static int t30_never; // exp_t30never: hooks (and exp_t30trace) installed, 30 ticks/s never used: a baseline for traces
 static uint32_t t30_scripted_tick; // last tick a cutscene script drove the player
 static volatile int t30_stage; // debug: where the 30 fps hooks were last (the exp_t30watchdog report)
@@ -1900,15 +1905,26 @@ static void t30_set(int on) {
 	debugPrintf("[FPS30] room %d: %s\n", current_room ? *current_room : -1, on ? "30 ticks/s, double time step" : "60 ticks/s");
 }
 
+static void fps_mode_sync(void);
+
 // Once per presented frame (katana_after_swap); work_us is the CPU time of the tick that was just presented
 static void t30_update(uint32_t work_us) {
-	static int room = -2, frames, window, count;
+	static int room = -2, frames, window, count, mode = -1;
 	static uint64_t last, switched;
 	uint64_t now = sceKernelGetProcessTimeWide();
 	uint64_t interval = last ? now - last : 0;
 	last = now;
-	if (!fps30 || t30_never || !current_room)
+	fps_mode_sync();
+	// The mode can change at runtime (GRAPHICS menu): leave 30 ticks/s when it turns off
+	if (!fps30 || t30_never || !current_room) {
+		t30_set(0);
 		return;
+	}
+	// A new mode evaluates the room afresh (Dynamic: settle, then measure; heavy rooms start at 30)
+	if (fps30 != mode) {
+		mode = fps30;
+		room = -2;
+	}
 	static int known_resolved;
 	if (!known_resolved && *current_room >= 0) {
 		known_resolved = 1;
@@ -2238,6 +2254,217 @@ static void t30_install(gml_func_entry *table) {
 		orig_animation_code ? "hooked" : "NOT hooked", orig_override_control_init ? "hooked" : "NOT hooked",
 		orig_letter_step ? "hooked" : "NOT hooked", t30_anim ? "x2" : "x1", t30_alarm ? "x2" : "x1", t30_move ? "x2" : "x1",
 		t30_freeze ? "x2" : "x1", enemies, orig_textbox_user0 && orig_passive_textbox_user0 ? "counted" : "NOT hooked");
+	t30_installed = 1;
+}
+
+/*
+ * FPS MODE in the game's own GRAPHICS options (NATIVE / 30 FPS / DYNAMIC), stored in the PC build's WINDOW ZOOM option.
+ * The WINDOW ZOOM row is compiled out of the Android GRAPHICS page, but all of its code is still there:
+ * - obj_optionsmenu Create copies global.zoom_mode to var_zoom_mode, Step cycles it 0 -> 1 -> 2 -> 3 -> 0 on a toggle
+ *   press, Draw shows "1X ZOOM".."4X ZOOM" through translate_option;
+ * - SAVE (Other_10) copies it back to global.zoom_mode, and save_options/load_options keep it in KatanaOptions.zero
+ *   (an existing slot, so the file and its hash stay compatible);
+ * - its only effect, set_windowsize() (Destroy, on a change), is an empty script on Android.
+ * The loader adds the row after BLOOD SPRAY (add_pausemenu_choice, GRAPHICS page only), relabels its five strings
+ * (translate_option) and limits it to three values (Step: 3 wraps to 1, not 0).
+ * Precedence: zoom_mode 0 (every existing save, obj_init and "reset game data") means "not chosen" and follows fps30
+ * from yyl.cfg, shown under that mode's name; 1/2/3 are NATIVE/30 FPS/DYNAMIC chosen in the menu and override yyl.cfg.
+ * fps_mode_sync reads global.zoom_mode once per frame (t30_update), so a SAVE applies on the next frame, CANCEL never.
+ * exp_fpsmenu0 turns the row off (yyl.cfg only); exp_t30force keeps 30 ticks/s everywhere and skips the menu too.
+ *
+ * TEXT SMOOTHING (ON / OFF, the dialogue text smoothing below) is stored the same way in the PC build's VSYNC option,
+ * added after FPS MODE. Its code is there too: Create copies global.vsync to var_vsync/prev_var_vsync, Step toggles
+ * var_vsync = !var_vsync, Draw shows the game's own "ON"/"OFF" (OFF when var_vsync is false), SAVE copies it back and
+ * save_options/load_options keep it. obj_init and mobile_reset_game_data set vsync to false, so every existing save
+ * holds 0: 0 means ON, 1 OFF. Draw runs with var_vsync inverted to show that. What the game does with vsync:
+ * - display_reset(aa, vsync), from load_options at boot and from Destroy when global.vsync != prev_var_vsync.
+ *   F_DisplayReset stores vsync in g_Sync (frame limiter, MainLoop_Process: g_SyncInterval) and sets g_DoReset, so
+ *   the next frame runs GR_D3D_Reset, which frees every surface. The boot call (vsync false in every save: g_Sync 1 ->
+ *   0, one reset) is kept as it was, with vsync forced to false; the calls Destroy makes are dropped.
+ * text_smooth_sync reads global.vsync once per frame (katana_after_swap). exp_textmenu0 turns the row off and keeps
+ * the text smooth (yyl.cfg only); exp_textsharp keeps it sharp and has no row.
+ */
+static int fps30_cfg = -1; // fps30 from yyl.cfg, kept once fps30 follows the menu (-1: the menu isn't installed)
+static int *var_zoom_mode, *var_var_zoom_mode;
+static gml_script_fn orig_add_pausemenu_choice, orig_translate_option;
+static event_func orig_optionsmenu_step;
+static int fps_row, text_row; // the rows the menu shows
+static int text_smooth = 1; // dialogue text smoothing on (the TEXT_SMOOTH_EVENTS wrappers)
+static int text_smooth_hooked; // of the 7 draw events
+static int *var_vsync, *var_var_vsync;
+static event_func orig_optionsmenu_draw;
+static builtin_fn orig_display_reset;
+static void (*yy_create_string)(gml_rvalue *, const char *);
+static void (*yy_free_rvalue)(gml_rvalue *);
+
+static const char *rv_string(const gml_rvalue *v) {
+	ref_t *ref = v && (v->kind & 0xffffff) == VALUE_STRING ? *(ref_t **)v : NULL;
+	return ref ? ref->m_thing : NULL;
+}
+
+// YYC frees only strings, arrays and objects (kinds 1, 2, 6)
+static void rv_free(gml_rvalue *v) {
+	if ((1u << (v->kind & 31)) & 0x46)
+		yy_free_rvalue(v);
+}
+
+static void *fps_add_pausemenu_choice(void *self, void *other, void *result, int argc, void **args) {
+	void *r = orig_add_pausemenu_choice(self, other, result, argc, args);
+	const char *key = argc == 2 ? rv_string(args[0]) : NULL;
+	if (key && !strcmp(key, "BLOOD SPRAY")) { // the GRAPHICS page only (obj_options_main_menu Step)
+		static const char *const rows[2] = { "WINDOW ZOOM", "VSYNC" };
+		void *toggle = args[1]; // this call's "toggle"
+		for (int i = 0; i < 2; i++) {
+			if (!(i ? text_row : fps_row))
+				continue;
+			gml_rvalue name = {0}, res = {0};
+			yy_create_string(&name, rows[i]);
+			void *a[2] = { &name, toggle };
+			orig_add_pausemenu_choice(self, other, &res, 2, a);
+			rv_free(&name);
+			rv_free(&res);
+		}
+	}
+	return r;
+}
+
+static const char *const fps_mode_name[3] = { "NATIVE", "DYNAMIC", "30 FPS" }; // by fps30 value
+
+static void *fps_translate_option(void *self, void *other, void *result, int argc, void **args) {
+	const char *key = argc >= 1 ? rv_string(args[0]) : NULL, *text = NULL;
+	if (!key)
+		return orig_translate_option(self, other, result, argc, args);
+	if (!strcmp(key, "WINDOW ZOOM"))
+		text = "FPS MODE";
+	else if (!strcmp(key, "1X ZOOM")) // zoom_mode 0: not chosen, the yyl.cfg mode
+		text = fps_mode_name[fps30_cfg >= 0 && fps30_cfg <= 2 ? fps30_cfg : 1];
+	else if (!strcmp(key, "2X ZOOM"))
+		text = "NATIVE";
+	else if (!strcmp(key, "3X ZOOM"))
+		text = "30 FPS";
+	else if (!strcmp(key, "4X ZOOM"))
+		text = "DYNAMIC";
+	else if (text_row && !strcmp(key, "VSYNC")) // its ON/OFF stay the game's own, translated
+		text = "TEXT SMOOTHING";
+	if (!text)
+		return orig_translate_option(self, other, result, argc, args);
+	yy_create_string(result, text); // frees the old value first
+	return result;
+}
+
+// Three values: the game's toggle wraps 3 -> 0 ("not chosen"); make it 3 -> 1
+static void fps_optionsmenu_step(void *self, void *other) {
+	gml_rvalue *z = instance_var(self, var_var_zoom_mode);
+	double before = z ? z->val : -1;
+	orig_optionsmenu_step(self, other);
+	if (before == 3.0 && (z = instance_var(self, var_var_zoom_mode)) && z->val == 0.0)
+		z->val = 1.0;
+}
+
+// Once per frame (t30_update): the saved menu choice drives fps30
+static void fps_mode_sync(void) {
+	if (fps30_cfg < 0 || !*global_obj_ptr)
+		return;
+	gml_rvalue *z = global_var(var_zoom_mode);
+	int m = z ? (int)z->val : 0;
+	fps30 = m == 1 ? 0 : m == 2 ? 2 : m == 3 ? 1 : fps30_cfg;
+}
+
+// A real or bool instance variable (var_vsync is a bool once Step has toggled it)
+static gml_rvalue *instance_num(void *self, int *var) {
+	gml_rvalue *(*vwrite)(void *, int) = (*(void ***)self)[3];
+	gml_rvalue *v = var ? vwrite(self, var[1]) : NULL;
+	return v && (v->kind == VALUE_REAL || v->kind == VALUE_BOOL) ? v : NULL;
+}
+
+// Draw shows OFF for a false var_vsync, and false (every existing save) means TEXT SMOOTHING ON: draw it inverted.
+// Draw only reads var_vsync and runs no user event (SAVE), so the stored value never sees the inversion.
+static void text_optionsmenu_draw(void *self, void *other) {
+	gml_rvalue *v = instance_num(self, var_var_vsync);
+	if (!v) {
+		orig_optionsmenu_draw(self, other);
+		return;
+	}
+	double was = v->val;
+	v->val = was != 0.0 ? 0.0 : 1.0;
+	orig_optionsmenu_draw(self, other);
+	if ((v = instance_num(self, var_var_vsync))) // looked up again: Draw can add instance variables
+		v->val = was;
+}
+
+// display_reset is forwarded only from load_options, with vsync false: what the boot call does with every save
+// today (g_Sync 0, one GR_D3D_Reset before the first room). The calls from obj_optionsmenu Destroy (a VSYNC or
+// FULLSCREEN change) are dropped: they would free every surface the next frame. Nothing else calls it.
+static gml_script_fn orig_load_options;
+static int in_load_options;
+
+static void *text_load_options(void *self, void *other, void *result, int argc, void **args) {
+	in_load_options++;
+	void *r = orig_load_options(self, other, result, argc, args);
+	in_load_options--;
+	return r;
+}
+
+static void guarded_display_reset(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) {
+	if (!in_load_options) {
+		debugPrintf("display_reset from the options menu: skipped\n");
+		return;
+	}
+	if (argc < 2) {
+		orig_display_reset(result, self, other, argc, args);
+		return;
+	}
+	gml_rvalue a[2] = { args[0], { 0.0, 0, VALUE_REAL } }; // aa as given, vsync false
+	orig_display_reset(result, self, other, 2, a);
+}
+
+// Once per frame (katana_after_swap): the saved TEXT SMOOTHING choice (global.vsync false: ON)
+static void text_smooth_sync(void) {
+	if (!text_row || !*global_obj_ptr)
+		return;
+	gml_rvalue *v = global_var(var_vsync);
+	text_smooth = !(v && v->val != 0.0);
+}
+
+// The FPS MODE and TEXT SMOOTHING rows, each installed only with everything it needs
+static void fps_menu_install(gml_func_entry *table) {
+	int want_fps = !exp_flag("fpsmenu0") && !exp_flag("t30force") && t30_installed;
+	int want_text = text_smooth && text_smooth_hooked && global_obj_ptr && !exp_flag("textmenu0");
+	var_zoom_mode = (int *)so_symbol(&yoyoloader_mod, "g_VAR_zoom_mode");
+	var_var_zoom_mode = (int *)so_symbol(&yoyoloader_mod, "g_VAR_var_zoom_mode");
+	var_vsync = (int *)so_symbol(&yoyoloader_mod, "g_VAR_vsync");
+	var_var_vsync = (int *)so_symbol(&yoyoloader_mod, "g_VAR_var_vsync");
+	yy_create_string = (void *)so_symbol(&yoyoloader_mod, "_Z14YYCreateStringP6RValuePKc");
+	yy_free_rvalue = (void *)so_symbol(&yoyoloader_mod, "_Z16FREE_RValue__PreP6RValue");
+
+	// The display_reset guard whatever the menu: it keeps the boot call as it is today for any saved vsync.
+	// load_options first, so the guard never sees the boot call without knowing where it comes from.
+	orig_load_options = entry_hook(so_symbol(&yoyoloader_mod,
+		"_Z23gml_Script_load_optionsP9CInstanceS0_R8YYRValueiPPS1_"), text_load_options);
+	if (orig_load_options)
+		orig_display_reset = entry_hook(so_symbol(&yoyoloader_mod, "_Z14F_DisplayResetR6RValueP9CInstanceS2_iPS_"),
+			guarded_display_reset);
+	debugPrintf("display_reset guard: %s\n", orig_display_reset ? "on" : "NOT installed");
+
+	if ((want_fps || want_text) && yy_create_string && yy_free_rvalue)
+		orig_translate_option = entry_hook(so_symbol(&yoyoloader_mod,
+			"_Z27gml_Script_translate_optionP9CInstanceS0_R8YYRValueiPPS1_"), fps_translate_option);
+	// In this order, so a row is never added without its labels and its Step or Draw hook
+	if (want_fps && orig_translate_option && var_zoom_mode && var_var_zoom_mode)
+		orig_optionsmenu_step = gml_replace(table, "gml_Object_obj_optionsmenu_Step_0", fps_optionsmenu_step);
+	if (want_text && orig_translate_option && orig_display_reset && var_vsync && var_var_vsync)
+		orig_optionsmenu_draw = gml_replace(table, "gml_Object_obj_optionsmenu_Draw_0", text_optionsmenu_draw);
+	if (orig_optionsmenu_step || orig_optionsmenu_draw)
+		orig_add_pausemenu_choice = entry_hook(so_symbol(&yoyoloader_mod,
+			"_Z31gml_Script_add_pausemenu_choiceP9CInstanceS0_R8YYRValueiPPS1_"), fps_add_pausemenu_choice);
+	if (orig_add_pausemenu_choice) {
+		fps_row = !!orig_optionsmenu_step;
+		text_row = !!orig_optionsmenu_draw;
+	}
+	if (fps_row)
+		fps30_cfg = fps30; // from here on fps_mode_sync owns fps30
+	debugPrintf("FPS mode menu: %s (yyl.cfg fps30 %d)\n", fps_row ? "on" : want_fps ? "NOT installed" : "off", fps30);
+	debugPrintf("text smoothing menu: %s\n", text_row ? "on" : want_text ? "NOT installed" : "off");
 }
 
 // obj_interaction is the yes/no prompt behind interact_binary (pause, title and level-select confirms, interactable
@@ -2255,6 +2482,29 @@ static void interaction_create_preselect(void *self, void *other) {
 	if (sel && sel->val == -1.0)
 		sel->val = d;
 }
+
+// Dialogue text is drawn at half scale for the 1280x720 application surface, so on the 960x540 one a text pixel is
+// 0.75 of a screen pixel: with nearest filtering letter strokes come out one or two pixels wide at random. The
+// letters (obj_letter: dialogue is drawn one letter instance at a time, also the club's sign letters) and the textbox
+// and choice box Draw events run with texture interpolation on (restored afterwards), so dialogue text is smooth and
+// even while sprites, HUD and menus stay sharp. The wrappers are always installed and smooth only while text_smooth
+// is on: the GRAPHICS menu's TEXT SMOOTHING row (see fps_menu_install). exp_textsharp keeps it off.
+static int (*get_tex_interp)(void);
+static void (*set_tex_interp)(int on);
+#define TEXT_SMOOTH_EVENTS(X) X(letter) X(textbox) X(passive_textbox) X(old_textbox) X(blanktextbox) X(choicebox) \
+	X(choicebox_hauntedelevator)
+#define TEXT_SMOOTH_WRAP(name) static event_func orig_##name##_draw; \
+	static void smooth_##name##_draw(void *self, void *other) { \
+		if (!text_smooth) { \
+			orig_##name##_draw(self, other); \
+			return; \
+		} \
+		int was = get_tex_interp() & 1; \
+		set_tex_interp(1); \
+		orig_##name##_draw(self, other); \
+		set_tex_interp(was); \
+	}
+TEXT_SMOOTH_EVENTS(TEXT_SMOOTH_WRAP)
 
 static void patch_performance() {
 	gml_func_entry *table = (gml_func_entry *)so_symbol(&yoyoloader_mod, "g_GMLFuncs");
@@ -2308,6 +2558,15 @@ static void patch_performance() {
 		(orig = gml_replace(table, "gml_Object_obj_interaction_Create_0", interaction_create_preselect)))
 		orig_interaction_create = orig;
 	debugPrintf("prompts: default choice highlight %s\n", orig_interaction_create ? "on" : "NOT hooked");
+	get_tex_interp = (void *)so_symbol(&yoyoloader_mod, "_Z32GR_D3D_Get_Texture_Interpolationv");
+	set_tex_interp = (void *)so_symbol(&yoyoloader_mod, "_Z32GR_D3D_Set_Texture_Interpolationb");
+	text_smooth = !exp_flag("textsharp");
+	if (get_tex_interp && set_tex_interp) {
+#define TEXT_SMOOTH_HOOK(name) text_smooth_hooked += !!(orig_##name##_draw = \
+			gml_replace(table, "gml_Object_obj_" #name "_Draw_0", smooth_##name##_draw));
+		TEXT_SMOOTH_EVENTS(TEXT_SMOOTH_HOOK)
+	}
+	debugPrintf("dialogue text smoothing: %d of 7 draw events, %s\n", text_smooth_hooked, text_smooth ? "on" : "off");
 
 	app_width = (int *)so_symbol(&yoyoloader_mod, "g_ApplicationWidth");
 	app_height = (int *)so_symbol(&yoyoloader_mod, "g_ApplicationHeight");
@@ -2469,8 +2728,9 @@ static void patch_performance() {
 	orig_timing_sleep = entry_hook(so_symbol(&yoyoloader_mod, "Timing_Sleep"), timing_sleep_vsync);
 	debugPrintf("frame limiter spin: %s\n", orig_timing_sleep ? "skipped with vblank pacing" : "NOT hooked");
 
-	if (fps30 || exp_flag("t30force"))
-		t30_install(table);
+	// Whatever yyl.cfg says: the GRAPHICS menu can turn 30 fps mode on, and it needs the time doubling then
+	t30_install(table);
+	fps_menu_install(table);
 
 	// Frame skipping (and its guard stubs) only when opted in with frameSkip=1
 	uintptr_t *draw_slot = frame_skip ? so_got_slot(&yoyoloader_mod, "_Z12DoAStep_Drawv") : NULL;
