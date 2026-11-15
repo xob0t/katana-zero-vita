@@ -1071,10 +1071,13 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 	// hitch into another hitch and effectively freeze the game
 	static uint32_t frame_no = 0, spikes_logged = 0;
 	frame_no++;
-	if (exp_flag_cached_spikes() && swapped - start > 20000 && spikes_logged < 200) {
+	int spike = exp_flag_cached_spikes() && swapped - start > 20000 && spikes_logged < 200;
+	if (spike) {
 		spikes_logged++;
 		debugPrintf("[SPIKE] frame %u: process %.1fms swap %.1fms\n", frame_no, (processed - start) / 1000.0f, (swapped - processed) / 1000.0f);
 	}
+	extern void katana_stage_frame(int log);
+	katana_stage_frame(spike);
 	if (processed - start > 100000 || swapped - processed > 50000)
 		debugPrintf("[HITCH] process %.1fms swap %.1fms\n", (processed - start) / 1000.0f, (swapped - processed) / 1000.0f);
 
