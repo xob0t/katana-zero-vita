@@ -70,6 +70,10 @@ add_executable(YoYoLoader
   loader/trophies.c
   loader/netflix.c
   loader/katana.c
+  loader/katana_prof.c
+  loader/katana_display.c
+  loader/katana_t30.c
+  loader/katana_menu.c
   loader/sound_limit.c
   loader/stdio_mt.c
   loader/glprof.c
