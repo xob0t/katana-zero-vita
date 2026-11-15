@@ -76,7 +76,7 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped);
 void gpu_alloc_fail_report(size_t size, size_t alignment, int for_gpu, void *caller);
 void katana_prof_report(int frames);
 int katana_frame_skipped();
-void katana_after_swap(uint32_t swap_us);
+void katana_after_swap(uint32_t swap_us, uint32_t work_us);
 void katana_clock_probe(void);
 void screenshot_check();
 void callprof_report(int frames);
@@ -995,7 +995,7 @@ void main_loop() {
 				uint64_t prof_t1 = sceKernelGetProcessTimeWide();
 				if (!katana_frame_skipped())
 					vglSwapBuffers(GL_FALSE);
-				katana_after_swap((uint32_t)(sceKernelGetProcessTimeWide() - prof_t1));
+				katana_after_swap((uint32_t)(sceKernelGetProcessTimeWide() - prof_t1), (uint32_t)(prof_t1 - prof_t0));
 				screenshot_check();
 				// Keep the system from auto-suspending during play without input
 				// (e.g. cutscenes, or unattended benchmark runs)
@@ -1071,10 +1071,13 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 	// hitch into another hitch and effectively freeze the game
 	static uint32_t frame_no = 0, spikes_logged = 0;
 	frame_no++;
-	if (exp_flag_cached_spikes() && swapped - start > 20000 && spikes_logged < 200) {
+	int spike = exp_flag_cached_spikes() && swapped - start > 20000 && spikes_logged < 200;
+	if (spike) {
 		spikes_logged++;
 		debugPrintf("[SPIKE] frame %u: process %.1fms swap %.1fms\n", frame_no, (processed - start) / 1000.0f, (swapped - processed) / 1000.0f);
 	}
+	extern void katana_stage_frame(int log);
+	katana_stage_frame(spike);
 	if (processed - start > 100000 || swapped - processed > 50000)
 		debugPrintf("[HITCH] process %.1fms swap %.1fms\n", (processed - start) / 1000.0f, (swapped - processed) / 1000.0f);
 
