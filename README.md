@@ -23,9 +23,10 @@ back the original.
     play: full speed everywhere, and 60 wherever the Vita can manage it.
   - **30 FPS**: 30 everywhere. Use it if the switches between 60 and 30 bother you, or if you want the same feel
     and input timing in every room.
-  - **NATIVE**: always 60 ticks a second, as on the original runner; heavy rooms run in slow motion. Use it to
-    play exactly as the game was made where the Vita keeps up, or if you like the extra time slow motion gives you
-    in busy fights.
+  - **NATIVE**: always 60 ticks a second, as on the original runner. It's perfectly playable: most rooms hold 60,
+    and the heavy ones slow down a little (40-50 fps plays at two-thirds to five-sixths speed) instead of switching
+    to 30. Use it for the smoothest picture, input read every frame and the game's exact timing, if you don't mind
+    the slowdown or like the extra time it gives you in busy fights.
 
   The cost of 30 is smoothness, and input is read 30 times a second. Most of the game's own frame counters are
   converted, dialogue typing and enemy search times among them, but a few still run at half speed: the slow motion
