@@ -28,10 +28,10 @@ back the original.
     to 30. Use it for the smoothest picture, input read every frame and the game's exact timing, if you don't mind
     the slowdown or like the extra time it gives you in busy fights.
 
-  The cost of 30 is smoothness, and input is read 30 times a second. Most of the game's own frame counters are
-  converted, dialogue typing and enemy search times among them, but a few still run at half speed: the slow motion
-  ramp takes 0.3 s instead of 0.16 s, and a finished line from an NPC stays on screen a little longer. Cutscenes and
-  scripted sequences, like the tutorial, always run at 60 because they break at 30. Until a mode is chosen in the
+  The cost of 30 is smoothness, and input is read 30 times a second. The game's own frame counters are converted,
+  among them dialogue typing, enemy search times, and slow motion's ramp and meter. A few effects that count frames
+  may still last twice as long. Cutscenes and scripted sequences, like the tutorial, always run at 60 because they
+  break at 30. Until a mode is chosen in the
   menu, `fps30` in yyl.cfg decides: 0 NATIVE, 1 DYNAMIC, 2 30 FPS.
 - **No rain.** Rainy levels run about 20% faster without it. `rain=2`, or `rain=1` for half the drops.
 - **No replays.** No end-of-level VHS replay and no death rewind. With them on, memory runs out after a few minutes
