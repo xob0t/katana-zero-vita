@@ -77,6 +77,23 @@ static const char *stage_names[S_COUNT] = {
 static uint32_t stage_time[S_COUNT];
 static uint32_t stage_calls[S_COUNT];
 
+// Called once per frame by the main loop: with log set (a slow frame under exp_spikes) prints the stages that took
+// over 0.3 ms in that frame. The totals are reset at each report, so a total below the previous one restarts.
+void katana_stage_frame(int log) {
+	static uint32_t prev[S_COUNT];
+	if (log) {
+		char line[512];
+		int n = 0;
+		for (int i = 0; i < S_COUNT && n < (int)sizeof(line) - 48; i++) {
+			uint32_t d = stage_time[i] >= prev[i] ? stage_time[i] - prev[i] : stage_time[i];
+			if (d >= 300)
+				n += snprintf(line + n, sizeof(line) - n, " %s %.1f", stage_names[i], d / 1000.0f);
+		}
+		debugPrintf("[SPIKE]   stages:%s\n", n ? line : " (none over 0.3 ms)");
+	}
+	memcpy(prev, stage_time, sizeof(prev));
+}
+
 #define STAGE_BEGIN uint32_t stage_start = sceKernelGetProcessTimeLow()
 #define STAGE_END(id) stage_time[id] += sceKernelGetProcessTimeLow() - stage_start; stage_calls[id]++
 
@@ -1525,6 +1542,24 @@ static void fog_install(void) {
 	debugPrintf("fog scale %d: %s\n", fog_scale, orig_fog_create && orig_fog_step ? "installed" : "NOT installed");
 }
 
+// The runner's frame limiter (Timing_Wait -> Timing_Sleep(us, spin)) sets a deadline now + us, usleep()s most of
+// it and then busy-spins on clock_gettime until the deadline. With vblank pacing (vsync_pace, main.c) the loader
+// already skips the usleep, so the whole wait became a spin: on the title ~7.8 ms of CPU per frame, at the start of
+// the frame, so the frame's work started late and any frame with a garbage collection (5-7.5 ms) missed the vblank
+// (a hitch about once a second on the title). Frame-sized waits now return at once and the vsynced swap paces the
+// game, as intended. exp_sleeppace keeps the original limiter (sleep + spin).
+static void (*orig_timing_sleep)(int64_t us, int spin);
+unsigned timing_sleep_skipped;
+static void timing_sleep_vsync(int64_t us, int spin) {
+	extern int vsync_pace;
+	extern SceUID game_thread_id;
+	if (vsync_pace && us > 0 && us <= 17000 && sceKernelGetThreadId() == game_thread_id) {
+		timing_sleep_skipped++;
+		return;
+	}
+	orig_timing_sleep(us, spin);
+}
+
 // Hooks that need the runner initialised (function registry, g_FUNC_* slots): called once
 // right before the main loop
 // Audio voice limit (maxVoices in yyl.cfg, default 32; 0 keeps the runner's 128): a safety net behind the
@@ -2396,6 +2431,9 @@ static void patch_performance() {
 	}
 	if (!exp_flag("lightmapbig") && (orig = gml_replace(table, "gml_Object_obj_new_platform_lighting_Other_10", lighting_user0)))
 		orig_lighting_user0 = orig;
+
+	orig_timing_sleep = entry_hook(so_symbol(&yoyoloader_mod, "Timing_Sleep"), timing_sleep_vsync);
+	debugPrintf("frame limiter spin: %s\n", orig_timing_sleep ? "skipped with vblank pacing" : "NOT hooked");
 
 	if (fps30 || exp_flag("t30force"))
 		t30_install(table);
