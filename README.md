@@ -15,14 +15,24 @@ logic runs on one core and can't be split across more. A 500 MHz profile in PSVs
 Most items below are a setting in `ux0:data/gms/katanazero/yyl.cfg`, and the value at the end of the item brings
 back the original.
 
-- **30 fps in heavy rooms.** GameMaker slows the whole game down instead of dropping frames, so rooms that can't hold
-  60 used to play in slow motion. Now a room that stays under 50 fps for a second and a half switches to 30 frames a
-  second with the game's clock doubled; the heaviest rooms switch as soon as their opening cutscene ends and hold
-  27-30 fps. The cost is smoothness, and input is read 30 times a second. Most of the game's own frame counters are
+- **30 fps in heavy rooms.** GameMaker slows the whole game down instead of dropping frames, so a room that can't
+  hold 60 plays in slow motion. At 30 fps the game's clock is doubled, so it plays at full speed. Choose the mode in
+  the game's own settings: **GRAPHICS → FPS MODE**.
+  - **DYNAMIC** (default): a room switches to 30 after about two seconds under 50 fps, and back to 60 once it
+    would hold 60 again. The heaviest rooms start at 30 as soon as their opening cutscene ends. Use this for normal
+    play: full speed everywhere, and 60 wherever the Vita can manage it.
+  - **30 FPS**: 30 everywhere. Use it if the switches between 60 and 30 bother you, or if you want the same feel
+    and input timing in every room.
+  - **NATIVE**: always 60 ticks a second, as on the original runner. It's perfectly playable: most rooms hold 60,
+    and the heavy ones slow down a little (40-50 fps plays at two-thirds to five-sixths speed) instead of switching
+    to 30. Use it for the smoothest picture, input read every frame and the game's exact timing, if you don't mind
+    the slowdown or like the extra time it gives you in busy fights.
+
+  The cost of 30 is smoothness, and input is read 30 times a second. Most of the game's own frame counters are
   converted, dialogue typing and enemy search times among them, but a few still run at half speed: the slow motion
   ramp takes 0.3 s instead of 0.16 s, and a finished line from an NPC stays on screen a little longer. Cutscenes and
-  scripted sequences, like the tutorial, always run at 60 because they break at 30. `fps30=0` brings back slow motion.
-  `fps30=2` runs 30 everywhere.
+  scripted sequences, like the tutorial, always run at 60 because they break at 30. Until a mode is chosen in the
+  menu, `fps30` in yyl.cfg decides: 0 NATIVE, 1 DYNAMIC, 2 30 FPS.
 - **No rain.** Rainy levels run about 20% faster without it. `rain=2`, or `rain=1` for half the drops.
 - **No replays.** No end-of-level VHS replay and no death rewind. With them on, memory runs out after a few minutes
   in one room and heavy rooms lose about 2 fps. `replays=1` leaves it to the game's own graphics option.
