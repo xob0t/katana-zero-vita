@@ -24,8 +24,7 @@
  * logic tick per frame, so a CPU-bound room at 31 fps plays at half speed. In this mode such a room runs 30 ticks a
  * second (paced by the display: two vblanks per frame) and each tick advances the game twice as far, so it plays at
  * full speed at 30 fps. Not exact: input is read 30 times a second, movement takes steps twice as long, and anything
- * the game counts in ticks without its time factor runs at half speed (some effect lifetimes, the slow motion ramp,
- * a finished passive dialogue line's hold time). What is converted:
+ * the game counts in ticks without its time factor runs at half speed (some effect lifetimes). What is converted:
  * - The game's time factor global.fr (slow motion; 0 during hit-stop) is doubled right after obj_master and
  *   obj_cutscene_master user event 0 set it each tick. Before those run, a value we doubled is put back, so a
  *   controller that keeps the previous value (pause) does not double it again.
@@ -38,7 +37,9 @@
  *   and dynamic resolution doesn't count the wait for the second vblank as GPU load.
  * - Dialogue letters don't start on frozen ticks (t30_letter_step).
  * - Enemies' search_timeout gets the tick it missed (t30_enemy_search), and a passive textbox (a line spoken while
- *   you play) types twice per tick while its line is incomplete (t30_passive_textbox_user0).
+ *   you play) types twice per tick while its line is incomplete (t30_passive_textbox_user0). Its hold and fade once
+ *   complete use global.fr (die_timer += fr, fade_alpha -= 0.1 * fr), so they need nothing.
+ * - Slow motion's ramp and meter run twice per tick (t30_bullettime_check).
  * Scripted sequences (the game drives the player: the first level's tutorial, cutscenes) count ticks exactly and break
  * at 30 Hz (the tutorial's slow motion came too late and the player was shot), so they always run at 60 ticks/s.
  * In mode 1 a room switches to 30 once T30_SLOW_FRAMES of a T30_WINDOW-frame window took over T30_SLOW_US (from
@@ -299,6 +300,47 @@ static void *t30_player_animation(void *self, void *other, void *result, int arg
 	return r;
 }
 
+// Slow motion (player_bullettime_check, once per tick from player_input) counts in ticks, not with global.fr: while
+// the key is held the ramp speeds up (slow_sp -= 0.02) and global.slowdown moves by slow_sp, the meter drains
+// (bullettime_timer -= 1, bullettime_max -= 0.1); released, slow_sp += 0.005 and the meter refills by 0.5. At 30
+// ticks/s all of it ran at half speed: the ramp into slow motion took 0.3 s instead of 0.16 s, and the meter lasted
+// twice as long and refilled half as fast. The script runs twice per tick, as two 60 Hz ticks would: the second pass
+// sees no new key press (controller_check_pressed is false, held keys stay held), since the press belongs to the
+// first. exp_t30slowmo0 turns it off.
+static gml_script_fn orig_bullettime_check, orig_controller_check_pressed;
+static int t30_bullettime_second;
+unsigned t30_bullettime_doubled;
+static void *t30_controller_check_pressed(void *self, void *other, void *result, int argc, void **args) {
+	if (!t30_bullettime_second)
+		return orig_controller_check_pressed(self, other, result, argc, args);
+	gml_rvalue *r = result;
+	r->val = 0;
+	r->flags = 0;
+	r->kind = 0;
+	return result;
+}
+static int *var_slowdown;
+static void *t30_bullettime_check(void *self, void *other, void *result, int argc, void **args) {
+	void *r = orig_bullettime_check(self, other, result, argc, args);
+	if (t30_active && orig_controller_check_pressed) {
+		gml_rvalue scratch = {0, 0, 5}; // the script returns nothing (undefined); keep the first pass's result
+		t30_bullettime_second = 1;
+		orig_bullettime_check(self, other, &scratch, argc, args);
+		t30_bullettime_second = 0;
+		t30_bullettime_doubled++;
+	}
+	if (t30_trace) { // exp_t30trace: global.slowdown each tick while it moves
+		static double last = 1.0;
+		gml_rvalue *s = global_var(var_slowdown);
+		if (s && s->kind == 0 && (s->val != last || s->val != 1.0))
+			debugPrintf("[T30SLOW] %llu us tick %u %s slowdown %.4f\n", sceKernelGetProcessTimeWide(), *frame_count,
+				t30_active ? "30" : "60", s->val);
+		if (s && s->kind == 0)
+			last = s->val;
+	}
+	return r;
+}
+
 static void *t30_animation_code(void *self, void *other, void *result, int argc, void **args) {
 	gml_rvalue *fr;
 	if (!t30_active || !in_player_animation || !(fr = global_var(var_fr)) || fr->kind != 0 || fr->val != 1.0)
@@ -368,7 +410,7 @@ T30_ENEMY_STEPS(T30_ENEMY_WRAP)
 // Dialogue typing (textbox user event 0, once per tick) types at most one character per call: text_timer counts up
 // to typeCharSpd (2: 1 -> 2, then a character and back to 1). Conversations are cutscenes and run at 60, but passive
 // textboxes (lines while you play) do run at 30 ticks/s: there the event runs twice per tick while the line is still
-// typing. Not after it (text_complete): the finished line's hold time and its removal stay once per tick.
+// typing. Not after it (text_complete): the finished line's hold and fade count with global.fr, already doubled.
 static event_func orig_textbox_user0, orig_passive_textbox_user0;
 static int *var_text_complete, t30_text2;
 unsigned t30_textbox_ticks[2], t30_textbox_doubled;
@@ -490,6 +532,13 @@ void t30_install(gml_func_entry *table) {
 	orig_passive_textbox_user0 = gml_replace(table, "gml_Object_obj_passive_textbox_Other_10", t30_passive_textbox_user0);
 	orig_player_animation = entry_hook(so_symbol(&yoyoloader_mod, "_Z27gml_Script_player_animationP9CInstanceS0_R8YYRValueiPPS1_"), t30_player_animation);
 	orig_animation_code = orig_player_animation ? entry_hook(so_symbol(&yoyoloader_mod, "_Z25gml_Script_animation_codeP9CInstanceS0_R8YYRValueiPPS1_"), t30_animation_code) : NULL;
+	// The script's hook also carries exp_t30trace's slowdown log, so it's installed with exp_t30slowmo0 too
+	var_slowdown = (int *)so_symbol(&yoyoloader_mod, "g_VAR_slowdown");
+	if (!exp_flag("t30slowmo0"))
+		orig_controller_check_pressed = entry_hook(so_symbol(&yoyoloader_mod,
+			"_Z35gml_Script_controller_check_pressedP9CInstanceS0_R8YYRValueiPPS1_"), t30_controller_check_pressed);
+	orig_bullettime_check = entry_hook(so_symbol(&yoyoloader_mod,
+		"_Z34gml_Script_player_bullettime_checkP9CInstanceS0_R8YYRValueiPPS1_"), t30_bullettime_check);
 	orig_override_control_init = entry_hook(so_symbol(&yoyoloader_mod, "_Z32gml_Script_override_control_initP9CInstanceS0_R8YYRValueiPPS1_"), t30_override_control_init);
 	orig_gamepaused_step1 = entry_hook(so_symbol(&yoyoloader_mod, "_Z32gml_Object_obj_gamepaused_Step_1P9CInstanceS0_"), t30_gamepaused_step1);
 	if (!orig_gamepaused_step1)
@@ -510,10 +559,10 @@ void t30_install(gml_func_entry *table) {
 	t30_never = exp_flag("t30never");
 	if (exp_flag("t30force")) // testing: 30 ticks/s everywhere
 		fps30 = 2;
-	debugPrintf("30 fps mode %d: master %s, cutscene master %s, player animation %s, scripts %s, letters %s, animate %s, alarms %s, motion %s, hit-stop %s, enemy search %d/9, textboxes %s\n",
+	debugPrintf("30 fps mode %d: master %s, cutscene master %s, player animation %s, scripts %s, letters %s, animate %s, alarms %s, motion %s, hit-stop %s, enemy search %d/9, textboxes %s, slow motion %s\n",
 		fps30, orig_master_user0 ? "hooked" : "NOT hooked", orig_cutscene_master_user0 ? "hooked" : "NOT hooked",
 		orig_animation_code ? "hooked" : "NOT hooked", orig_override_control_init ? "hooked" : "NOT hooked",
 		orig_letter_step ? "hooked" : "NOT hooked", t30_anim ? "x2" : "x1", t30_alarm ? "x2" : "x1", t30_move ? "x2" : "x1",
-		t30_freeze ? "x2" : "x1", enemies, orig_textbox_user0 && orig_passive_textbox_user0 ? "counted" : "NOT hooked");
+		t30_freeze ? "x2" : "x1", enemies, orig_textbox_user0 && orig_passive_textbox_user0 ? "counted" : "NOT hooked", orig_bullettime_check && orig_controller_check_pressed ? "x2" : "x1");
 	t30_installed = 1;
 }
