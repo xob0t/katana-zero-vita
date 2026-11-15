@@ -30,8 +30,8 @@ back the original.
 - **No rim glow on club dancers.** It's about 285 extra draws per frame, 44 fps with it and 52-56 without. The light
   show stays. `dancerGlow=1`.
 - **No dust in the cathedral's window light.** 41 fps with it, 59 without. `cathedralDust=1`.
-- **Lower resolution in the cathedral.** A room that keeps the GPU waiting at 960x540, which so far is only the
-  cathedral's window light, drops to 640x360 until the next room. `dynamicRes=0`.
+- **Lower resolution in GPU-heavy rooms.** A room where the GPU can't keep up at 960x540, so frames miss the screen
+  refresh while the CPU has time to spare, drops to 640x360 until the next room. `dynamicRes=0`.
 - **Coarser laser deaths.** The body is cut into 4 times fewer, 4 times thicker slices. `dissolveChunkScale=1`.
 - **Thinner prison fog.** One puff in 4 is kept and drawn denser. `fogScale=1`.
 - **Sound limits.** At most 3 copies of one sound and 32 voices at once. Laser deaths start dozens of identical
