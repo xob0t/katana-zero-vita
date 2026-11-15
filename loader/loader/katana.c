@@ -1042,10 +1042,10 @@ static void dynamic_res_update(uint32_t swap_us) {
 
 // Runs right after vglSwapBuffers, between frames: every scene of the frame has been submitted, so the GPU finish
 // and garbage collection below cannot free memory that commands still being recorded refer to
-static void t30_update(void);
+static void t30_update(uint32_t work_us);
 
-void katana_after_swap(uint32_t swap_us) {
-	t30_update();
+void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
+	t30_update(work_us);
 	dynamic_res_update(swap_us);
 	if (!texture_flush)
 		return;
@@ -1817,9 +1817,12 @@ static event_func gml_replace(gml_func_entry *table, const char *name, event_fun
  *   you play) types twice per tick while its line is incomplete (t30_passive_textbox_user0).
  * Scripted sequences (the game drives the player: the first level's tutorial, cutscenes) count ticks exactly and break
  * at 30 Hz (the tutorial's slow motion came too late and the player was shot), so they always run at 60 ticks/s.
- * In mode 1 a room switches after T30_SETTLE_FRAMES once T30_SLOW_FRAMES of a T30_WINDOW-frame window took over
- * T30_SLOW_US, and stays at 30 Hz until the next room; rooms that switched once start at 30 Hz the next time (death
- * restarts keep the room). The rooms in t30_known_heavy start at 30 right away (after a starting cutscene).
+ * In mode 1 a room switches to 30 once T30_SLOW_FRAMES of a T30_WINDOW-frame window took over T30_SLOW_US (from
+ * T30_SETTLE_FRAMES after the room starts), and back to 60 once T30_FAST_FRAMES of a window took under T30_FAST_US of
+ * CPU work per tick (the frame interval says nothing at 30: it is always two vblanks). Each switch holds for at least
+ * T30_DWELL_US, so a room doesn't flap between the two. A room that switched to 30 starts at 30 the next time (death
+ * restarts keep the room) until it goes back to 60 once; the rooms in t30_known_heavy always start at 30 (after a
+ * starting cutscene). So a momentary slowdown costs a few seconds at 30, not the rest of the room.
  * exp_t30anim0, exp_t30alarm0, exp_t30freeze0, exp_t30search0 and exp_t30text0 turn the respective conversion off.
  * Debug: exp_t30trace logs the player's position, exp_t30never keeps 60 ticks/s with the hooks installed (a baseline
  * for traces), exp_t30watchdog crashes the game (for a core dump) when ticks stop for 3 s in 30 fps mode, exp_t30diag
@@ -1827,15 +1830,18 @@ static event_func gml_replace(gml_func_entry *table, const char *name, event_fun
  */
 int fps30 = 1;
 #define T30_SETTLE_FRAMES 45
-#define T30_WINDOW 45
-#define T30_SLOW_FRAMES 40
+#define T30_WINDOW 90           // ~2.6 s while slow at 60, 3 s at 30
+#define T30_SLOW_FRAMES 80      // frames over T30_SLOW_US (under 50 fps) to drop to 30
 #define T30_SLOW_US 20000
+#define T30_FAST_FRAMES 85      // ticks under T30_FAST_US of work to go back to 60
+#define T30_FAST_US 14000       // leaves room for the every-other-tick work 60 ticks/s adds back
+#define T30_DWELL_US 5000000    // minimum time between two switches
 #define T30_MAX_ROOMS 1024
 static int t30_anim, t30_alarm, t30_move, t30_freeze;
 static int *var_fr, *var_freeze_timer;
 static int t30_fr_scaled; // global.fr currently holds t30_scaled_fr, our doubling of the game's t30_game_fr
 static double t30_game_fr, t30_scaled_fr;
-static unsigned char t30_heavy_room[T30_MAX_ROOMS];
+static unsigned char t30_heavy_room[T30_MAX_ROOMS]; // 1 switched to 30 last time, 2 in t30_known_heavy
 // Rooms measured under 50 fps at 500 MHz: they start at 30 ticks/s instead of playing ~3 s of slow motion first
 static const char *const t30_known_heavy[] = {
 	"room_bunker2_3", "room_club_4_2", "room_dragon_4", "room_factory2_4", "room_haunted_alien2", "room_haunted_cart2",
@@ -1882,10 +1888,10 @@ static void t30_set(int on) {
 	debugPrintf("[FPS30] room %d: %s\n", current_room ? *current_room : -1, on ? "30 ticks/s, double time step" : "60 ticks/s");
 }
 
-// Once per presented frame (katana_after_swap)
-static void t30_update(void) {
-	static int room = -2, frames, slow;
-	static uint64_t last;
+// Once per presented frame (katana_after_swap); work_us is the CPU time of the tick that was just presented
+static void t30_update(uint32_t work_us) {
+	static int room = -2, frames, window, count;
+	static uint64_t last, switched;
 	uint64_t now = sceKernelGetProcessTimeWide();
 	uint64_t interval = last ? now - last : 0;
 	last = now;
@@ -1899,7 +1905,7 @@ static void t30_update(void) {
 		for (unsigned i = 0; room_find && i < sizeof(t30_known_heavy) / sizeof(*t30_known_heavy); i++) {
 			int id = room_find(t30_known_heavy[i]);
 			if (id >= 0 && id < T30_MAX_ROOMS) {
-				t30_heavy_room[id] = 1;
+				t30_heavy_room[id] = 2;
 				found++;
 			}
 		}
@@ -1908,33 +1914,49 @@ static void t30_update(void) {
 	}
 	if (*current_room != room) {
 		room = *current_room;
-		frames = slow = 0;
+		frames = window = count = 0;
+		switched = 0;
 	}
 	// Scripted sequences (the game drives the player through override_control_init every tick) count ticks with
 	// exact comparisons: keep them at 60 ticks/s
 	if (t30_scripted_tick && *frame_count - t30_scripted_tick < 3) {
 		t30_set(0);
-		frames = slow = 0;
+		frames = window = count = 0;
 		return;
 	}
-	if (fps30 >= 2 || (room >= 0 && room < T30_MAX_ROOMS && t30_heavy_room[room])) {
+	if (fps30 >= 2) {
 		t30_set(1);
 		return;
 	}
-	t30_set(0);
-	if (++frames <= T30_SETTLE_FRAMES)
-		return;
-	slow += interval > T30_SLOW_US;
-	if (frames < T30_SETTLE_FRAMES + T30_WINDOW)
-		return;
-	if (slow >= T30_SLOW_FRAMES) {
-		if (room >= 0 && room < T30_MAX_ROOMS)
-			t30_heavy_room[room] = 1;
-		debugPrintf("[FPS30] room %d: %d of %d frames over %.0f ms\n", room, slow, T30_WINDOW, T30_SLOW_US / 1000.0f);
-		t30_set(1);
+	unsigned char *heavy = room >= 0 && room < T30_MAX_ROOMS ? &t30_heavy_room[room] : NULL;
+	if (frames++ == 0) {
+		// A room starts (or resumes after a cutscene) at 30 if it was heavy last time
+		int on = heavy && *heavy;
+		if (on != t30_active)
+			switched = now;
+		t30_set(on);
 	}
-	frames = T30_SETTLE_FRAMES;
-	slow = 0;
+	if (frames <= T30_SETTLE_FRAMES || (switched && now - switched < T30_DWELL_US)) {
+		window = count = 0;
+		return;
+	}
+	count += t30_active ? work_us < T30_FAST_US : interval > T30_SLOW_US;
+	if (++window < T30_WINDOW)
+		return;
+	if (!t30_active && count >= T30_SLOW_FRAMES) {
+		if (heavy && !*heavy)
+			*heavy = 1;
+		debugPrintf("[FPS30] room %d: %d of %d frames over %.0f ms\n", room, count, T30_WINDOW, T30_SLOW_US / 1000.0f);
+		t30_set(1);
+		switched = now;
+	} else if (t30_active && count >= T30_FAST_FRAMES) {
+		if (heavy && *heavy == 1)
+			*heavy = 0;
+		debugPrintf("[FPS30] room %d: %d of %d ticks under %.0f ms of work\n", room, count, T30_WINDOW, T30_FAST_US / 1000.0f);
+		t30_set(0);
+		switched = now;
+	}
+	window = count = 0;
 }
 
 static gml_rvalue *instance_var(void *self, int *var) {
