@@ -195,6 +195,7 @@ void loadConfig(const char *game) {
 			else if (strcmp("audioGrain", buffer) == 0) { extern int opensles_grain; opensles_grain = value; }
 			else if (strcmp("sameSoundLimit", buffer) == 0) { extern int same_sound_limit; same_sound_limit = value; }
 			else if (strcmp("dissolveChunkScale", buffer) == 0) { extern int dissolve_chunk_scale; dissolve_chunk_scale = value; }
+			else if (strcmp("dossierCircles", buffer) == 0) { extern int dossier_circles; dossier_circles = value; }
 			else if (strcmp("fogScale", buffer) == 0) { extern int fog_scale; fog_scale = value; }
 			else if (strcmp("dancerGlow", buffer) == 0) { extern int dancer_glow; dancer_glow = value; }
 			else if (strcmp("cathedralDust", buffer) == 0) { extern int cathedral_dust; cathedral_dust = value; }

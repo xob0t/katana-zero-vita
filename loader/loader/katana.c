@@ -402,6 +402,7 @@ static void light_fast_report(int frames) {
 	}
 }
 
+static double global_real(int *var, double fallback);
 void katana_prof_report(int frames) {
 	extern unsigned t30_letter_skips, t30_search_ticks, t30_enemy_steps, t30_textbox_ticks[2];
 	if (t30_letter_skips)
@@ -435,6 +436,14 @@ void katana_prof_report(int frames) {
 			debugPrintf("[LETTER] hits %u %u %u %u %u fallbacks %u %u %u %u %u\n", letter_native_hits[0], letter_native_hits[1],
 				letter_native_hits[2], letter_native_hits[3], letter_native_hits[4], letter_native_fallbacks[0],
 				letter_native_fallbacks[1], letter_native_fallbacks[2], letter_native_fallbacks[3], letter_native_fallbacks[4]);
+		extern unsigned letter_native_direct_user, letter_native_cached_slots;
+		if (letter_native_direct_user || letter_native_cached_slots)
+			debugPrintf("[LETTER] direct user events %u, cached lookups %u\n", letter_native_direct_user, letter_native_cached_slots);
+		extern unsigned letter_slot_miss[5];
+		extern int letter_timing;
+		if (letter_timing)
+			debugPrintf("[LETTER] slot misses: empty %u other %u id %u entries %u mask %u\n", letter_slot_miss[0], letter_slot_miss[1],
+			letter_slot_miss[2], letter_slot_miss[3], letter_slot_miss[4]);
 		for (int i = 0; i < 64 && letter_native_reject_line[i]; i++)
 			debugPrintf("[LETTER] reject at letter_native.c:%u x%u\n", letter_native_reject_line[i], letter_native_reject_count[i]);
 		extern unsigned minecart_native_hits, minecart_native_fallbacks, minecart_native_fastline_hits, minecart_native_fastline_fallbacks;
@@ -445,6 +454,45 @@ void katana_prof_report(int frames) {
 				minecart_rail_native_hits, minecart_rail_native_fallbacks);
 		for (int i = 0; i < 64 && minecart_native_reject_line[i]; i++)
 			debugPrintf("[MINECART] reject at minecart_native.c:%u x%u\n", minecart_native_reject_line[i], minecart_native_reject_count[i]);
+		extern unsigned dossier_circle_fast, dossier_circle_slow, dossier_spawner_fast, dossier_spawner_slow;
+		extern unsigned dossier_spd_cached, dossier_spd_looked_up;
+		if (dossier_circle_fast || dossier_circle_slow || dossier_spawner_fast || dossier_spawner_slow)
+			debugPrintf("[DOSSIER] circle steps %u/%u spawner steps %u/%u (native/original), fire_spd %u cached %u looked up (totals)\n",
+				dossier_circle_fast, dossier_circle_slow, dossier_spawner_fast, dossier_spawner_slow, dossier_spd_cached,
+				dossier_spd_looked_up);
+		extern int dossier_fire_spd(double *out);
+		double spd;
+		if (dossier_fire_spd(&spd)) {
+			static int *fr;
+			if (!fr)
+				fr = (int *)so_symbol(&yoyoloader_mod, "g_VAR_fr");
+			debugPrintf("[DOSSIER] fire_spd %.4f global.fr %.4f\n", spd, fr ? global_real(fr, -1.0) : -1.0);
+		}
+		extern unsigned dossier_children_dropped, dossier_children_kept;
+		if (dossier_children_dropped || dossier_children_kept)
+			debugPrintf("[DOSSIER] decorative circles dropped %u kept %u (totals)\n", dossier_children_dropped, dossier_children_kept);
+		extern uint64_t letter_time[6];
+		extern unsigned letter_time_n[6];
+		if (letter_time_n[0]) {
+			static const char *names[5] = {"draw", "admit", "text", "font", "user"};
+			for (int i = 0; i < 5; i++)
+				debugPrintf("[LETTERTIME] %-5s %8u calls %6.2f us each\n", names[i], letter_time_n[i],
+					letter_time_n[i] ? (double)letter_time[i] / letter_time_n[i] : 0.0);
+			memset(letter_time, 0, sizeof(letter_time));
+			memset(letter_time_n, 0, sizeof(letter_time_n));
+		}
+		extern unsigned wavy_native_fast, wavy_native_slow, wavy_native_strips;
+		if (wavy_native_fast || wavy_native_slow)
+			debugPrintf("[WAVY] calls %u/%u (native/original), strips %u (totals)\n", wavy_native_fast, wavy_native_slow,
+				wavy_native_strips);
+		extern unsigned wavy_reject[16], wavy_reject_kind;
+		for (int i = 0; i < 14; i++)
+			if (wavy_reject[i])
+				debugPrintf("[WAVY] reject %d x%u (kind %u)\n", i, wavy_reject[i], wavy_reject_kind);
+		extern unsigned wavy_verify_calls, wavy_verify_mismatch;
+		if (wavy_verify_calls)
+			debugPrintf("[WAVY] verify: %u strips compared, %u mismatches\n", wavy_verify_calls, wavy_verify_mismatch);
+
 		extern unsigned dustspawner_loop_native_calls, dustspawner_loop_native_hits, dustspawner_loop_native_loops;
 		extern unsigned dustspawner_loop_native_passes, dustspawner_loop_native_draws, dustspawner_loop_native_paused;
 		extern unsigned dustspawner_loop_native_whole_fallbacks, dustspawner_loop_native_particle_fallbacks;
@@ -1003,21 +1051,31 @@ unsigned texflush_count;
 /*
  * Dynamic resolution (dynamicRes, default 1): a 960x540 application surface keeps text sharp, but rooms full of
  * blended light sprites drawn straight onto it (room_cathedral: window beams, ~65 light glows) can run out of
- * GPU fill rate: 43-52 fps with 4-9 ms GPU waits at the swap, 59 at 640x360. When at least DYNRES_BOUND_FRAMES
- * of DYNRES_WINDOW frames wait on the GPU for over DYNRES_SWAP_US at the swap, the room drops to 640x360 until
- * the next room. The first second of a room (texture loads stall the swap too) is not counted. (A light room at
- * 60 fps waits ~0.15 ms; texture pages pushed out of VRAM into RAM make ordinary rooms GPU-bound and drop too.)
+ * GPU fill rate: 43-52 fps with 4-9 ms GPU waits at the swap, 59 at 640x360. A frame counts as GPU-bound when
+ * it missed a vblank (over DYNRES_MISS_US since the previous swap) although its CPU work fit in a frame (under
+ * DYNRES_CPU_US) and it waited over DYNRES_SWAP_US at the swap. The swap time alone can't tell: since the runner's
+ * frame limiter no longer spins (timing_sleep_vsync), an idle frame's slack is spent waiting for vblank in the swap,
+ * ~7 ms in a light 60 fps room, and every room dropped. When at least DYNRES_BOUND_FRAMES of DYNRES_WINDOW frames
+ * are GPU-bound (under ~55 fps from the GPU) the room drops to 640x360 until the next room. The first second of a
+ * room (texture loads stall the swap too) is not counted. (Texture pages pushed out of VRAM into RAM make ordinary
+ * rooms GPU-bound and drop too.)
  */
 #define DYNRES_WINDOW 60
-#define DYNRES_BOUND_FRAMES 20
+#define DYNRES_BOUND_FRAMES 6
 #define DYNRES_SWAP_US 2000
+#define DYNRES_MISS_US 25000 // 1.5 vblank intervals
+#define DYNRES_CPU_US 15000
 #define DYNRES_SETTLE_FRAMES 60
 int dynamic_res = 1;
 unsigned dynres_drops;
 static int dynres_test; // exp_dynrestest: every frame counts as GPU-bound, so each room drops after ~2 s
 
-static void dynamic_res_update(uint32_t swap_us) {
+static void dynamic_res_update(uint32_t swap_us, uint32_t work_us) {
 	static int room = -2, frames, window, bound, dropped;
+	static uint64_t last;
+	uint64_t now = sceKernelGetProcessTimeWide();
+	uint64_t period = last ? now - last : 0;
+	last = now;
 	if (!dynamic_res || !app_surf_native || app_full_w <= 640 || !current_room)
 		return;
 	if (*current_room != room) {
@@ -1033,7 +1091,7 @@ static void dynamic_res_update(uint32_t swap_us) {
 	// In 30 fps mode the swap also waits for the second vblank of each frame: not GPU load
 	if (dropped || t30_active || ++frames <= DYNRES_SETTLE_FRAMES)
 		return;
-	bound += swap_us > DYNRES_SWAP_US || dynres_test;
+	bound += (period > DYNRES_MISS_US && work_us < DYNRES_CPU_US && swap_us > DYNRES_SWAP_US) || dynres_test;
 	if (++window < DYNRES_WINDOW)
 		return;
 	if (bound >= DYNRES_BOUND_FRAMES) {
@@ -1041,8 +1099,8 @@ static void dynamic_res_update(uint32_t swap_us) {
 		dynres_drops++;
 		app_surf_w = 640;
 		app_surf_h = 360;
-		debugPrintf("[DYNRES] room %d GPU-bound (%d of %d frames waited over %.1f ms at the swap): 640x360\n", room,
-			bound, window, DYNRES_SWAP_US / 1000.0f);
+		debugPrintf("[DYNRES] room %d GPU-bound (%d of %d frames missed a vblank waiting at the swap): 640x360\n",
+			room, bound, window);
 	}
 	window = bound = 0;
 }
@@ -1055,7 +1113,7 @@ static void text_smooth_sync(void);
 void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
 	t30_update(work_us);
 	text_smooth_sync();
-	dynamic_res_update(swap_us);
+	dynamic_res_update(swap_us, work_us);
 	if (!texture_flush)
 		return;
 	extern int vgl_failed_allocs;
@@ -1597,6 +1655,16 @@ void katana_late_install(void) {
 	sound_limit_install();
 	dissolve_install();
 	fog_install();
+	if (!exp_flag("dossiernative0")) {
+		extern int dossier_native_install(void *(*hook)(uintptr_t entry, void *replacement));
+		debugPrintf("native dossier burn steps: %s\n", dossier_native_install(entry_hook) ? "installed" : "NOT installed");
+	}
+	extern int letter_timing;
+	letter_timing = exp_flag("lettertime");
+	if (!exp_flag("wavynative0")) {
+		extern int wavy_native_install(void *(*hook)(uintptr_t entry, void *replacement));
+		debugPrintf("native draw_sprite_wavy: %s\n", wavy_native_install(entry_hook) ? "installed" : "NOT installed");
+	}
 	appsurf_copy_install();
 	if (orig_lighting_user0) {
 		runner_function **functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
@@ -1896,6 +1964,21 @@ static void *t30_override_control_init(void *self, void *other, void *result, in
 	return orig_override_control_init(self, other, result, argc, args);
 }
 
+// The dossier burn's Steps (dossier_native.c) mark its ticks
+static uint32_t t30_heavy_tick;
+void t30_dossier_burning(void) {
+	if (frame_count)
+		t30_heavy_tick = *frame_count ? *frame_count : 1;
+}
+
+// obj_gamepaused exists while the pause menu is open; its Begin Step marks the paused ticks
+static event_func orig_gamepaused_step1;
+static uint32_t t30_paused_tick;
+static void t30_gamepaused_step1(void *self, void *other) {
+	t30_paused_tick = *frame_count ? *frame_count : 1;
+	orig_gamepaused_step1(self, other);
+}
+
 static void t30_set(int on) {
 	if (on == t30_active)
 		return;
@@ -1952,6 +2035,22 @@ static void t30_update(uint32_t work_us) {
 		frames = window = count = 0;
 		return;
 	}
+	// The pause menu draws ~21 ms of VHS effects over the frozen room (chinatown_3: 26 ms frames, ~38 fps). It runs
+	// at a steady 30 and doesn't count as the room's load: closing it returns to the mode the room had, and the
+	// measurement starts over.
+	static int pause_saved = -1;
+	if (t30_paused_tick && *frame_count - t30_paused_tick < 3) {
+		if (pause_saved < 0)
+			pause_saved = t30_active;
+		t30_set(1);
+		window = count = 0;
+		return;
+	}
+	if (pause_saved >= 0) {
+		t30_set(fps30 >= 2 || pause_saved);
+		pause_saved = -1;
+		window = count = 0;
+	}
 	if (fps30 >= 2) {
 		t30_set(1);
 		return;
@@ -1963,6 +2062,25 @@ static void t30_update(uint32_t work_us) {
 		if (on != t30_active)
 			switched = now;
 		t30_set(on);
+	}
+	// The dossier burn (its Steps mark the ticks) counts Steps, so it plays in slow motion once a tick takes longer
+	// than a frame: its first second is light, its peak ~30 ms per tick. It drops to 30 after 10 slow frames of 15
+	// and stays there until it ends. The folder's animations before it also count Steps, so room_folder is never
+	// remembered as heavy (they would play at half speed the next time).
+	if (t30_heavy_tick && *frame_count - t30_heavy_tick < 3) {
+		if (!t30_active) {
+			count += interval > T30_SLOW_US;
+			if (++window >= 15) {
+				if (count >= 10) {
+					debugPrintf("[FPS30] room %d: dossier burn, %d of %d frames over %.0f ms\n", room, count, window,
+						T30_SLOW_US / 1000.0f);
+					t30_set(1);
+					switched = now;
+				}
+				window = count = 0;
+			}
+		}
+		return;
 	}
 	if (frames <= T30_SETTLE_FRAMES || (switched && now - switched < T30_DWELL_US)) {
 		window = count = 0;
@@ -2233,6 +2351,9 @@ static void t30_install(gml_func_entry *table) {
 	orig_player_animation = entry_hook(so_symbol(&yoyoloader_mod, "_Z27gml_Script_player_animationP9CInstanceS0_R8YYRValueiPPS1_"), t30_player_animation);
 	orig_animation_code = orig_player_animation ? entry_hook(so_symbol(&yoyoloader_mod, "_Z25gml_Script_animation_codeP9CInstanceS0_R8YYRValueiPPS1_"), t30_animation_code) : NULL;
 	orig_override_control_init = entry_hook(so_symbol(&yoyoloader_mod, "_Z32gml_Script_override_control_initP9CInstanceS0_R8YYRValueiPPS1_"), t30_override_control_init);
+	orig_gamepaused_step1 = entry_hook(so_symbol(&yoyoloader_mod, "_Z32gml_Object_obj_gamepaused_Step_1P9CInstanceS0_"), t30_gamepaused_step1);
+	if (!orig_gamepaused_step1)
+		debugPrintf("30 fps mode: pause menu hook NOT installed\n");
 	orig_instance_animate = entry_hook(so_symbol(&yoyoloader_mod, "_Z16Instance_AnimateP9CInstance"), t30_instance_animate);
 	orig_handle_alarm = entry_hook(so_symbol(&yoyoloader_mod, "_Z11HandleAlarmv"), t30_handle_alarm);
 	orig_handle_movement = entry_hook(so_symbol(&yoyoloader_mod, "_Z22HandleInstanceMovementb"), t30_handle_movement);
@@ -2272,11 +2393,16 @@ static void t30_install(gml_func_entry *table) {
  * fps_mode_sync reads global.zoom_mode once per frame (t30_update), so a SAVE applies on the next frame, CANCEL never.
  * exp_fpsmenu0 turns the row off (yyl.cfg only); exp_t30force keeps 30 ticks/s everywhere and skips the menu too.
  *
- * TEXT SMOOTHING (ON / OFF, the dialogue text smoothing below) is stored the same way in the PC build's VSYNC option,
- * added after FPS MODE. Its code is there too: Create copies global.vsync to var_vsync/prev_var_vsync, Step toggles
- * var_vsync = !var_vsync, Draw shows the game's own "ON"/"OFF" (OFF when var_vsync is false), SAVE copies it back and
- * save_options/load_options keep it. obj_init and mobile_reset_game_data set vsync to false, so every existing save
- * holds 0: 0 means ON, 1 OFF. Draw runs with var_vsync inverted to show that. What the game does with vsync:
+ * TEXT SMOOTHING (OFF / DIALOGUE / ALL, the text smoothing below) is stored the same way in the PC build's VSYNC
+ * option, added after FPS MODE. Its code is there too: Create copies global.vsync to var_vsync/prev_var_vsync, Step
+ * toggles var_vsync = !BOOL(var_vsync), Draw shows the game's own "ON"/"OFF" (OFF when var_vsync is false), SAVE copies
+ * it back and save_options/load_options keep it (load_variable returns file_text_read_real as it is: no clamp, no bool).
+ * obj_init and mobile_reset_game_data set vsync to false, so every existing save holds 0: 0 means DIALOGUE (the old
+ * ON), 1 OFF, 2 ALL. Step turns the game's toggle into OFF -> DIALOGUE -> ALL -> OFF. Draw runs with var_vsync set to
+ * the game's ON/OFF (ON for DIALOGUE and ALL), and translate_option relabels this row's value: Draw keeps its row index
+ * in the instance variable c, the label is translate_option(choice[c]) and the toggle value translate_option("ON" or
+ * "OFF") with c unchanged (lines 403-421 and 1061), so an ON/OFF asked for at the c that drew "VSYNC" is this row's.
+ * What the game does with vsync:
  * - display_reset(aa, vsync), from load_options at boot and from Destroy when global.vsync != prev_var_vsync.
  *   F_DisplayReset stores vsync in g_Sync (frame limiter, MainLoop_Process: g_SyncInterval) and sets g_DoReset, so
  *   the next frame runs GR_D3D_Reset, which frees every surface. The boot call (vsync false in every save: g_Sync 1 ->
@@ -2289,10 +2415,16 @@ static int *var_zoom_mode, *var_var_zoom_mode;
 static gml_script_fn orig_add_pausemenu_choice, orig_translate_option;
 static event_func orig_optionsmenu_step;
 static int fps_row, text_row; // the rows the menu shows
-static int text_smooth = 1; // dialogue text smoothing on (the TEXT_SMOOTH_EVENTS wrappers)
+enum { TEXT_SMOOTH_OFF, TEXT_SMOOTH_DIALOGUE, TEXT_SMOOTH_ALL };
+static int text_smooth = TEXT_SMOOTH_DIALOGUE; // the TEXT_SMOOTH_EVENTS wrappers, and with ALL the GR_Text_Draw ones
 static int text_smooth_hooked; // of the 7 draw events
-static int *var_vsync, *var_var_vsync;
+static int text_all_hooked; // of the 4 GR_Text_Draw functions
+static const double text_smooth_stored[3] = { 1.0, 0.0, 2.0 }; // global.vsync by mode
+static int *var_vsync, *var_var_vsync, *var_c;
 static event_func orig_optionsmenu_draw;
+static void *text_draw_self; // the obj_optionsmenu running Draw
+static int text_draw_mode; // its var_vsync, as a mode
+static double text_label_c = -1; // its c when it asked for the "VSYNC" label
 static builtin_fn orig_display_reset;
 static void (*yy_create_string)(gml_rvalue *, const char *);
 static void (*yy_free_rvalue)(gml_rvalue *);
@@ -2330,6 +2462,24 @@ static void *fps_add_pausemenu_choice(void *self, void *other, void *result, int
 
 static const char *const fps_mode_name[3] = { "NATIVE", "DYNAMIC", "30 FPS" }; // by fps30 value
 
+// A real or bool instance variable (var_vsync is a bool once Step has toggled it)
+static gml_rvalue *instance_num(void *self, int *var) {
+	gml_rvalue *(*vwrite)(void *, int) = (*(void ***)self)[3];
+	gml_rvalue *v = var ? vwrite(self, var[1]) : NULL;
+	return v && (v->kind == VALUE_REAL || v->kind == VALUE_BOOL) ? v : NULL;
+}
+
+// global.vsync / var_vsync -> TEXT_SMOOTH_*: 0 (every existing save) DIALOGUE, 1 OFF, 2 ALL, anything else DIALOGUE
+static int text_mode_of(double v) {
+	return v == 1.0 ? TEXT_SMOOTH_OFF : v == 2.0 ? TEXT_SMOOTH_ALL : TEXT_SMOOTH_DIALOGUE;
+}
+
+// obj_optionsmenu Draw's row index (only read inside its Draw, where c exists)
+static double text_draw_c(void *self) {
+	gml_rvalue *c = instance_num(self, var_c);
+	return c ? c->val : -2.0;
+}
+
 static void *fps_translate_option(void *self, void *other, void *result, int argc, void **args) {
 	const char *key = argc >= 1 ? rv_string(args[0]) : NULL, *text = NULL;
 	if (!key)
@@ -2344,21 +2494,42 @@ static void *fps_translate_option(void *self, void *other, void *result, int arg
 		text = "30 FPS";
 	else if (!strcmp(key, "4X ZOOM"))
 		text = "DYNAMIC";
-	else if (text_row && !strcmp(key, "VSYNC")) // its ON/OFF stay the game's own, translated
+	else if (text_row && !strcmp(key, "VSYNC")) {
 		text = "TEXT SMOOTHING";
+		if (text_draw_self && self == text_draw_self)
+			text_label_c = text_draw_c(self);
+	} else if (text_draw_self && self == text_draw_self && text_label_c >= 0.0 && (!strcmp(key, "ON") || !strcmp(key, "OFF")) &&
+			text_draw_c(self) == text_label_c) {
+		// This row's value. OFF stays the game's own, translated (Draw asks for "OFF" then)
+		if (text_draw_mode != TEXT_SMOOTH_OFF)
+			text = text_draw_mode == TEXT_SMOOTH_ALL ? "ALL" : "DIALOGUE";
+	}
 	if (!text)
 		return orig_translate_option(self, other, result, argc, args);
 	yy_create_string(result, text); // frees the old value first
 	return result;
 }
 
-// Three values: the game's toggle wraps 3 -> 0 ("not chosen"); make it 3 -> 1
+// Three values each:
+// - FPS MODE: the game's toggle wraps 3 -> 0 ("not chosen"); make it 3 -> 1;
+// - TEXT SMOOTHING: the game's var_vsync = !var_vsync flips it; make that the next of OFF -> DIALOGUE -> ALL -> OFF
+//   (ALL is skipped if its hooks are missing).
 static void fps_optionsmenu_step(void *self, void *other) {
-	gml_rvalue *z = instance_var(self, var_var_zoom_mode);
-	double before = z ? z->val : -1;
+	gml_rvalue *z = fps_row ? instance_var(self, var_var_zoom_mode) : NULL;
+	double zoom = z ? z->val : -1;
+	gml_rvalue *t = text_row ? instance_num(self, var_var_vsync) : NULL;
+	int have_smooth = t != NULL;
+	double smooth = t ? t->val : 0.0;
 	orig_optionsmenu_step(self, other);
-	if (before == 3.0 && (z = instance_var(self, var_var_zoom_mode)) && z->val == 0.0)
+	if (zoom == 3.0 && (z = instance_var(self, var_var_zoom_mode)) && z->val == 0.0)
 		z->val = 1.0;
+	if (have_smooth && (t = instance_num(self, var_var_vsync)) && (t->val != 0.0) != (smooth != 0.0)) {
+		int mode = text_mode_of(smooth) + 1;
+		if (mode > TEXT_SMOOTH_ALL || (mode == TEXT_SMOOTH_ALL && text_all_hooked < 4))
+			mode = TEXT_SMOOTH_OFF;
+		t->val = text_smooth_stored[mode];
+		t->kind = VALUE_REAL;
+	}
 }
 
 // Once per frame (t30_update): the saved menu choice drives fps30
@@ -2370,15 +2541,9 @@ static void fps_mode_sync(void) {
 	fps30 = m == 1 ? 0 : m == 2 ? 2 : m == 3 ? 1 : fps30_cfg;
 }
 
-// A real or bool instance variable (var_vsync is a bool once Step has toggled it)
-static gml_rvalue *instance_num(void *self, int *var) {
-	gml_rvalue *(*vwrite)(void *, int) = (*(void ***)self)[3];
-	gml_rvalue *v = var ? vwrite(self, var[1]) : NULL;
-	return v && (v->kind == VALUE_REAL || v->kind == VALUE_BOOL) ? v : NULL;
-}
-
-// Draw shows OFF for a false var_vsync, and false (every existing save) means TEXT SMOOTHING ON: draw it inverted.
-// Draw only reads var_vsync and runs no user event (SAVE), so the stored value never sees the inversion.
+// Draw shows OFF for a false var_vsync, and false (every existing save) means DIALOGUE: draw it with var_vsync true
+// for DIALOGUE and ALL, false for OFF, and fps_translate_option relabels the value (the game's ON/OFF if it can't).
+// Draw only reads var_vsync and runs no user event (SAVE), so the stored value never sees the change.
 static void text_optionsmenu_draw(void *self, void *other) {
 	gml_rvalue *v = instance_num(self, var_var_vsync);
 	if (!v) {
@@ -2386,8 +2551,18 @@ static void text_optionsmenu_draw(void *self, void *other) {
 		return;
 	}
 	double was = v->val;
-	v->val = was != 0.0 ? 0.0 : 1.0;
+	int mode = text_mode_of(was);
+	v->val = mode != TEXT_SMOOTH_OFF ? 1.0 : 0.0;
+	void *prev_self = text_draw_self;
+	int prev_mode = text_draw_mode;
+	double prev_c = text_label_c;
+	text_draw_self = self;
+	text_draw_mode = mode;
+	text_label_c = -1.0;
 	orig_optionsmenu_draw(self, other);
+	text_draw_self = prev_self;
+	text_draw_mode = prev_mode;
+	text_label_c = prev_c;
 	if ((v = instance_num(self, var_var_vsync))) // looked up again: Draw can add instance variables
 		v->val = was;
 }
@@ -2418,12 +2593,12 @@ static void guarded_display_reset(gml_rvalue *result, void *self, void *other, i
 	orig_display_reset(result, self, other, 2, a);
 }
 
-// Once per frame (katana_after_swap): the saved TEXT SMOOTHING choice (global.vsync false: ON)
+// Once per frame (katana_after_swap): the saved TEXT SMOOTHING choice (global.vsync false: DIALOGUE)
 static void text_smooth_sync(void) {
 	if (!text_row || !*global_obj_ptr)
 		return;
 	gml_rvalue *v = global_var(var_vsync);
-	text_smooth = !(v && v->val != 0.0);
+	text_smooth = text_mode_of(v ? v->val : 0.0);
 }
 
 // The FPS MODE and TEXT SMOOTHING rows, each installed only with everything it needs
@@ -2434,6 +2609,7 @@ static void fps_menu_install(gml_func_entry *table) {
 	var_var_zoom_mode = (int *)so_symbol(&yoyoloader_mod, "g_VAR_var_zoom_mode");
 	var_vsync = (int *)so_symbol(&yoyoloader_mod, "g_VAR_vsync");
 	var_var_vsync = (int *)so_symbol(&yoyoloader_mod, "g_VAR_var_vsync");
+	var_c = (int *)so_symbol(&yoyoloader_mod, "g_VAR_c");
 	yy_create_string = (void *)so_symbol(&yoyoloader_mod, "_Z14YYCreateStringP6RValuePKc");
 	yy_free_rvalue = (void *)so_symbol(&yoyoloader_mod, "_Z16FREE_RValue__PreP6RValue");
 
@@ -2449,22 +2625,25 @@ static void fps_menu_install(gml_func_entry *table) {
 	if ((want_fps || want_text) && yy_create_string && yy_free_rvalue)
 		orig_translate_option = entry_hook(so_symbol(&yoyoloader_mod,
 			"_Z27gml_Script_translate_optionP9CInstanceS0_R8YYRValueiPPS1_"), fps_translate_option);
-	// In this order, so a row is never added without its labels and its Step or Draw hook
-	if (want_fps && orig_translate_option && var_zoom_mode && var_var_zoom_mode)
+	// In this order, so a row is never added without its labels and its Step (and Draw) hook
+	int fps_ok = want_fps && orig_translate_option && var_zoom_mode && var_var_zoom_mode;
+	int text_ok = want_text && orig_translate_option && orig_display_reset && var_vsync && var_var_vsync && var_c;
+	if (fps_ok || text_ok)
 		orig_optionsmenu_step = gml_replace(table, "gml_Object_obj_optionsmenu_Step_0", fps_optionsmenu_step);
-	if (want_text && orig_translate_option && orig_display_reset && var_vsync && var_var_vsync)
+	if (text_ok && orig_optionsmenu_step)
 		orig_optionsmenu_draw = gml_replace(table, "gml_Object_obj_optionsmenu_Draw_0", text_optionsmenu_draw);
-	if (orig_optionsmenu_step || orig_optionsmenu_draw)
+	if ((fps_ok || orig_optionsmenu_draw) && orig_optionsmenu_step)
 		orig_add_pausemenu_choice = entry_hook(so_symbol(&yoyoloader_mod,
 			"_Z31gml_Script_add_pausemenu_choiceP9CInstanceS0_R8YYRValueiPPS1_"), fps_add_pausemenu_choice);
 	if (orig_add_pausemenu_choice) {
-		fps_row = !!orig_optionsmenu_step;
+		fps_row = fps_ok;
 		text_row = !!orig_optionsmenu_draw;
 	}
 	if (fps_row)
 		fps30_cfg = fps30; // from here on fps_mode_sync owns fps30
 	debugPrintf("FPS mode menu: %s (yyl.cfg fps30 %d)\n", fps_row ? "on" : want_fps ? "NOT installed" : "off", fps30);
-	debugPrintf("text smoothing menu: %s\n", text_row ? "on" : want_text ? "NOT installed" : "off");
+	debugPrintf("text smoothing menu: %s%s\n", text_row ? "on" : want_text ? "NOT installed" : "off",
+		text_row && text_all_hooked < 4 ? " (no ALL)" : "");
 }
 
 // obj_interaction is the yes/no prompt behind interact_binary (pause, title and level-select confirms, interactable
@@ -2505,6 +2684,68 @@ static void (*set_tex_interp)(int on);
 		set_tex_interp(was); \
 	}
 TEXT_SMOOTH_EVENTS(TEXT_SMOOTH_WRAP)
+
+// TEXT SMOOTHING ALL: every font draw (menus, HUD, prompts, the level select's tape labels from obj_tape Other_10)
+// with interpolation on. Every draw_text* builtin, F_ and YYGML_ alike, ends in one of these four, and each is the
+// only caller of its CFontGM::Draw_String* (sprite fonts and TrueType fonts both). Sprites stay as they are; text
+// drawn as sprites (obj_letter's dialogue letters) is the TEXT_SMOOTH_EVENTS wrappers' part.
+static void (*orig_gr_text_draw)(float x, float y, const char *s, int sep, int w);
+static void (*orig_gr_text_draw_color)(float x, float y, const char *s, int sep, int w, unsigned c1, unsigned c2,
+	unsigned c3, unsigned c4, float alpha);
+static void (*orig_gr_text_draw_transformed)(float x, float y, const char *s, int sep, int w, float xs, float ys,
+	float angle);
+static void (*orig_gr_text_draw_transformed_color)(float x, float y, const char *s, int sep, int w, float xs, float ys,
+	float angle, unsigned c1, unsigned c2, unsigned c3, unsigned c4, float alpha);
+
+static int text_all_begin(void) {
+	if (text_smooth != TEXT_SMOOTH_ALL || (get_tex_interp() & 1))
+		return 0;
+	set_tex_interp(1);
+	return 1;
+}
+
+static void text_all_end(int on) {
+	if (on)
+		set_tex_interp(0);
+}
+
+static void all_gr_text_draw(float x, float y, const char *s, int sep, int w) {
+	int on = text_all_begin();
+	orig_gr_text_draw(x, y, s, sep, w);
+	text_all_end(on);
+}
+
+static void all_gr_text_draw_color(float x, float y, const char *s, int sep, int w, unsigned c1, unsigned c2,
+		unsigned c3, unsigned c4, float alpha) {
+	int on = text_all_begin();
+	orig_gr_text_draw_color(x, y, s, sep, w, c1, c2, c3, c4, alpha);
+	text_all_end(on);
+}
+
+static void all_gr_text_draw_transformed(float x, float y, const char *s, int sep, int w, float xs, float ys,
+		float angle) {
+	int on = text_all_begin();
+	orig_gr_text_draw_transformed(x, y, s, sep, w, xs, ys, angle);
+	text_all_end(on);
+}
+
+static void all_gr_text_draw_transformed_color(float x, float y, const char *s, int sep, int w, float xs, float ys,
+		float angle, unsigned c1, unsigned c2, unsigned c3, unsigned c4, float alpha) {
+	int on = text_all_begin();
+	orig_gr_text_draw_transformed_color(x, y, s, sep, w, xs, ys, angle, c1, c2, c3, c4, alpha);
+	text_all_end(on);
+}
+
+static void text_all_install(void) {
+	text_all_hooked += !!(orig_gr_text_draw = entry_hook(so_symbol(&yoyoloader_mod, "_Z12GR_Text_DrawffPKcii"),
+		all_gr_text_draw));
+	text_all_hooked += !!(orig_gr_text_draw_color = entry_hook(so_symbol(&yoyoloader_mod,
+		"_Z18GR_Text_Draw_ColorffPKciijjjjf"), all_gr_text_draw_color));
+	text_all_hooked += !!(orig_gr_text_draw_transformed = entry_hook(so_symbol(&yoyoloader_mod,
+		"_Z24GR_Text_Draw_TransformedffPKciifff"), all_gr_text_draw_transformed));
+	text_all_hooked += !!(orig_gr_text_draw_transformed_color = entry_hook(so_symbol(&yoyoloader_mod,
+		"_Z30GR_Text_Draw_Transformed_ColorffPKciifffjjjjf"), all_gr_text_draw_transformed_color));
+}
 
 static void patch_performance() {
 	gml_func_entry *table = (gml_func_entry *)so_symbol(&yoyoloader_mod, "g_GMLFuncs");
@@ -2560,13 +2801,17 @@ static void patch_performance() {
 	debugPrintf("prompts: default choice highlight %s\n", orig_interaction_create ? "on" : "NOT hooked");
 	get_tex_interp = (void *)so_symbol(&yoyoloader_mod, "_Z32GR_D3D_Get_Texture_Interpolationv");
 	set_tex_interp = (void *)so_symbol(&yoyoloader_mod, "_Z32GR_D3D_Set_Texture_Interpolationb");
-	text_smooth = !exp_flag("textsharp");
+	text_smooth = exp_flag("textsharp") ? TEXT_SMOOTH_OFF : TEXT_SMOOTH_DIALOGUE;
 	if (get_tex_interp && set_tex_interp) {
 #define TEXT_SMOOTH_HOOK(name) text_smooth_hooked += !!(orig_##name##_draw = \
 			gml_replace(table, "gml_Object_obj_" #name "_Draw_0", smooth_##name##_draw));
 		TEXT_SMOOTH_EVENTS(TEXT_SMOOTH_HOOK)
+		// ALL is only reachable from the menu row (exp_textsharp has none, exp_textmenu0 keeps DIALOGUE)
+		if (text_smooth && !exp_flag("textmenu0"))
+			text_all_install();
 	}
-	debugPrintf("dialogue text smoothing: %d of 7 draw events, %s\n", text_smooth_hooked, text_smooth ? "on" : "off");
+	debugPrintf("text smoothing: %d of 7 dialogue draw events, %d of 4 text draws, %s\n", text_smooth_hooked,
+		text_all_hooked, text_smooth ? "on" : "off");
 
 	app_width = (int *)so_symbol(&yoyoloader_mod, "g_ApplicationWidth");
 	app_height = (int *)so_symbol(&yoyoloader_mod, "g_ApplicationHeight");

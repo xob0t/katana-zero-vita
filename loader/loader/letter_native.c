@@ -7,8 +7,10 @@
 #include <stdbool.h>
 #ifdef LETTER_TEST
 #include "collision_stub.h"
+static inline uint64_t sceKernelGetProcessTimeWide(void) { return 0; }
 #else
 #include <kubridge.h>
+#include <psp2/kernel/processmgr.h>
 #include "main.h"
 #include "so_util.h"
 #endif
@@ -83,9 +85,13 @@ static const int *builtin_count;
 static uintptr_t getters[5],setters[5];
 static getter_fn room_height;
 static int installed;
-unsigned letter_native_hits[5],letter_native_fallbacks[5],letter_native_draws,letter_native_rng_calls;
+unsigned letter_native_hits[5],letter_native_fallbacks[5],letter_native_draws,letter_native_rng_calls,letter_native_direct_user,letter_native_cached_slots;
 unsigned letter_native_reject_line[64],letter_native_reject_count[64],letter_native_reject_overflow;
 enum { DRAW_HOOK,STEP_HOOK,USER_HOOK,SCALED_HOOK,FONT_HOOK };
+/* exp_lettertime: time spent per stage (us totals): draw event, its admission, text builtin, font, user event, step */
+int letter_timing; uint64_t letter_time[6]; unsigned letter_time_n[6];
+#define T0(n) uint64_t t0_##n=letter_timing?sceKernelGetProcessTimeWide():0
+#define T1(i,n) do { if(letter_timing) { letter_time[i]+=sceKernelGetProcessTimeWide()-t0_##n; ++letter_time_n[i]; } } while(0)
 static uint32_t word(const void *p,size_t o) { uint32_t v; memcpy(&v,(const uint8_t *)p+o,4); return v; }
 static double coordinate(void *p,size_t o) { float v; memcpy(&v,(const uint8_t *)p+o,4); return (double)v; }
 static RV real(double n) { RV v={n,0,0}; return v; }
@@ -211,7 +217,7 @@ static void scaled_values(void *self,void *other,const RV *x,const RV *y,const R
   RV offset=*off; multiply(&offset,fs); multiply(&offset,sy); add(args+1,&offset);
   multiply(args+3,fs); multiply(args+4,fs);
  }
- builtin(TEXT,&out,self,other,6,args); ++letter_native_draws;
+ T0(t); builtin(TEXT,&out,self,other,6,args); T1(2,t); ++letter_native_draws;
  *trace_start=tr.previous;
 }
 static void scaled_call(void *self,void *other,double x,double y,const RV *text,const RV *scale,const RV *angle) {
@@ -426,7 +432,27 @@ static void user_call(void *self,void *other,State *s) {
   }
  }
 }
+/* The Draw event runs user event 0 through the runner's event_user, which dispatches to letter_native_user, which
+ * admits the instance again. Once a dispatch from Draw is seen to reach letter_native_user for an object index (the
+ * object's user event 0 is obj_letter_Other_10), Draw calls user_call directly with its own admitted state: Draw's
+ * admission covers every field the user event admits (the same variables, the parent, LETTER, txt_glow_alpha, the
+ * font globals, the registry), and Draw writes nothing between its admission and the call that user_admit would
+ * reject (reals into ax/ay/font_scale/font_yoffset, strings into letter). ~10 us per letter. */
+static int letter_object=-1;
+static void *expect_self; static int expect_hit;
+static void user_direct(void *self,void *other,State *s) {
+ int object=(int)word(self,0x84);
+ if(letter_object>=0&&object==letter_object) {
+  ++letter_native_hits[USER_HOOK]; Trace tr={*trace_start,"gml_Object_obj_letter_Other_10",2}; *trace_start=&tr;
+  user_call(self,other,s); *trace_start=tr.previous; ++letter_native_direct_user; return;
+ }
+ expect_self=self; expect_hit=0;
+ event_user(self,other,0);
+ if(expect_hit==1&&letter_object<0) letter_object=object;
+ expect_self=NULL;
+}
 void ABI letter_native_user(void *self,void *other) {
+ if(self==expect_self) ++expect_hit;
  State s; if(!user_admit(self,&s)) { ++letter_native_fallbacks[USER_HOOK]; original_user(self,other); return; }
  ++letter_native_hits[USER_HOOK]; Trace tr={*trace_start,"gml_Object_obj_letter_Other_10",2}; *trace_start=&tr;
  user_call(self,other,&s); *trace_start=tr.previous;
@@ -507,13 +533,36 @@ static void garble_timer(void *self,void *other,RV *timer) {
  RV arg=real(random_value(30)),rounded=real(0); builtin(ROUND,&rounded,self,other,1,&arg);
  RV result=real(20); add(&result,&rounded); owned_write(self,timer,&result); ++letter_native_rng_calls;
 }
-static int draw_admit(void *self,State *s,Table *fonts) {
- static const int list[]={DIE,SPD,FONT,AX,AY,GARBLE,GARBLE_INIT,GARBLE_TIMER,FX_SCALE,ALPHA,COL,RAINBOW,RAINBOW_VAL,
+static const int draw_list[]={DIE,SPD,FONT,AX,AY,GARBLE,GARBLE_INIT,GARBLE_TIMER,FX_SCALE,ALPHA,COL,RAINBOW,RAINBOW_VAL,
  TYPE,GLOW,H_OFFSET,V_OFFSET,SCALE,OSC_Y,ANGLE,DIR};
+#define DRAW_LIST (sizeof(draw_list)/sizeof(*draw_list))
+/* Draw's variable lookups, cached per instance: ~12 us of hash probes per letter. A variable's RV lives at a fixed
+ * address for the life of its instance (the map holds pointers; inserts and rehashes move only the pointers, and
+ * instance variables are never removed), so the pointers stay valid while the instance (its address and id at
+ * +0x80) is the same. The map's entry array and mask are compared too, so a rehash refills the line anyway. The
+ * kind checks (field_admit) still run on every Draw; the pointers were checked distinct when the line was filled. */
+#define SLOT_CACHE 512
+typedef struct { void *self; uint32_t id,mask; const uint8_t *entries; RV *v[DRAW_LIST]; } SlotLine;
+static SlotLine slot_cache[SLOT_CACHE];
+unsigned letter_slot_miss[5];
+static int collect_draw(void *self,State *s) {
+ Table t; if(!table(self,&t)) return 0;
+ uint32_t id=word(self,0x80); SlotLine *c=&slot_cache[id&(SLOT_CACHE-1)]; /* letters get consecutive ids */
+ if(c->self==self&&c->id==id&&c->entries==t.entries&&c->mask==t.mask) {
+  for(size_t i=0;i<DRAW_LIST;++i) { s->v[draw_list[i]]=c->v[i]; if(!field_admit(draw_list[i],c->v[i])) return 0; }
+  ++letter_native_cached_slots; return 1;
+ }
+ letter_slot_miss[!c->self?0:c->self!=self?1:c->id!=id?2:c->entries!=t.entries?3:4]++;
+ c->self=NULL;
+ if(!collect(self,s,draw_list,DRAW_LIST)) return 0;
+ for(size_t i=0;i<DRAW_LIST;++i) c->v[i]=s->v[draw_list[i]];
+ c->self=self; c->id=id; c->entries=t.entries; c->mask=t.mask; return 1;
+}
+static int draw_admit(void *self,State *s,Table *fonts) {
  if(!common()) return 0;
  if(!registry((1u<<NFUNCS)-1)) return 0;
  if(!builtins_ordinary()) return 0;
- if(!collect(self,s,list,sizeof(list)/sizeof(*list))) return 0;
+ if(!collect_draw(self,s)) return 0;
  if(!parent_admit(self,s)) return 0;
  Table t,p,g; if(!table(self,&t)) return 0;
  if(!table(s->parent,&p)) return 0;
@@ -533,13 +582,14 @@ static int draw_admit(void *self,State *s,Table *fonts) {
  RV font=*s->v[FONT],out=real(0); RV *argv[1]={&font}; if(!font_admit(&out,1,argv,fonts)) return 0;
  return 1;
 }
-void ABI letter_native_draw(void *self,void *other) {
- State s; Table fonts; if(!draw_admit(self,&s,&fonts)) { ++letter_native_fallbacks[DRAW_HOOK]; original_draw(self,other); return; }
+static void letter_native_draw_impl(void *self,void *other) {
+ T0(a); State s; Table fonts; int admitted=draw_admit(self,&s,&fonts); T1(1,a);
+ if(!admitted) { ++letter_native_fallbacks[DRAW_HOOK]; original_draw(self,other); return; }
  ++letter_native_hits[DRAW_HOOK]; Trace tr={*trace_start,"gml_Object_obj_letter_Draw_0",1}; *trace_start=&tr;
  uint32_t scratch_flags=s.v[SPD]->flags;
  set_builtin(self,SPEED,number(s.v[SPD])*value(*global,FR));
  tr.line=2; Trace ftr={*trace_start,"gml_Script_draw_set_font_localized",453}; *trace_start=&ftr;
- ++letter_native_hits[FONT_HOOK]; font_call(s.v[FONT],&fonts); *trace_start=ftr.previous;
+ ++letter_native_hits[FONT_HOOK]; T0(f); font_call(s.v[FONT],&fonts); T1(3,f); *trace_start=ftr.previous;
  tr.line=3; set_valign(0); tr.line=4; set_halign(0);
  /* The original exists query remains in the observable builtin stream. */
  tr.line=5; RV parent=*slot(self,PARENT),exists=real(0); builtin(EXISTS,&exists,self,other,1,&parent);
@@ -568,11 +618,11 @@ void ABI letter_native_draw(void *self,void *other) {
  }
  if(cmp(value(s.parent,STATE),3)!=0) {
   tr.line=38; set_colour(integer_value(s.v[COL],0)); tr.line=39; set_alpha((float)number(s.v[ALPHA]));
-  tr.line=40; event_user(self,other,0);
+  tr.line=40; T0(u); user_direct(self,other,&s); T1(4,u);
   if(truth(s.v[RAINBOW])) {
    tr.line=45; set_alpha((float)(number(s.v[ALPHA])*number(s.v[FX_SCALE])));
    tr.line=46; RV colour=real(0),args[3]={real(fmod(number(s.v[RAINBOW_VAL]),255)),real(255),real(255)};
-   builtin(HSV,&colour,self,other,3,args); set_colour((int)number(&colour)); tr.line=47; event_user(self,other,0);
+   builtin(HSV,&colour,self,other,3,args); set_colour((int)number(&colour)); tr.line=47; user_direct(self,other,&s);
   }
   tr.line=49; set_alpha(1); tr.line=50; set_colour(0xffffff);
  } else if(cmp(number(s.v[DIE]),0)==0) {
@@ -610,6 +660,9 @@ void ABI letter_native_draw(void *self,void *other) {
   tr.line=121; set_alpha(1); tr.line=122; set_colour(0xffffff);
  }
  tr.line=125; set_alpha(1); *trace_start=tr.previous;
+}
+void ABI letter_native_draw(void *self,void *other) {
+ T0(d); letter_native_draw_impl(self,other); T1(0,d);
 }
 int letter_native_install(void *(*rx_alloc)(size_t)) {
  if(installed||!rx_alloc) return 0;
