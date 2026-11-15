@@ -25,7 +25,8 @@ back the original.
     and input timing in every room.
   - **NATIVE**: always 60 ticks a second, as on the original runner. It's perfectly playable: most rooms hold 60,
     and the heavy ones slow down a little (40-50 fps plays at two-thirds to five-sixths speed) instead of switching
-    to 30. Use it for the smoothest picture, input read every frame and the game's exact timing, if you don't mind
+    to 30. A few of the heaviest scenes, like the dossier burning, drop to around 30 fps and play at about half
+    speed. Use it for the smoothest picture, input read every frame and the game's exact timing, if you don't mind
     the slowdown or like the extra time it gives you in busy fights.
 
   The cost of 30 is smoothness, and input is read 30 times a second. The game's own frame counters are converted,
