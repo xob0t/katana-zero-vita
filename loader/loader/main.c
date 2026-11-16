@@ -209,7 +209,8 @@ void loadConfig(const char *game) {
 			else if (strcmp("uncachedMem", buffer) == 0) uncached_mem = value;
 			else if (strcmp("doubleBuffering", buffer) == 0) double_buffering = value;
 			else if (strcmp("frameSkip", buffer) == 0) frame_skip = value;
-			else if (strcmp("fps30", buffer) == 0) { extern int fps30; fps30 = value; }
+			// fpsMode: 0 NATIVE, 1 DYNAMIC, 2 30 FPS (the FPS MODE menu overrides it); fps30 is its old name
+			else if (strcmp("fpsMode", buffer) == 0 || strcmp("fps30", buffer) == 0) { extern int fps30; fps30 = value; }
 			else if (strcmp("stickDeadzone", buffer) == 0) { extern double stick_deadzone; stick_deadzone = (value < 0 ? 0 : value > 90 ? 90 : value) / 100.0; }
 			else if (strcmp("replays", buffer) == 0) replays = value;
 			else if (strcmp("rain", buffer) == 0) rain_level = value;
