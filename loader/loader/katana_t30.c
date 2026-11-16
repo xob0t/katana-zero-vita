@@ -61,7 +61,11 @@ int fps30 = 1;
 #define T30_SLOW_FRAMES 80      // frames over T30_SLOW_US (under 50 fps) to drop to 30
 #define T30_SLOW_US 20000
 #define T30_FAST_FRAMES 85      // ticks under T30_FAST_US of work to go back to 60
-#define T30_FAST_US 14000       // leaves room for the every-other-tick work 60 ticks/s adds back
+// A tick at 30 does at least the work of a tick at 60 (it runs the every-other-tick work every time), so one under
+// 16 ms fits a 60 Hz frame with the swap. Measured at 500 MHz, the same state at either rate: room_motel_6 16.6 ms per
+// tick (58 fps at 60), room_motel_3 13.9 ms at 30 and 13.5 ms at 60 (60 fps). It was 14 ms: the Hotel's last room,
+// once cleared, took ~14.1 ms per tick at 30 and stayed at 30 until the exit.
+#define T30_FAST_US 16000
 #define T30_DWELL_US 5000000    // minimum time between two switches
 #define T30_MAX_ROOMS 1024
 static int t30_anim, t30_alarm, t30_move, t30_freeze;
