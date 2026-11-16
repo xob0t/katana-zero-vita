@@ -30,8 +30,8 @@
  * - its only effect, set_windowsize() (Destroy, on a change), is an empty script on Android.
  * The loader adds the row after BLOOD SPRAY (add_pausemenu_choice, GRAPHICS page only), relabels its five strings
  * (translate_option) and limits it to three values (Step: 3 wraps to 1, not 0).
- * Precedence: zoom_mode 0 (every existing save, obj_init and "reset game data") means "not chosen" and follows fps30
- * from yyl.cfg, shown under that mode's name; 1/2/3 are NATIVE/30 FPS/DYNAMIC chosen in the menu and override yyl.cfg.
+ * Precedence: zoom_mode 0 (every existing save, obj_init and "reset game data") means "not chosen" and follows fpsMode
+ * (old name fps30) from yyl.cfg, shown under that mode's name; 1/2/3 are NATIVE/30 FPS/DYNAMIC chosen in the menu and override yyl.cfg.
  * fps_mode_sync reads global.zoom_mode once per frame (t30_update), so a SAVE applies on the next frame, CANCEL never.
  * exp_fpsmenu0 turns the row off (yyl.cfg only); exp_t30force keeps 30 ticks/s everywhere and skips the menu too.
  *
@@ -52,7 +52,7 @@
  * text_smooth_sync reads global.vsync once per frame (katana_after_swap). exp_textmenu0 turns the row off and keeps
  * the text smooth (yyl.cfg only); exp_textsharp keeps it sharp and has no row.
  */
-static int fps30_cfg = -1; // fps30 from yyl.cfg, kept once fps30 follows the menu (-1: the menu isn't installed)
+static int fps30_cfg = -1; // fpsMode from yyl.cfg, kept once fps30 follows the menu (-1: the menu isn't installed)
 static int *var_zoom_mode, *var_var_zoom_mode;
 static gml_script_fn orig_add_pausemenu_choice, orig_translate_option;
 static event_func orig_optionsmenu_step;
@@ -283,7 +283,7 @@ void fps_menu_install(gml_func_entry *table) {
 	}
 	if (fps_row)
 		fps30_cfg = fps30; // from here on fps_mode_sync owns fps30
-	debugPrintf("FPS mode menu: %s (yyl.cfg fps30 %d)\n", fps_row ? "on" : want_fps ? "NOT installed" : "off", fps30);
+	debugPrintf("FPS mode menu: %s (yyl.cfg fpsMode %d)\n", fps_row ? "on" : want_fps ? "NOT installed" : "off", fps30);
 	debugPrintf("text smoothing menu: %s%s\n", text_row ? "on" : want_text ? "NOT installed" : "off",
 		text_row && text_all_hooked < 4 ? " (no ALL)" : "");
 }
