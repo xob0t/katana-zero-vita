@@ -16,6 +16,11 @@ void debug_flush();
 
 int ret0();
 
+// Debug request files in ux0:data/gms/shared, polled off the game thread (screenshot.c)
+enum { DEBUG_REQUEST_SCREENSHOT, DEBUG_REQUEST_GOTO_ROOM, DEBUG_REQUEST_LEVEL_COMPLETE, DEBUG_REQUEST_CREATE_OBJECT,
+	DEBUG_REQUEST_COUNT };
+int debug_request_take(int id, char *text, int size);
+
 int sceKernelChangeThreadCpuAffinityMask(SceUID thid, int cpuAffinityMask);
 
 extern SceTouchPanelInfo panelInfoFront, panelInfoBack;
