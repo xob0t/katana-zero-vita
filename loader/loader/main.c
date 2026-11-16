@@ -3618,10 +3618,22 @@ void *pthread_main(void *arg) {
 		vgl_alloc_fail_cb = gpu_alloc_fail_report;
 	}
 	// Keep 16 MB texture pages in their own VRAM region so small allocations can't fragment it
-	// (vitaGL mem_utils.c VRAM split; exp_novramsplit disables)
+	// (vitaGL mem_utils.c VRAM split; exp_novramsplit disables). Allocations under 1 MB use the small
+	// region first; each region falls back to the other when full.
+	// Sizing, from the [MEM] lines of 193 logs (63 rooms): allocations under 1 MB never took more than
+	// 3.8 MB of the small region, and 2.9 MB at most where no 2 MB texture can account for part of it.
+	// The rest of its use (up to 23.4 MB) was textures of 1 MB or more that missed the large region: 16 MB
+	// pages, 8 MB half pages (1024x2048) and 2-4 MB images.
+	// After a texture flush 96.6 MB of VRAM is free in all. room_club_1 loads four pages, a half page, then
+	// two more pages, and a 2 MB (960x540) surface sits in the large region. With 24 MB the large region held
+	// four pages plus the surface; the half page went to the small one, leaving 15.7 MB there, and the last
+	// two pages went outside VRAM. A small region of about 12 MB doesn't help: the half page still goes to
+	// the large region first, so the fifth page fits in neither region. With 20.75 MB the large region holds
+	// four pages, the half page and the surface (0.3 MB spare). The small region then holds the fifth page
+	// with 4.75 MB left for small allocations (2.9 MB peak above).
 	extern size_t vgl_vram_small_size;
 	if (!exp_flag("novramsplit"))
-		vgl_vram_small_size = 24 * 1024 * 1024;
+		vgl_vram_small_size = 83 * 256 * 1024; // 20.75 MB
 #endif
 	if (maximizeMem)
 		vglInitWithCustomThreshold(0, SCREEN_W, SCREEN_H, MEMORY_VITAGL_THRESHOLD_MB * 1024 * 1024, 0, 0, 0, SCE_GXM_MULTISAMPLE_NONE);
