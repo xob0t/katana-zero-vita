@@ -74,6 +74,8 @@ extern void send_post_request(const char *url, const char *data);
 extern void mem_profiler(void *framebuf);
 void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped);
 void gpu_alloc_fail_report(size_t size, size_t alignment, int for_gpu, void *caller);
+static uint32_t swap_only_us; // vglSwapBuffers alone, without katana_after_swap
+static uint32_t screenshot_check_us;
 void katana_prof_report(int frames);
 int katana_frame_skipped();
 void katana_after_swap(uint32_t swap_us, uint32_t work_us);
@@ -623,6 +625,9 @@ static int game_core_index(void) {
 }
 #define GAME_THREAD_CPU_MASK   (0x10000 << game_core_index())
 #define WORKER_THREAD_CPU_MASK (0x70000 & ~GAME_THREAD_CPU_MASK)
+int worker_thread_cpu_mask(void) {
+	return WORKER_THREAD_CPU_MASK;
+}
 
 typedef struct {
 	void *(*start)(void *);
@@ -931,8 +936,11 @@ void main_loop() {
 				uint64_t prof_t1 = sceKernelGetProcessTimeWide();
 				if (!katana_frame_skipped())
 					vglSwapBuffers(GL_FALSE);
-				katana_after_swap((uint32_t)(sceKernelGetProcessTimeWide() - prof_t1), (uint32_t)(prof_t1 - prof_t0));
+				swap_only_us = (uint32_t)(sceKernelGetProcessTimeWide() - prof_t1);
+				katana_after_swap(swap_only_us, (uint32_t)(prof_t1 - prof_t0));
+				uint32_t shot_t0 = sceKernelGetProcessTimeLow();
 				screenshot_check();
+				screenshot_check_us = sceKernelGetProcessTimeLow() - shot_t0;
 				// Keep the system from auto-suspending during play without input
 				// (e.g. cutscenes, or unattended benchmark runs)
 				static int power_tick_frames = 0;
@@ -1014,8 +1022,25 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 	}
 	extern void katana_stage_frame(int log);
 	katana_stage_frame(spike);
-	if (processed - start > 100000 || swapped - processed > 50000)
+	// Forced garbage collections (vitaGL allocations that missed every pool) during this frame
+	extern int vgl_forced_gc_allocs;
+	static int forced_gc_seen;
+	int forced_gc = vgl_forced_gc_allocs - forced_gc_seen;
+	forced_gc_seen = vgl_forced_gc_allocs;
+	if (processed - start > 100000 || swapped - processed > 50000) {
 		debugPrintf("[HITCH] process %.1fms swap %.1fms\n", (processed - start) / 1000.0f, (swapped - processed) / 1000.0f);
+		// Where the "swap" time went (it also covers the work after vglSwapBuffers), and memory at that moment
+		extern uint32_t after_swap_step_us[3];
+		SceKernelFreeMemorySizeInfo kfree;
+		kfree.size = sizeof(kfree);
+		sceKernelGetFreeMemorySize(&kfree);
+		debugPrintf("[HITCH] vglSwapBuffers %.1fms t30_update %.1fms text_smooth_sync %.1fms dynres %.1fms screenshot_check "
+			"%.1fms | forced gc %d | free vram %uKB ram %uKB phycont %uKB, kernel user %uKB phycont %uKB\n",
+			swap_only_us / 1000.0f, after_swap_step_us[0] / 1000.0f, after_swap_step_us[1] / 1000.0f,
+			after_swap_step_us[2] / 1000.0f, screenshot_check_us / 1000.0f, forced_gc, vglMemFree(VGL_MEM_VRAM) / 1024,
+			vglMemFree(VGL_MEM_RAM) / 1024, vglMemFree(VGL_MEM_PHYCONT) / 1024, kfree.size_user / 1024,
+			kfree.size_phycont / 1024);
+	}
 
 	// Game thread CPU time (excludes time descheduled/waiting) and a fixed frame window per room, so A/B runs
 	// compare the same game frames instead of the same wall-clock seconds: [WINDOW] covers frames 300-899

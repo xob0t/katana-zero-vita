@@ -541,33 +541,24 @@ static void layer_tilemap_create_fixed(gml_rvalue *result, void *self, void *oth
 }
 
 // Debug room jump for fast benchmarking: writing a room name to ux0:data/gms/shared/goto_room makes
-// the running game room_goto() there (checked once a second, debug mode only).
+// the running game room_goto() there (debug mode only; the files are polled off the game thread, screenshot.c).
 void katana_goto_check(void) {
-	static uint32_t frames;
 	static int (*room_find)(const char *name);
 	static void (*room_goto)(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args);
-	if (++frames < 60)
+	// Release builds never look for these files (this used to stat three files on the game thread once a second)
+	if (!debugMode)
 		return;
-	frames = 0;
-	SceIoStat st;
 	// Debug: ux0:data/gms/shared/level_complete creates obj_level_complete (object 608 in Katana ZERO 1.1.10),
 	// as reaching the level exit does
-	if (sceIoGetstat("ux0:data/gms/shared/level_complete", &st) >= 0) {
-		sceIoRemove("ux0:data/gms/shared/level_complete");
+	if (debug_request_take(DEBUG_REQUEST_LEVEL_COMPLETE, NULL, 0)) {
 		void *(*command_create)(int object, float x, float y) = (void *)so_symbol(&yoyoloader_mod, "_Z14Command_Createiff");
 		debugPrintf("level_complete: creating obj_level_complete\n");
 		if (command_create)
 			command_create(608, 0.0f, 0.0f);
 	}
 	// Debug: ux0:data/gms/shared/create_object (an object index) creates that object at (0, 0)
-	if (sceIoGetstat("ux0:data/gms/shared/create_object", &st) >= 0) {
-		char text[16] = {0};
-		SceUID fd = sceIoOpen("ux0:data/gms/shared/create_object", SCE_O_RDONLY, 0);
-		if (fd >= 0) {
-			sceIoRead(fd, text, sizeof(text) - 1);
-			sceIoClose(fd);
-		}
-		sceIoRemove("ux0:data/gms/shared/create_object");
+	char text[16];
+	if (debug_request_take(DEBUG_REQUEST_CREATE_OBJECT, text, sizeof(text))) {
 		void *(*command_create)(int object, float x, float y) = (void *)so_symbol(&yoyoloader_mod, "_Z14Command_Createiff");
 		// "<index> view" creates it at the centre of the view instead
 		float x = 0.0f, y = 0.0f;
@@ -579,15 +570,9 @@ void katana_goto_check(void) {
 		if (command_create)
 			command_create(atoi(text), x, y);
 	}
-	if (sceIoGetstat("ux0:data/gms/shared/goto_room", &st) < 0)
+	char name[64];
+	if (!debug_request_take(DEBUG_REQUEST_GOTO_ROOM, name, sizeof(name)))
 		return;
-	char name[64] = {0};
-	SceUID fd = sceIoOpen("ux0:data/gms/shared/goto_room", SCE_O_RDONLY, 0);
-	if (fd >= 0) {
-		sceIoRead(fd, name, sizeof(name) - 1);
-		sceIoClose(fd);
-	}
-	sceIoRemove("ux0:data/gms/shared/goto_room");
 	for (char *c = name; *c; c++)
 		if (*c == '\r' || *c == '\n' || *c == ' ')
 			*c = 0;
