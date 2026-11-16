@@ -137,8 +137,6 @@ char **g_pWorkingDirectory;
 int *g_TextureScale;
 
 double jni_double = 0.0f;
-GLuint main_fb, main_tex = 0xDEADBEEF;
-int is_portrait = 0;
 
 char data_path[256];
 char data_path_root[256];
@@ -878,28 +876,13 @@ void main_loop() {
 		
 		SceMotionSensorState sensor;
 		sceMotionGetSensorState(&sensor, 1);
-		SceMotionState state;
-		sceMotionGetState(&state);
-		float orientation[3];
-		sceMotionGetBasicOrientation(orientation);
-		is_portrait = (int)orientation[0];
-		if (is_portrait) {
-			if (main_tex == 0xDEADBEEF) {
-				glGenTextures(1, &main_tex);
-				glBindTexture(GL_TEXTURE_2D, main_tex);
-				glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, SCREEN_H, SCREEN_W, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-				glGenFramebuffers(1, &main_fb);
-				glBindFramebuffer(GL_FRAMEBUFFER, main_fb);
-				glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, main_tex, 0);
-			}
-			glBindFramebuffer(GL_FRAMEBUFFER, main_fb);
-			glViewport(0, 0, SCREEN_H, SCREEN_W);
-			glScissor(0, 0, SCREEN_H, SCREEN_W);
-		} else {
-			glBindFramebuffer(GL_FRAMEBUFFER, 0);
-			glViewport(0, 0, SCREEN_W, SCREEN_H);
-			glScissor(0, 0, SCREEN_W, SCREEN_H);
-		}
+		// Landscape only. The upstream loader rotated the game when the Vita was held upright (sceMotion basic
+		// orientation): Katana ZERO is landscape-only, and the first upright frame allocated a 544x960 render target
+		// (2040KB) that was never freed. Allocated after the room's texture pages, it sat in the middle of the large
+		// VRAM region for the rest of the session, so 16 MB pages fit one slot fewer and later rooms failed allocations.
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		glViewport(0, 0, SCREEN_W, SCREEN_H);
+		glScissor(0, 0, SCREEN_W, SCREEN_H);
 		
 		if (*g_IOFrameCount >= 1) {
 			GamePadUpdate();
@@ -909,19 +892,8 @@ void main_loop() {
 		sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
 		for (int i = 0; i < SCE_TOUCH_MAX_REPORT; i++) {
 			if (i < touch.reportNum) {
-				int x, y;
-				if (is_portrait) {
-					y = (int)((float)touch.report[i].x * (float)SCREEN_W / 1920.0f);
-					x = (int)((float)touch.report[i].y * (float)SCREEN_H / 1088.0f);
-					if (is_portrait > 0) {
-						y = SCREEN_W - y;
-					} else {
-						x = SCREEN_H - x;
-					}
-				} else {
-					x = (int)((float)touch.report[i].x * (float)SCREEN_W / 1920.0f);
-					y = (int)((float)touch.report[i].y * (float)SCREEN_H / 1088.0f);
-				}
+				int x = (int)((float)touch.report[i].x * (float)SCREEN_W / 1920.0f);
+				int y = (int)((float)touch.report[i].y * (float)SCREEN_H / 1088.0f);
 
 				if (lastX[i] == -1 || lastY[i] == -1)
 					Java_com_yoyogames_runner_RunnerJNILib_TouchEvent(fake_env, 0, TOUCH_DOWN, i, x, y);
@@ -939,46 +911,8 @@ void main_loop() {
 		}
 
 		uint64_t prof_t0 = sceKernelGetProcessTimeWide();
-		if (!is_portrait)
-			Java_com_yoyogames_runner_RunnerJNILib_Process(fake_env, 0, SCREEN_W, SCREEN_H, sensor.accelerometer.x, sensor.accelerometer.y, sensor.accelerometer.z, 0, 0, 60.0f);
-		else
-			Java_com_yoyogames_runner_RunnerJNILib_Process(fake_env, 0, SCREEN_H, SCREEN_W, sensor.accelerometer.x, sensor.accelerometer.y, sensor.accelerometer.z, 0, 0x3FF00000, 60.0f);	
+		Java_com_yoyogames_runner_RunnerJNILib_Process(fake_env, 0, SCREEN_W, SCREEN_H, sensor.accelerometer.x, sensor.accelerometer.y, sensor.accelerometer.z, 0, 0, 60.0f);
 		if (!Java_com_yoyogames_runner_RunnerJNILib_canFlip || Java_com_yoyogames_runner_RunnerJNILib_canFlip()) {
-			if (is_portrait) {
-				int prog;
-				glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
-				glUseProgram(0);
-				glEnable(GL_TEXTURE_2D);
-				glEnableClientState(GL_VERTEX_ARRAY);
-				glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-				glViewport(0, 0, SCREEN_W, SCREEN_H);
-				glDisable(GL_SCISSOR_TEST);
-				glMatrixMode(GL_PROJECTION);
-				glLoadIdentity();
-				glOrtho(0, SCREEN_W, SCREEN_H, 0, -1, 1);
-				glMatrixMode(GL_MODELVIEW);
-				glLoadIdentity();
-				float fb_vertices[] = {
-			 SCREEN_W, SCREEN_H, 0,
-			        0, SCREEN_H, 0,
-			        0,        0, 0,
-			 SCREEN_W,        0, 0,
-				};
-				float fb_texcoords[] = {1, 1, 1, 0, 0, 0, 0, 1};
-				float fb_texcoords_flipped[] = {0, 0, 0, 1, 1, 1, 1, 0};
-				if (is_portrait > 0)
-					glTexCoordPointer(2, GL_FLOAT, 0, fb_texcoords);
-				else
-					glTexCoordPointer(2, GL_FLOAT, 0, fb_texcoords_flipped);
-				glVertexPointer(3, GL_FLOAT, 0, fb_vertices);
-				
-				glBindTexture(GL_TEXTURE_2D, main_tex);
-				glBindFramebuffer(GL_FRAMEBUFFER, 0);
-				glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-				glDisableClientState(GL_VERTEX_ARRAY);
-				glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-				glUseProgram(prog);
-			}
 			if (ime_active) {
 				char *r = get_ime_dialog_result();
 				if (r) {
@@ -1737,13 +1671,6 @@ void *retJNI(int dummy) {
 	return fake_env;
 }
 
-void glBindFramebufferHook(GLenum target, GLuint framebuffer) {
-	if (!framebuffer && is_portrait) {
-		framebuffer = main_fb;
-	}
-	glBindFramebuffer(target, framebuffer);
-}
-
 const char *gl_ret0[] = {
 	"glDeleteRenderbuffers",
 	"glDiscardFramebufferEXT",
@@ -1783,7 +1710,7 @@ void glShaderSourceHook(GLuint shader, GLsizei count, const GLchar **string, con
 static so_default_dynlib gl_hook[] = {
 	{"glTexParameterf", (uintptr_t)&glTexParameterfHook},
 	{"glTexParameteri", (uintptr_t)&glTexParameteriHook},
-	{"glBindFramebuffer", (uintptr_t)&glBindFramebufferHook},
+	{"glBindFramebuffer", (uintptr_t)&glBindFramebuffer},
 	{"glReadPixels", (uintptr_t)&glReadPixelsHook},
 	{"glShaderSource", (uintptr_t)&glShaderSourceHook},
 };
@@ -2521,7 +2448,7 @@ static so_default_dynlib default_dynlib[] = {
 	{ "gettimeofday", (uintptr_t)&gettimeofday },
 	{ "glAlphaFunc", (uintptr_t)&glAlphaFunc },
 	{ "glBindBuffer", (uintptr_t)&glBindBuffer },
-	{ "glBindFramebufferOES", (uintptr_t)&glBindFramebufferHook },
+	{ "glBindFramebufferOES", (uintptr_t)&glBindFramebuffer },
 	{ "glBindTexture", (uintptr_t)&glBindTexture },
 	{ "glBlendFunc", (uintptr_t)&glBlendFunc },
 	{ "glBufferData", (uintptr_t)&glBufferData },
