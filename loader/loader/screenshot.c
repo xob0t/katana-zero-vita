@@ -55,8 +55,11 @@ static void screenshot_write(void) {
 
 static int debug_request_thread(SceSize args, void *argp) {
 	for (;;) {
-		if (shot_pixels)
+		if (shot_pixels) {
+			// Pairs with the barrier in screenshot_check: the header and pixels are read only after the pointer
+			__sync_synchronize();
 			screenshot_write();
+		}
 		for (int i = 0; i < DEBUG_REQUEST_COUNT; i++) {
 			if (debug_request_pending[i])
 				continue;
@@ -92,8 +95,13 @@ int debug_request_take(int id, char *text, int size) {
 		started = 1;
 		SceUID thid = sceKernelCreateThread("Debug Requests", debug_request_thread, 0x10000100, 0x4000, 0,
 			worker_thread_cpu_mask(), NULL);
-		if (thid >= 0)
-			sceKernelStartThread(thid, 0, NULL);
+		int ret = thid >= 0 ? sceKernelStartThread(thid, 0, NULL) : thid;
+		if (ret < 0) {
+			// Not retried: every debug request (screenshots, goto_room, level_complete, create_object) is off
+			debugPrintf("[DBGREQ] could not start the request thread: 0x%08X\n", ret);
+			if (thid >= 0)
+				sceKernelDeleteThread(thid);
+		}
 	}
 	if (!debug_request_pending[id])
 		return 0;
