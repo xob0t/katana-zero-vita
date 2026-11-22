@@ -164,17 +164,14 @@ static void dynamic_res_update(uint32_t swap_us, uint32_t work_us) {
 // Runs right after vglSwapBuffers, between frames: every scene of the frame has been submitted, so the GPU finish
 // and garbage collection below cannot free memory that commands still being recorded refer to
 
-uint32_t after_swap_step_us[3]; // debug: t30_update, text_smooth_sync, dynamic_res_update of the last frame
+uint32_t after_swap_step_us[2]; // debug: t30_update, dynamic_res_update of the last frame
 void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
 	uint32_t s0 = sceKernelGetProcessTimeLow();
 	t30_update(work_us);
 	uint32_t s1 = sceKernelGetProcessTimeLow();
-	text_smooth_sync();
-	uint32_t s2 = sceKernelGetProcessTimeLow();
 	dynamic_res_update(swap_us, work_us);
 	after_swap_step_us[0] = s1 - s0;
-	after_swap_step_us[1] = s2 - s1;
-	after_swap_step_us[2] = sceKernelGetProcessTimeLow() - s2;
+	after_swap_step_us[1] = sceKernelGetProcessTimeLow() - s1;
 	if (!texture_flush)
 		return;
 	extern int vgl_failed_allocs;

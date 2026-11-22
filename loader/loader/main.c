@@ -1032,14 +1032,14 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 	if (processed - start > 100000 || swapped - processed > 50000) {
 		debugPrintf("[HITCH] process %.1fms swap %.1fms\n", (processed - start) / 1000.0f, (swapped - processed) / 1000.0f);
 		// Where the "swap" time went (it also covers the work after vglSwapBuffers), and memory at that moment
-		extern uint32_t after_swap_step_us[3];
+		extern uint32_t after_swap_step_us[2];
 		SceKernelFreeMemorySizeInfo kfree;
 		kfree.size = sizeof(kfree);
 		sceKernelGetFreeMemorySize(&kfree);
-		debugPrintf("[HITCH] vglSwapBuffers %.1fms t30_update %.1fms text_smooth_sync %.1fms dynres %.1fms screenshot_check "
+		debugPrintf("[HITCH] vglSwapBuffers %.1fms t30_update %.1fms dynres %.1fms screenshot_check "
 			"%.1fms | forced gc %d | free vram %uKB ram %uKB phycont %uKB, kernel user %uKB phycont %uKB\n",
 			swap_only_us / 1000.0f, after_swap_step_us[0] / 1000.0f, after_swap_step_us[1] / 1000.0f,
-			after_swap_step_us[2] / 1000.0f, screenshot_check_us / 1000.0f, forced_gc, vglMemFree(VGL_MEM_VRAM) / 1024,
+			screenshot_check_us / 1000.0f, forced_gc, vglMemFree(VGL_MEM_VRAM) / 1024,
 			vglMemFree(VGL_MEM_RAM) / 1024, vglMemFree(VGL_MEM_PHYCONT) / 1024, kfree.size_user / 1024,
 			kfree.size_phycont / 1024);
 	}
