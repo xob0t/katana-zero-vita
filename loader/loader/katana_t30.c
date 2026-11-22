@@ -387,39 +387,83 @@ static int t30_enemy_depth, t30_search;
 /*
  * Half-rate enemies (enemyHalfRate in yyl.cfg: 1 on (default), 0 off; or the ENEMY AI menu, see fps_menu_install).
  * Only while the game runs 60 ticks/s: in 30 fps mode every enemy Step runs as above. Enemy Steps (AI, AI_physics,
- * enemy_hurt: 3-8 ms per tick in combat rooms) run every other tick, which saves 2.3-3.5 ms per tick in heavy rooms.
- * - A Step that runs covers the ticks since the enemy's last one: global.fr is doubled for it (put back after,
- *   unless the Step set fr itself, as enemy_hurt does for hit-stop) and its search_timeout gets the tick it missed,
- *   as in 30 fps mode.
- * - Half of the enemies run on even ticks and half on odd ones (instance id parity), so every tick carries half of
- *   the AI.
+ * enemy_hurt: 3-8 ms per tick in combat rooms) run every other tick, which saves 2.3-3.5 ms per tick in heavy rooms,
+ * and an idle enemy's Step runs every 4th tick.
+ * - A Step that runs covers the ticks since the enemy's last one (at most EH_MAX_TICKS): global.fr is multiplied by
+ *   that count for it (put back after, unless the Step set fr itself, as enemy_hurt does for hit-stop) and its
+ *   search_timeout gets the ticks it missed, as in 30 fps mode.
+ * - Half of the active enemies run on even ticks and half on odd ones (instance id parity), so every tick carries half
+ *   of the AI. Idle enemies run on one tick in four, spread by instance id mod 4.
+ * - Idle is read from the enemy's own variables at each decision, so an enemy that wakes up (it saw the player or a
+ *   corpse, an alerted neighbour or a sound woke it: obj_sound's Step sets active and current_sound_vol through
+ *   resolve_sound) runs as soon as two ticks have passed since its last Step. An enemy counts as idle when all hold:
+ *   state 0 (standing: ai_idle_ground; ai_break_idle also treats 1, 10 and 14 as unalerted, but 1 walks and 10/14 are
+ *   left at the 2-tick rate), following_player, player_in_sights, lock_on, active, runstall, see_fire and docile false
+ *   (or never assigned: player_in_sights holds the runner's unset kind until the enemy first aims), alert_timer,
+ *   current_sound_vol and falling_smoke_timer at most 0, hsp and vsp 0 (standing on the ground: AI_physics adds gravity
+ *   in the air), and the player farther away than it could see or hear it from: sight is AI_see_player's aim_radius +
+ *   350 (less with a flashlight or in stealth), hearing aim_radius * circular_alert_scale (ai_break_idle), plus
+ *   EH_NEAR_MARGIN for the ticks it waits. The distance is distance_to_object (bounding boxes), only checked for an
+ *   idle enemy off its phase, and an enemy too close runs at the 2-tick rate.
+ * - Why walkers stay at 2: ai_idle_walking sets hsp = 2 every Step and AI_physics then takes friction 0.4 * fr off
+ *   before moving hsp * fr, so a patrol covers 1.6 px per tick at 60 ticks/s, 1.2 at a 2-tick step and 0.4 at a
+ *   4-tick step (a quarter of the speed). Its ledge, wall and trap probes look hsp * 10 = 20 px ahead, so even 4 ticks
+ *   (8 px before friction) couldn't walk off a ledge, but the speed alone rules it out.
+ * - A standing idle enemy doesn't move during its 4-tick Step unless it wakes up in it: seeing the player (state 3:
+ *   friction 1, no movement) or a corpse (state 2: navigation sets hsp to run_speed and AI_physics moves it
+ *   4 * (run_speed - 1.6) px). wall_check and floor_check test the end position only (block_meeting at
+ *   x + hsp * fr), so a 4-tick step can't pass a wall or floor thicker than the step minus the enemy's width; walls
+ *   are much thicker than ~30 px. ai_check_for_edge probes 24, 48 and 72 px ahead before the move.
  * - Enemies find their own hits: enemy_hurt, inside their Step, polls place_meeting with obj_slash, obj_projectile
  *   (bullets, throwables), obj_explosion and obj_flamethrower_explosion. On a skipped tick the same overlaps are
  *   checked here, and an enemy touching one runs this tick (fr as it is), so hits land on the tick they would have.
- * - Enemies run every tick during scripted sequences, and a Step that didn't run for longer than a skip (pause, 30 fps
- *   mode, deactivation, the setting just turned on) covers one tick.
+ * - Enemies run every tick during scripted sequences, and a Step that didn't run for longer than its step (2 ticks, 4
+ *   while idle: pause, 30 fps mode, deactivation, the setting just turned on) covers one tick. An idle enemy that wakes
+ *   up covers the 2-4 ticks since its last Step.
  * Caveats: enemy movement, aim and reactions update at 30 Hz (sprite animation, alarms and built-in motion stay at
- * 60), and anything an enemy counts in ticks without fr runs at half speed, as in 30 fps mode. Playtesting found no
- * difference in enemy behaviour.
- * Debug: the profile report has an [FPS30] half-rate line (steps run and skipped per tick), and enemy deaths
- * (create_corpse) are counted by the kind of Step they happened in.
+ * 60), and anything an enemy counts in ticks without fr runs at half speed, as in 30 fps mode (a quarter while idle).
+ * Patrolling enemies walk 75% as far per tick (the friction above), as in 30 fps mode. An idle enemy notices the
+ * player, a corpse or an alerted neighbour up to 3 ticks later than at 60 Hz (the player only from outside its sight
+ * and hearing range plus the margin, so in practice that's an alerted neighbour or a corpse far from the player).
+ * Playtesting found no difference in enemy behaviour at the 2-tick rate; the idle rate hasn't been playtested.
+ * Debug: the profile report has an [FPS30] half-rate line (steps run, how many ticks they covered and how many were
+ * skipped per tick, idle/active transitions, idle enemies kept at 2 by the player's distance, and the states seen
+ * at decisions), an idle rejects line (the first condition that kept a state-0 enemy from idle), and enemy deaths
+ * (create_corpse) are counted by the kind of Step they happened in. exp_enemyidle0 turns the idle rate off (every enemy
+ * at 2).
  *
- * Per enemy (instance id at +0x80) the table holds the tick its Step last ran. A room change or a change of the
- * setting clears it, and entries not seen for EH_STALE ticks are reused (death restarts keep the room, with new ids).
+ * Per enemy (instance id at +0x80) the table holds the tick its Step last ran and whether it was idle then. A room
+ * change or a change of the setting clears it, and entries not seen for EH_STALE ticks are reused (death restarts
+ * keep the room, with new ids).
  */
 int enemy_half_rate = 1;
 int eh_installed; // t30_install found everything half-rate enemies need
 #define EH_SLOTS 512
 #define EH_STALE 120
-unsigned enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced; // debug counters
-static struct { uint32_t key, last; } eh_table[EH_SLOTS]; // key = id + 1, 0 = empty
+#define EH_MAX_TICKS 4
+#define EH_NEAR_MARGIN 160.0 // px: 3 ticks of a dashing player, the 40 px sight height, rounding
+// Debug counters: steps run by the ticks they covered (index 1-4), skipped, run for a hurt overlap; idle-rate
+// transitions, decisions that kept an idle enemy at 2 for the player's distance, the state seen at decisions (16 =
+// other or unreadable), and deaths by the kind of Step
+unsigned enemyhalf_runs, enemyhalf_ticks[EH_MAX_TICKS + 1], enemyhalf_skips, enemyhalf_forced;
+unsigned enemyidle_to_idle, enemyidle_to_active, enemyidle_near, enemyidle_states[17];
+// Debug: the first condition that kept a state-0 enemy from idle (index * 2, +1 if the variable was readable)
+unsigned enemyidle_rejects[24];
+static struct { uint32_t key, last; uint8_t idle; } eh_table[EH_SLOTS]; // key = id + 1, 0 = empty
 static int eh_room = -2;
-static runner_function **eh_functions, **eh_current_function;
+static runner_function **eh_functions, **eh_current_function, *eh_distance_to_object;
 static const int *eh_fn_place_meeting, *eh_fn_instance_exists;
 static const char *const eh_source_names[] = { "obj_slash", "obj_projectile", "obj_explosion", "obj_flamethrower_explosion" };
 #define EH_SOURCES (int)(sizeof(eh_source_names) / sizeof(*eh_source_names))
-static int eh_sources[EH_SOURCES], eh_sources_found;
+static int eh_sources[EH_SOURCES], eh_sources_found, eh_player = -1;
 static int (*eh_object_find)(const char *name);
+// The idle rate: the variables it reads, found at install; off without all of them (or with exp_enemyidle0)
+static int eh_idle_on;
+static int *var_state, *var_hsp, *var_vsp, *var_aim_radius, *var_circular_alert_scale;
+static int *eh_false_vars[8], *eh_timer_vars[3];
+static const char *const eh_false_names[8] = { "following_player", "player_in_sights", "lock_on", "active", "runstall",
+	"see_fire", "docile", NULL };
+static const char *const eh_timer_names[3] = { "alert_timer", "current_sound_vol", "falling_smoke_timer" };
 
 // Once per frame: a change of the setting (GRAPHICS menu) starts a fresh table, so no enemy covers more than two ticks
 static void eh_setting_check(void) {
@@ -432,7 +476,9 @@ static void eh_setting_check(void) {
 		debugPrintf("Half-rate enemies %s\n", enemy_half_rate ? "on" : "off");
 }
 
-// Once, at the first enemy Step: the object indices of the hurt sources. Without all of them half-rate stays off.
+// Once, at the first enemy Step: the object indices of the hurt sources and the player, and distance_to_object (the
+// game never calls it, so it has no g_FUNC descriptor). Without the hurt sources half-rate stays off; without the
+// player or distance_to_object the idle rate does.
 static int eh_resolve_sources(void) {
 	if (eh_sources_found)
 		return 1;
@@ -446,6 +492,17 @@ static int eh_resolve_sources(void) {
 		eh_installed = 0;
 		return 0;
 	}
+	eh_player = eh_object_find("obj_player");
+	int *count = (int *)so_symbol(&yoyoloader_mod, "the_numb");
+	for (int i = 0; count && *eh_functions && i < *count; i++) {
+		runner_function *f = &(*eh_functions)[i];
+		if (f->name && !strcmp(f->name, "distance_to_object"))
+			eh_distance_to_object = f;
+	}
+	if (eh_idle_on && (eh_player < 0 || !eh_distance_to_object))
+		eh_idle_on = 0;
+	debugPrintf("Half-rate enemies: idle enemies every %s (obj_player %d, distance_to_object %s)\n",
+		eh_idle_on ? "4th tick" : "2nd tick", eh_player, eh_distance_to_object ? "found" : "missing");
 	return eh_sources_found = 1;
 }
 
@@ -456,12 +513,17 @@ static uint32_t eh_word(const void *p, size_t off) {
 }
 
 // A runner builtin through its registry entry, with g_pFunction set as the GML call sites do
-static int eh_builtin(const int *desc, void *self, int argc, gml_rvalue *args) {
-	runner_function *f = *eh_functions + desc[1], *saved = *eh_current_function;
+static gml_rvalue eh_call(runner_function *f, void *self, int argc, gml_rvalue *args) {
+	runner_function *saved = *eh_current_function;
 	gml_rvalue out = {0, 0, 5};
 	*eh_current_function = f;
 	((builtin_fn)f->func)(&out, self, self, argc, args);
 	*eh_current_function = saved;
+	return out;
+}
+
+static int eh_builtin(const int *desc, void *self, int argc, gml_rvalue *args) {
+	gml_rvalue out = eh_call(*eh_functions + desc[1], self, argc, args);
 	return (out.kind == 0 || out.kind == 13) && out.val != 0;
 }
 
@@ -500,7 +562,65 @@ static int eh_hurt_overlap(void *self, uint32_t tick) {
 	return 0;
 }
 
-// How many ticks this Step covers: 0 skip, 1 or 2
+// A number (real, bool, int32, int64) in an instance variable; 0 if it holds anything else. With undefined_zero an
+// unset or undefined variable reads as 0 (flags the game sets only once they happen: player_in_sights before aiming).
+static int eh_number(void *self, int *var, double *v, int undefined_zero) {
+	gml_rvalue *r = gml_vget(self, var[1]);
+	unsigned kind = r ? r->kind & 0xffffff : 5;
+	int64_t i;
+	switch (kind) {
+	case 0: case 13: *v = r->val; return 1;
+	case 7: memcpy(&i, &r->val, 8); *v = (int32_t)i; return 1;
+	case 10: memcpy(&i, &r->val, 8); *v = (double)i; return 1;
+	case 5: case 0xffffff: *v = 0; return undefined_zero; // undefined, or never assigned (the runner's unset kind)
+	}
+	if (debugMode) {
+		static int lines;
+		if (lines++ < 10)
+			debugPrintf("[ENEMYHALF] variable %d holds kind %u\n", var[1], kind);
+	}
+	return 0;
+}
+
+// Standing idle, from the enemy's own variables (see the comment above); the player's distance is eh_near_player
+static int eh_idle(void *self) {
+	double v;
+	int state = eh_number(self, var_state, &v, 0) && v >= 0 && v < 16 && v == (int)v ? (int)v : 16;
+	if (debugMode)
+		enemyidle_states[state]++;
+	if (state != 0)
+		return 0;
+	int *vars[12] = { NULL }, n = 0, ok;
+	for (int i = 0; eh_false_vars[i]; i++)
+		vars[n++] = eh_false_vars[i];
+	for (int i = 0; i < 3; i++)
+		vars[n++] = eh_timer_vars[i];
+	vars[n++] = var_hsp;
+	vars[n++] = var_vsp;
+	for (int i = 0; i < n; i++) {
+		int timer = i >= n - 5 && i < n - 2;
+		if (!(ok = eh_number(self, vars[i], &v, i < n - 5)) || (timer ? v > 0 : v != 0)) {
+			if (debugMode && i < 12)
+				enemyidle_rejects[i * 2 + ok]++;
+			return 0;
+		}
+	}
+	return 1;
+}
+
+// Could the enemy see or hear the player within the next few ticks?
+static int eh_near_player(void *self) {
+	double radius, scale;
+	if (!eh_number(self, var_aim_radius, &radius, 0) || !eh_number(self, var_circular_alert_scale, &scale, 0))
+		return 1;
+	double range = radius + 350;
+	if (radius * scale > range)
+		range = radius * scale;
+	gml_rvalue player = eh_object(eh_player), d = eh_call(eh_distance_to_object, self, 1, &player);
+	return d.kind != 0 || d.val < range + EH_NEAR_MARGIN;
+}
+
+// How many ticks this Step covers: 0 skip, 1 to EH_MAX_TICKS
 static int eh_decide(void *self) {
 	uint32_t tick = *frame_count;
 	if (*current_room != eh_room) {
@@ -526,20 +646,39 @@ static int eh_decide(void *self) {
 		if (free_slot < 0) // table full: run every tick
 			return 1;
 		eh_table[free_slot].key = key;
+		eh_table[free_slot].idle = 0;
 		// A new enemy runs now (one tick) or next tick (covering this one too), by id parity
 		eh_table[free_slot].last = (key ^ tick) & 1 ? tick - 3 : tick - 1;
 		found = free_slot;
 	}
 	uint32_t elapsed = tick - eh_table[found].last;
-	// Scripted sequences count ticks exactly: every tick. A Step that didn't run for longer than a skip (pause, the
-	// 30 fps mode, deactivation) covers one tick, as the original would.
-	if ((t30_scripted_tick && tick - t30_scripted_tick < 3) || elapsed > 2 || elapsed == 0) {
+	// Scripted sequences count ticks exactly: every tick. A Step that didn't run for longer than its step (2 ticks, 4
+	// for an idle enemy: pause, the 30 fps mode, deactivation) covers one tick, as the original would.
+	if ((t30_scripted_tick && tick - t30_scripted_tick < 3) || elapsed > (eh_table[found].idle ? EH_MAX_TICKS : 2) ||
+		elapsed == 0) {
 		eh_table[found].last = tick;
 		return 1;
 	}
-	if (elapsed == 2) {
-		eh_table[found].last = tick;
-		return 2;
+	if (elapsed >= 2) {
+		int idle = eh_idle_on && eh_idle(self);
+		// Idle: on its phase tick (id mod 4) or once 4 ticks have passed, unless the player is close
+		int run = !idle || elapsed >= 4 || ((key + tick) & 3) == 0;
+		if (idle && !run && eh_near_player(self)) {
+			enemyidle_near++;
+			idle = 0;
+			run = 1;
+		}
+		if (idle != eh_table[found].idle) {
+			eh_table[found].idle = idle;
+			if (idle)
+				enemyidle_to_idle++;
+			else
+				enemyidle_to_active++;
+		}
+		if (run) {
+			eh_table[found].last = tick;
+			return elapsed;
+		}
 	}
 	if (eh_hurt_overlap(self, tick)) {
 		eh_table[found].last = tick;
@@ -549,8 +688,8 @@ static int eh_decide(void *self) {
 	return 0;
 }
 
-// Debug: enemy deaths (create_corpse calls) by the kind of Step they happened in:
-// 0 outside a half-rate enemy Step, 1 a Step run for a hurt overlap, 2 a Step covering two ticks, 3 a one-tick Step
+// Debug: enemy deaths (create_corpse calls) by the kind of Step they happened in: 0 outside a half-rate enemy Step,
+// 1 a Step run for a hurt overlap, 2 a Step covering 2-4 ticks, 3 a one-tick Step
 static gml_script_fn orig_create_corpse;
 static int eh_step_kind;
 unsigned enemyhalf_kills[4];
@@ -559,7 +698,7 @@ static void *eh_create_corpse(void *self, void *other, void *result, int argc, v
 	enemyhalf_kills[eh_step_kind]++;
 	if (lines++ < 40)
 		debugPrintf("[ENEMYHALF] create_corpse at tick %u in %s\n", *frame_count, (const char *const[]){"another event",
-			"a step run for a hurt overlap", "a step covering 2 ticks", "a one-tick step"}[eh_step_kind]);
+			"a step run for a hurt overlap", "a step covering 2-4 ticks", "a one-tick step"}[eh_step_kind]);
 	return orig_create_corpse(self, other, result, argc, args);
 }
 
@@ -571,17 +710,17 @@ static void eh_enemy_step(event_func orig, void *self, void *other) {
 		return;
 	}
 	enemyhalf_runs++;
-	eh_step_kind = forced != enemyhalf_forced ? 1 : ticks == 2 ? 2 : 3;
+	enemyhalf_ticks[ticks]++;
+	eh_step_kind = forced != enemyhalf_forced ? 1 : ticks >= 2 ? 2 : 3;
 	gml_rvalue *fr = NULL, *t;
 	double game_fr = 0, scaled = 0, before = -1;
-	if (ticks == 2 && (fr = global_var(var_fr)) && fr->kind == 0) {
+	if (ticks >= 2 && (fr = global_var(var_fr)) && fr->kind == 0) {
 		game_fr = fr->val;
-		scaled = fr->val *= 2;
-		enemyhalf_doubled++;
+		scaled = fr->val *= ticks;
 	} else {
 		fr = NULL;
 	}
-	if (ticks == 2 && (t = gml_vget(self, var_search_timeout[1])) && t->kind == 0)
+	if (ticks >= 2 && (t = gml_vget(self, var_search_timeout[1])) && t->kind == 0)
 		before = t->val;
 	t30_enemy_depth++; // an inherited Step runs inside with this decision and fr
 	orig(self, other);
@@ -590,11 +729,12 @@ static void eh_enemy_step(event_func orig, void *self, void *other) {
 	// enemy_hurt sets fr itself (0 for hit-stop on a kill): keep the game's value then
 	if (fr && (fr = global_var(var_fr)) && fr->kind == 0 && fr->val == scaled)
 		fr->val = game_fr;
+	// search_timeout counts 1 per Step (2 with an inherited Step): add the ticks this Step stood for
 	if (before >= 0 && (t = instance_var(self, var_search_timeout))) {
 		double step = t->val - before;
 		if (step == 1 || step == 2) {
-			t->val += step;
-			t30_search_ticks++;
+			t->val += step * (ticks - 1);
+			t30_search_ticks += ticks - 1;
 		}
 	}
 }
@@ -758,11 +898,27 @@ void t30_install(gml_func_entry *table) {
 	eh_fn_instance_exists = (const int *)so_symbol(&yoyoloader_mod, "g_FUNC_instance_exists");
 	eh_installed = enemies == 9 && eh_object_find && eh_functions && eh_current_function && eh_fn_place_meeting &&
 		eh_fn_instance_exists;
+	// The idle rate's variables (obj_player and distance_to_object come at the first enemy Step)
+	char sym[64];
+	var_state = (int *)so_symbol(&yoyoloader_mod, "g_VAR_state");
+	var_hsp = (int *)so_symbol(&yoyoloader_mod, "g_VAR_hsp");
+	var_vsp = (int *)so_symbol(&yoyoloader_mod, "g_VAR_vsp");
+	var_aim_radius = (int *)so_symbol(&yoyoloader_mod, "g_VAR_aim_radius");
+	var_circular_alert_scale = (int *)so_symbol(&yoyoloader_mod, "g_VAR_circular_alert_scale");
+	eh_idle_on = !exp_flag("enemyidle0") && var_state && var_hsp && var_vsp && var_aim_radius && var_circular_alert_scale;
+	for (int i = 0; eh_false_names[i]; i++) {
+		snprintf(sym, sizeof(sym), "g_VAR_%s", eh_false_names[i]);
+		eh_idle_on &= !!(eh_false_vars[i] = (int *)so_symbol(&yoyoloader_mod, sym));
+	}
+	for (int i = 0; i < 3; i++) {
+		snprintf(sym, sizeof(sym), "g_VAR_%s", eh_timer_names[i]);
+		eh_idle_on &= !!(eh_timer_vars[i] = (int *)so_symbol(&yoyoloader_mod, sym));
+	}
 	if (eh_installed && debugMode)
 		orig_create_corpse = entry_hook(so_symbol(&yoyoloader_mod,
 			"_Z24gml_Script_create_corpseP9CInstanceS0_R8YYRValueiPPS1_"), eh_create_corpse);
-	debugPrintf("Half-rate enemies: %s, yyl.cfg enemyHalfRate %d\n", eh_installed ? "installed" : "NOT installed",
-		enemy_half_rate);
+	debugPrintf("Half-rate enemies: %s, yyl.cfg enemyHalfRate %d, idle rate %s\n", eh_installed ? "installed" :
+		"NOT installed", enemy_half_rate, eh_idle_on ? "on" : "off");
 	t30_diag = debugMode && exp_flag("t30diag");
 	var_text_timer = (int *)so_symbol(&yoyoloader_mod, "g_VAR_text_timer");
 	var_text_complete = (int *)so_symbol(&yoyoloader_mod, "g_VAR_text_complete");

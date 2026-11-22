@@ -356,16 +356,40 @@ void katana_prof_report(int frames) {
 		debugPrintf("[FPS30] enemy steps at 30 ticks/s %u, search ticks added %u\n", t30_enemy_steps, t30_search_ticks);
 	{
 		// Half-rate enemies, per frame of this report window
-		extern unsigned enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced, enemyhalf_kills[4];
-		static unsigned last[4];
-		unsigned now[4] = { enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced };
-		if (debugMode && frames > 0 && (now[0] != last[0] || now[2] != last[2]))
-			debugPrintf("[FPS30] half-rate enemies per tick: %.1f steps run (%.1f covering 2 ticks), %.1f skipped, %.2f run "
-				"for a hurt overlap | search ticks added %u | deaths: other event %u, overlap run %u, 2-tick %u, 1-tick %u\n",
-				(float)(now[0] - last[0]) / frames, (float)(now[1] - last[1]) / frames, (float)(now[2] - last[2]) / frames,
-				(float)(now[3] - last[3]) / frames, t30_search_ticks, enemyhalf_kills[0], enemyhalf_kills[1],
-				enemyhalf_kills[2], enemyhalf_kills[3]);
+		extern unsigned enemyhalf_runs, enemyhalf_ticks[5], enemyhalf_skips, enemyhalf_forced, enemyhalf_kills[4];
+		extern unsigned enemyidle_to_idle, enemyidle_to_active, enemyidle_near, enemyidle_states[17];
+		static unsigned last[11], last_states[17];
+		unsigned now[11] = { enemyhalf_runs, enemyhalf_ticks[1], enemyhalf_ticks[2], enemyhalf_ticks[3],
+			enemyhalf_ticks[4], enemyhalf_skips, enemyhalf_forced, enemyidle_to_idle, enemyidle_to_active, enemyidle_near };
+		if (debugMode && frames > 0 && (now[0] != last[0] || now[5] != last[5])) {
+			float d[11];
+			for (int i = 0; i < 11; i++)
+				d[i] = (float)(now[i] - last[i]) / frames;
+			// States seen at decisions over the window, the nonzero ones
+			char states[300] = "";
+			for (int s = 0, n = 0; s < 17; s++)
+				if (enemyidle_states[s] != last_states[s])
+					n += snprintf(states + n, sizeof(states) - n, " %s%d:%u", s == 16 ? ">" : "", s == 16 ? 15 : s,
+						enemyidle_states[s] - last_states[s]);
+			debugPrintf("[FPS30] half-rate enemies per tick: %.2f steps run (covering 1/2/3/4 ticks %.2f/%.2f/%.2f/%.2f), "
+				"%.2f skipped, %.3f run for a hurt overlap | idle: %u to idle, %u to active, %.2f kept at 2 near the player, "
+				"states%s | search ticks added %u | deaths: other event %u, overlap run %u, 2-4-tick %u, 1-tick %u\n",
+				d[0], d[1], d[2], d[3], d[4], d[5], d[6], now[7] - last[7], now[8] - last[8], d[9], states,
+				t30_search_ticks, enemyhalf_kills[0], enemyhalf_kills[1], enemyhalf_kills[2], enemyhalf_kills[3]);
+		}
+		{
+			extern unsigned enemyidle_rejects[24];
+			static unsigned last_rejects[24];
+			char r[300] = "";
+			for (int i = 0, n = 0; i < 24; i++)
+				if (enemyidle_rejects[i] != last_rejects[i])
+					n += snprintf(r + n, sizeof(r) - n, " %d%s:%u", i / 2, i & 1 ? "" : "?", enemyidle_rejects[i] - last_rejects[i]);
+			if (debugMode && r[0])
+				debugPrintf("[FPS30] idle rejects (condition: count, ? unreadable)%s\n", r);
+			memcpy(last_rejects, enemyidle_rejects, sizeof(last_rejects));
+		}
 		memcpy(last, now, sizeof(last));
+		memcpy(last_states, enemyidle_states, sizeof(last_states));
 	}
 	extern unsigned t30_textbox_doubled;
 	if (t30_textbox_ticks[0] || t30_textbox_ticks[1])

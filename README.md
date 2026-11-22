@@ -29,7 +29,8 @@ back the original.
     speed. This mode has the smoothest picture and the game's exact timing. The slowdown is easy to live with, and
     in busy fights it gives you extra time.
 - **Enemy AI at half rate.** At 60 fps each enemy thinks and moves every other frame, half of them on even frames
-  and half on odd ones. Hits still land on the frame they would have. It saves 2-3 ms per frame in fights; in
+  and half on odd ones. An enemy standing idle (no alert, and the player out of its sight and hearing range) does
+  so every 4th frame. Hits still land on the frame they would have. It saves 2-3 ms per frame in fights; in
   testing nobody noticed a difference. **GRAPHICS → ENEMY AI**, or `enemyHalfRate=0`.
 - **No rain.** Rainy levels run about 20% faster without it. `rain=2`, or `rain=1` for half the drops.
 - **No replays.** No end-of-level VHS replay and no death rewind. With them on, memory runs out after a few minutes
