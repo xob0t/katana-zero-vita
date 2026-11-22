@@ -62,6 +62,12 @@ unsigned virtual_capture_rejections_used;
 struct { unsigned offset, hook, count; } virtual_capture_callers[64];
 unsigned virtual_capture_callers_used, virtual_capture_callers_dropped;
 static uintptr_t entries[NHOOKS], trampolines[NHOOKS], bias;
+/* Entry already replaced by another loader hook (entry_hook: ldr pc,[pc,#-4]; target),
+ * e.g. the text smoothing wrappers on GR_Text_Draw*: chain to that target instead of
+ * copying the prologue. 0 = not chained. exp_vcapchain0 refuses (the old behaviour). */
+static uintptr_t chained[NHOOKS];
+int virtual_capture_chain = 1;
+unsigned virtual_capture_chained;
 static script_fn original_capture;
 static target_fn original_target;
 static reset_fn original_reset;
@@ -620,7 +626,14 @@ int virtual_capture_install(void *(*rx_alloc)(size_t)) {
 #define RESOLVE(type, s) ((type)so_symbol(&yoyoloader_mod, s))
     for (i = 0; i < NHOOKS; ++i) {
         entries[i] = RESOLVE(uintptr_t, specs[i].name);
-        if (!entries[i] || (entries[i] & 3) || entries[i] < specs[i].offset ||
+        chained[i] = 0;
+        if (virtual_capture_chain && entries[i] && !(entries[i] & 3) && entries[i] >= specs[i].offset &&
+            specs[i].relocation == 0 && word((void *)entries[i], 0) == 0xe51ff004u &&
+            i != H_CAPTURE && i != H_TARGET && i != H_TEXTURE_GET && i != H_RESET && i != H_CLEAR &&
+            i != H_ALLOC && i != H_CONSUME && i != H_MATRIX && i != H_FRUSTUM && !specs[i].mutation) {
+            chained[i] = word((void *)entries[i], 4);
+            ++virtual_capture_chained;
+        } else if (!entries[i] || (entries[i] & 3) || entries[i] < specs[i].offset ||
             word((void *)entries[i], 0) != specs[i].prologue[0] ||
             word((void *)entries[i], 4) != specs[i].prologue[1]) return install_fail(__LINE__);
         if (!i) bias = entries[i] - specs[i].offset;
@@ -683,7 +696,10 @@ int virtual_capture_install(void *(*rx_alloc)(size_t)) {
     for (i = 0; i < NHOOKS; ++i) {
         const HookSpec *h = &specs[i];
         starts[i] = pos;
-        if (h->relocation == 2) {
+        if (chained[i]) {
+            /* The other hook's wrapper calls its own copy of the prologue. */
+            code[pos++] = 0xe51ff004; code[pos++] = (uint32_t)chained[i];
+        } else if (h->relocation == 2) {
             uint32_t value = word((void *)(bias + h->pc + h->literal), 0);
             pos += load_constant(code + pos, (h->prologue[0] >> 12) & 15, value);
         } else for (j = 0; j < 2; ++j) {
@@ -697,7 +713,7 @@ int virtual_capture_install(void *(*rx_alloc)(size_t)) {
                 pos += load_constant(code + pos, (h->prologue[j] >> 12) & 15, h->literal);
             else code[pos++] = h->prologue[j];
         }
-        code[pos++] = 0xe51ff004; code[pos++] = (uint32_t)(entries[i] + 8);
+        if (!chained[i]) { code[pos++] = 0xe51ff004; code[pos++] = (uint32_t)(entries[i] + 8); }
         stubs[i] = pos;
         trampolines[i] = (uintptr_t)(rx + 4 * starts[i]);
         replacements[i] = (uintptr_t)(rx + 4 * stubs[i]);

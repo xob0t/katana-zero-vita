@@ -785,7 +785,13 @@ void katana_late_install(void) {
 		extern int virtual_capture_install(void *(*rx_alloc)(size_t));
 		extern int virtual_capture_relaxed;
 		virtual_capture_relaxed = !exp_flag("vcapexact");
-		debugPrintf("virtual enemy captures: %s\n", virtual_capture_install(katana_rx_alloc) ? "installed" : "NOT installed");
+		// The text smoothing wrappers (katana_menu.c) entry-hook GR_Text_Draw*, which vcapture also hooks: it chains
+		// to them instead of refusing to install (it did since Nov 15). exp_vcapchain0: the old refusal.
+		extern int virtual_capture_chain;
+		extern unsigned virtual_capture_chained;
+		virtual_capture_chain = !exp_flag("vcapchain0");
+		debugPrintf("virtual enemy captures: %s (%u entries chained to other hooks)\n",
+			virtual_capture_install(katana_rx_alloc) ? "installed" : "NOT installed", virtual_capture_chained);
 	}
 	extern int rope_lights;
 	if (!rope_lights) {
