@@ -570,6 +570,25 @@ void katana_goto_check(void) {
 		if (command_create)
 			command_create(atoi(text), x, y);
 	}
+	// Debug: ux0:data/gms/shared/destroy_object (an object name or index) runs instance_destroy(object): every instance
+	// of it and of its children, with their Destroy events (e.g. "obj_enemy" clears a room of enemies, no corpses)
+	char obj_name[64];
+	if (debug_request_take(DEBUG_REQUEST_DESTROY_OBJECT, obj_name, sizeof(obj_name))) {
+		for (char *c = obj_name; *c; c++)
+			if (*c == '\r' || *c == '\n' || *c == ' ')
+				*c = 0;
+		int (*object_find)(const char *name) = (void *)so_symbol(&yoyoloader_mod, "_Z11Object_FindPKc");
+		void (*instance_destroy)(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) =
+			(void *)so_symbol(&yoyoloader_mod, "_Z17F_InstanceDestroyR6RValueP9CInstanceS2_iPS_");
+		int index = obj_name[0] >= '0' && obj_name[0] <= '9' ? atoi(obj_name) : object_find ? object_find(obj_name) : -1;
+		debugPrintf("destroy_object: %s -> %d\n", obj_name, index);
+		if (index >= 0 && instance_destroy) {
+			gml_rvalue result = {0}, arg = {0};
+			arg.val = index;
+			arg.kind = 0;
+			instance_destroy(&result, NULL, NULL, 1, &arg);
+		}
+	}
 	char name[64];
 	if (!debug_request_take(DEBUG_REQUEST_GOTO_ROOM, name, sizeof(name)))
 		return;

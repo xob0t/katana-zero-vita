@@ -35,13 +35,21 @@ static const char **ev_names;
 static uint32_t *ev_time;
 static uint32_t *ev_calls;
 static int ev_num;
+static uint32_t *ev_frame_time; // this frame's time per event, for the spike breakdown (evprof_frame)
+static uint32_t *ev_frame_calls;
+static int *ev_touched, ev_touched_n;
+static int ev_frames; // frames since the last report: ev_time / ev_frames is the window's average
 
 // Reached from the per-entry stubs with the entry index in r2
 static void evprof_call(void *self, void *other, int idx) {
 	uint32_t start = sceKernelGetProcessTimeLow();
 	ev_orig[idx](self, other);
-	ev_time[idx] += sceKernelGetProcessTimeLow() - start;
+	uint32_t t = sceKernelGetProcessTimeLow() - start;
+	ev_time[idx] += t;
 	ev_calls[idx]++;
+	if (!ev_frame_calls[idx]++)
+		ev_touched[ev_touched_n++] = idx;
+	ev_frame_time[idx] += t;
 }
 
 void evprof_install(so_module *mod) {
@@ -54,6 +62,9 @@ void evprof_install(so_module *mod) {
 	ev_names = calloc(count, sizeof(char *));
 	ev_time = calloc(count, sizeof(uint32_t));
 	ev_calls = calloc(count, sizeof(uint32_t));
+	ev_frame_time = calloc(count, sizeof(uint32_t));
+	ev_frame_calls = calloc(count, sizeof(uint32_t));
+	ev_touched = calloc(count, sizeof(int));
 
 	SceSize size = (count * STUB_WORDS * 4 + 0xfff) & ~0xfff;
 	SceKernelAllocMemBlockKernelOpt opt;
@@ -92,6 +103,41 @@ void evprof_install(so_module *mod) {
 	debugPrintf("evprof: timing %d object events\n", ev_num);
 }
 
+// Called once per frame by the main loop: with log set (a slow frame under exp_spikes) prints the events that took
+// the most time in that frame next to their average per frame in this report window (inclusive times, ms)
+void evprof_frame(int log) {
+	if (!ev_num)
+		return;
+	ev_frames++;
+	if (log) {
+		int top[8], n = 0;
+		for (int k = 0; k < ev_touched_n; k++) {
+			int i = ev_touched[k];
+			int pos = n < 8 ? n++ : 8;
+			while (pos > 0 && ev_frame_time[top[pos - 1]] < ev_frame_time[i]) {
+				if (pos < 8)
+					top[pos] = top[pos - 1];
+				pos--;
+			}
+			if (pos < 8)
+				top[pos] = i;
+		}
+		char line[1024];
+		int len = 0;
+		for (int k = 0; k < n && len < (int)sizeof(line) - 128; k++) {
+			int i = top[k];
+			len += snprintf(line + len, sizeof(line) - len, " %s %.2f/%.2f x%u", ev_names[i] + 11, ev_frame_time[i] / 1000.0f,
+				ev_time[i] / 1000.0f / ev_frames, (unsigned)ev_frame_calls[i]);
+		}
+		debugPrintf("[SPIKE]   events (this frame/avg ms):%s\n", line);
+	}
+	for (int k = 0; k < ev_touched_n; k++) {
+		ev_frame_time[ev_touched[k]] = 0;
+		ev_frame_calls[ev_touched[k]] = 0;
+	}
+	ev_touched_n = 0;
+}
+
 void evprof_report(int frames) {
 	if (!ev_num)
 		return;
@@ -113,4 +159,5 @@ void evprof_report(int frames) {
 		debugPrintf("[EVENT] %6.2fms %6.1f calls %s\n", ev_time[top[i]] / 1000.0f / frames, (float)ev_calls[top[i]] / frames, ev_names[top[i]]);
 	memset(ev_time, 0, ev_num * sizeof(uint32_t));
 	memset(ev_calls, 0, ev_num * sizeof(uint32_t));
+	ev_frames = 0;
 }
