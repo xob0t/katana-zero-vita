@@ -520,6 +520,26 @@ void katana_prof_report(int frames) {
 		}
 	}
 	{
+		extern unsigned trail_lights_kept, trail_lights_skipped, trail_lights_violations;
+		extern unsigned trail_lights_native, trail_lights_fallback, trail_lights_verified, trail_lights_mismatch;
+		static unsigned last_kept, last_skipped, last_native, last_fallback;
+		extern unsigned trail_lights_reject_line[8], trail_lights_reject_count[8];
+		if (frames > 0 && (trail_lights_kept != last_kept || trail_lights_skipped != last_skipped || trail_lights_violations)) {
+			debugPrintf("[TRAILLIGHTS] lights per frame: %.1f near, %.1f skipped | near: %.1f native, %.1f original | "
+				"check violations %u | verify ok %u mismatch %u\n",
+				(float)(trail_lights_kept - last_kept) / frames, (float)(trail_lights_skipped - last_skipped) / frames,
+				(float)(trail_lights_native - last_native) / frames, (float)(trail_lights_fallback - last_fallback) / frames,
+				trail_lights_violations, trail_lights_verified, trail_lights_mismatch);
+			for (int k = 0; k < 8 && trail_lights_reject_line[k]; k++)
+				debugPrintf("[TRAILLIGHTS] native body fell back at trail_lights.c:%u x%u\n", trail_lights_reject_line[k],
+					trail_lights_reject_count[k]);
+		}
+		last_kept = trail_lights_kept;
+		last_skipped = trail_lights_skipped;
+		last_native = trail_lights_native;
+		last_fallback = trail_lights_fallback;
+	}
+	{
 		extern unsigned input_native_calls, input_native_hits, input_native_fallbacks, input_native_rejection_used;
 		extern struct { uint32_t line, count; } input_native_rejections[512];
 		if (input_native_calls)
