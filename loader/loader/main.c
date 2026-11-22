@@ -331,11 +331,14 @@ static void log_init() {
 		log_sync = 1; // no writer thread: flush after every line like the original logger
 }
 
+uint32_t debug_printf_us, debug_printf_calls; // time spent in debugPrintf (the exp_spikes report line)
+
 int debugPrintf(char *text, ...) {
 	if (!debugMode)
 		return 0;
 	if (!log_ready)
 		log_init();
+	uint32_t printf_t0 = sceKernelGetProcessTimeLow();
 
 	va_list list;
 	static char string[0x8000];
@@ -361,7 +364,8 @@ int debugPrintf(char *text, ...) {
 	sceKernelUnlockLwMutex(&log_mutex, 1);
 	if (log_sync)
 		debug_flush();
-
+	debug_printf_us += sceKernelGetProcessTimeLow() - printf_t0;
+	debug_printf_calls++;
 	return 0;
 }
 #endif
@@ -956,11 +960,25 @@ void main_loop() {
 	}
 }
 
-// exp_spikes: log every frame over 20 ms (checked once)
-static int exp_flag_cached_spikes(void) {
+// exp_spikes: log every frame shown more than 20 ms after the previous one (or the number of ms the file holds),
+// with its stages and object events under heavy profiling, and how long each 2-second report took (checked once);
+// 0 when off
+static uint32_t exp_spikes_us(void) {
 	static int v = -1;
-	if (v < 0)
-		v = exp_flag("spikes");
+	if (v < 0) {
+		v = 0;
+		if (exp_flag("spikes")) {
+			char text[16] = {0};
+			SceUID fd = sceIoOpen("ux0:data/gms/shared/exp_spikes", SCE_O_RDONLY, 0);
+			if (fd >= 0) {
+				sceIoRead(fd, text, sizeof(text) - 1);
+				sceIoClose(fd);
+			}
+			float ms = atof(text);
+			v = (ms >= 1.0f && ms < 1000.0f ? ms : 20.0f) * 1000.0f;
+			debugPrintf("[SPIKE] logging frames over %.1f ms\n", v / 1000.0f);
+		}
+	}
 	return v;
 }
 
@@ -1016,14 +1034,25 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 	// Note: don't query vglMemFree here; walking the heaps is slow enough to turn every
 	// hitch into another hitch and effectively freeze the game
 	static uint32_t frame_no = 0, spikes_logged = 0;
+	static uint64_t spike_last_swap, spike_last_end;
 	frame_no++;
-	int spike = exp_flag_cached_spikes() && swapped - start > 20000 && spikes_logged < 200;
+	uint32_t spike_us = exp_spikes_us();
+	// The interval (swap to swap) is what the player sees; it also covers the gap
+	uint64_t spike_interval = spike_last_swap ? swapped - spike_last_swap : swapped - start;
+	int spike = spike_us && spike_interval > spike_us && spikes_logged < 1000;
 	if (spike) {
+		// gap: from the end of the previous frame's frame_profile (its report) to this frame's Process
 		spikes_logged++;
-		debugPrintf("[SPIKE] frame %u: process %.1fms swap %.1fms\n", frame_no, (processed - start) / 1000.0f, (swapped - processed) / 1000.0f);
+		debugPrintf("[SPIKE] frame %u: process %.1fms swap %.1fms | interval %.1fms gap %.1fms\n", frame_no,
+			(processed - start) / 1000.0f, (swapped - processed) / 1000.0f,
+			spike_interval / 1000.0f,
+			spike_last_end ? (start - spike_last_end) / 1000.0f : 0.0f);
 	}
+	spike_last_swap = swapped;
 	extern void katana_stage_frame(int log);
 	katana_stage_frame(spike);
+	extern void evprof_frame(int log);
+	evprof_frame(spike);
 	// Forced garbage collections (vitaGL allocations that missed every pool) during this frame
 	extern int vgl_forced_gc_allocs;
 	static int forced_gc_seen;
@@ -1107,6 +1136,9 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 			vgl_failed_alloc_size, vglMemFree(VGL_MEM_VRAM), vglMemFree(VGL_MEM_RAM), vglMemFree(VGL_MEM_PHYCONT));
 	}
 	if (swapped - window_start >= 2000000) {
+		uint64_t report_start = sceKernelGetProcessTimeWide();
+		extern uint32_t debug_printf_us, debug_printf_calls;
+		debug_printf_us = debug_printf_calls = 0;
 		debugPrintf("[PROF] fps %.1f | process %.2fms | swap %.2fms | worst frame %.2fms | %dMHz | game thread run %.2fms\n",
 			frames * 1000000.0f / (swapped - window_start), acc_cpu / 1000.0f / frames, acc_swap / 1000.0f / frames, worst / 1000.0f,
 			scePowerGetArmClockFrequency(), acc_run / 1000.0f / frames);
@@ -1148,10 +1180,16 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 		katana_prof_report(frames);
 		callprof_report(frames);
 		evprof_report(frames);
+		if (spike_us) {
+			uint32_t printf_us = debug_printf_us, printf_calls = debug_printf_calls;
+			debugPrintf("[SPIKE] frame %u: report took %.2fms (%u log lines %.2fms)\n", frame_no,
+				(sceKernelGetProcessTimeWide() - report_start) / 1000.0f, printf_calls, printf_us / 1000.0f);
+		}
 		acc_cpu = acc_swap = worst = 0;
 		frames = 0;
 		window_start = swapped;
 	}
+	spike_last_end = sceKernelGetProcessTimeWide();
 }
 
 // Runs once, on the game thread, when the runner's Startup is over

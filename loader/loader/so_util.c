@@ -267,6 +267,8 @@ int _so_load(so_module *mod, SceUID so_blockid, void *so_data, uintptr_t load_ad
 			mod->num_init_array = sh_size / sizeof(void *);
 		} else if (strcmp(sh_name, ".hash") == 0) {
 			mod->hash = (void *)sh_addr;
+		} else if (strcmp(sh_name, ".gnu.hash") == 0) {
+			mod->gnu_hash = (void *)sh_addr;
 		}
 	}
 
@@ -560,8 +562,40 @@ uint32_t so_hash(const uint8_t *name) {
 	return h;
 }
 
+// GNU hash lookup (.gnu.hash: nbuckets, symoffset, bloom_size, bloom_shift, bloom[bloom_size], buckets[nbuckets],
+// chain[]). Android libraries such as libyoyo.so only have this table; without it every so_symbol walked all ~55000
+// dynamic symbols with strcmp (~18 ms for a symbol near the end, e.g. once per debug-mode report). -1 when not found.
+static int so_gnu_symbol_index(so_module *mod, const char *symbol) {
+	uint32_t *table = mod->gnu_hash;
+	uint32_t nbuckets = table[0], symoffset = table[1], bloom_size = table[2];
+	if (!nbuckets)
+		return -1;
+	uint32_t *buckets = &table[4 + bloom_size];
+	uint32_t *chain = &buckets[nbuckets];
+	uint32_t h = 5381;
+	for (const uint8_t *c = (const uint8_t *)symbol; *c; c++)
+		h = h * 33 + *c;
+	uint32_t i = buckets[h % nbuckets];
+	if (i < symoffset)
+		return -1;
+	for (; i < (uint32_t)mod->num_dynsym; i++) {
+		uint32_t h2 = chain[i - symoffset];
+		if ((h | 1) == (h2 | 1) && mod->dynsym[i].st_shndx != SHN_UNDEF && mod->dynsym[i].st_info != SHN_UNDEF &&
+			strcmp(mod->dynstr + mod->dynsym[i].st_name, symbol) == 0)
+			return i;
+		if (h2 & 1)
+			break;
+	}
+	return -1;
+}
+
 static int so_symbol_index(so_module *mod, const char *symbol)
 {
+	if (mod->gnu_hash) {
+		int i = so_gnu_symbol_index(mod, symbol);
+		if (i >= 0)
+			return i;
+	}
 	if (mod->hash) {
 		uint32_t hash = so_hash((const uint8_t *)symbol);
 		uint32_t nbucket = mod->hash[0];

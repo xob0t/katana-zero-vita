@@ -6,7 +6,8 @@
  * width, height and pitch, followed by ABGR8888 pixels) and the request is removed.
  *
  * All memory card access happens on a thread on the worker cores: it polls the debug request files
- * (screenshot.req, goto_room, level_complete, create_object), reads and removes them, and writes screenshots
+ * (screenshot.req, goto_room, level_complete, create_object,
+ * destroy_object), reads and removes them, and writes screenshots
  * from a copy the game thread made. The game thread used to stat screenshot.req every 30 frames and write the
  * 2 MB screenshot itself, right after vglSwapBuffers: each screenshot froze the game for 0.4-0.5 s (logged as
  * swap time; room_club_1 runs "hitched" every 20 s, exactly the harness's screenshot interval), and a stat can
@@ -32,6 +33,7 @@ static const char *const debug_request_paths[DEBUG_REQUEST_COUNT] = {
 	"ux0:data/gms/shared/goto_room",
 	"ux0:data/gms/shared/level_complete",
 	"ux0:data/gms/shared/create_object",
+	"ux0:data/gms/shared/destroy_object",
 };
 static char debug_request_text[DEBUG_REQUEST_COUNT][64];
 static volatile int debug_request_pending[DEBUG_REQUEST_COUNT];

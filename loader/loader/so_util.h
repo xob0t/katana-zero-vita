@@ -32,6 +32,7 @@ typedef struct so_module {
 
   int (** init_array)(void);
   uint32_t *hash;
+  uint32_t *gnu_hash; // .gnu.hash (Android's libyoyo.so has no SysV .hash)
 
   int num_dynamic;
   int num_dynsym;

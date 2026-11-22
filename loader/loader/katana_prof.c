@@ -51,6 +51,8 @@ static const char *stage_names[S_COUNT] = {
 	"DrawLayerTile"
 };
 
+// The generation this frame's collection worked on (-1: none), for the spike log
+static int gc_frame_gen = -1;
 static uint32_t stage_time[S_COUNT];
 static uint32_t stage_calls[S_COUNT];
 
@@ -66,8 +68,9 @@ void katana_stage_frame(int log) {
 			if (d >= 300)
 				n += snprintf(line + n, sizeof(line) - n, " %s %.1f", stage_names[i], d / 1000.0f);
 		}
-		debugPrintf("[SPIKE]   stages:%s\n", n ? line : " (none over 0.3 ms)");
+		debugPrintf("[SPIKE]   stages:%s | gc generation %d\n", n ? line : " (none over 0.3 ms)", gc_frame_gen);
 	}
+	gc_frame_gen = -1;
 	memcpy(prev, stage_time, sizeof(prev));
 }
 
@@ -114,7 +117,13 @@ STAGE_LAYER(S_LAYER_SPRITE, DrawLayerSprite)
 STAGE_LAYER(S_LAYER_TILE, DrawLayerTile)
 
 static int (*orig_MarkAndSweepGen)(int a, int b, int c);
-static int prof_MarkAndSweepGen(int a, int b, int c) { STAGE_BEGIN; int r = orig_MarkAndSweepGen(a, b, c); STAGE_END(S_GC); return r; }
+static int prof_MarkAndSweepGen(int a, int b, int c) {
+	STAGE_BEGIN;
+	int r = orig_MarkAndSweepGen(a, b, c);
+	STAGE_END(S_GC);
+	gc_frame_gen = a;
+	return r;
+}
 
 // Script timing: YYC scripts are called through the PLT with this signature
 typedef void *(*gml_script_func)(void *self, void *other, void *result, int argc, void **args);
@@ -554,7 +563,9 @@ void katana_prof_report(int frames) {
 	}
 	{
 		// Top objects by instance-draw time
-		const char *(*object_name)(int) = (void *)so_symbol(&yoyoloader_mod, "_Z11Object_Namei");
+		static const char *(*object_name)(int);
+		if (!object_name)
+			object_name = (void *)so_symbol(&yoyoloader_mod, "_Z11Object_Namei");
 		for (int n = 0; n < 10; n++) {
 			int best = -1;
 			for (int o = 0; o < LAYER_OBJ_MAX; o++)
