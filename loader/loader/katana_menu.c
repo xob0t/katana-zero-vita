@@ -1,7 +1,7 @@
 /*
  * katana_menu.c
  *
- * GRAPHICS menu rows (FPS MODE, TEXT SMOOTHING), text smoothing, and the yes/no prompt's
+ * GRAPHICS menu rows (FPS MODE, TEXT SMOOTHING, ENEMY AI), text smoothing, and the yes/no prompt's
  * starting selection.
  */
 
@@ -51,12 +51,28 @@
  *   0, one reset) is kept as it was, with vsync forced to false; the calls Destroy makes are dropped.
  * text_smooth_sync reads global.vsync once per frame (katana_after_swap). exp_textmenu0 turns the row off and keeps
  * the text smooth (yyl.cfg only); exp_textsharp keeps it sharp and has no row.
+ *
+ * ENEMY AI (FULL RATE / HALF RATE: half-rate enemies, katana_t30.c), added after TEXT SMOOTHING, is the PC build's
+ * FULLSCREEN row with its value stored in the PC build's LOW-END OPTIONS flag:
+ * - FULLSCREEN has a working row: Step toggles var_fullscreen = !var_fullscreen, Draw shows the game's "ON"/"OFF" for
+ *   it. global.fullscreen is no use as storage: obj_miscmaster Room Start sets it to window_get_fullscreen() (always
+ *   true on Android), and Destroy runs window_set_fullscreen and display_reset when it changes.
+ * - global.show_crap_settings is saved and loaded (KatanaOptions.zero), copied to var_show_crap_settings by Create and
+ *   back by SAVE, and set false by obj_init and the reset scripts. Nothing else reads it: the LOW-END OPTIONS popup
+ *   that sets it is compiled out on Android.
+ * var_fullscreen only carries the shown value through Step and Draw (put back after each), and the choice is in
+ * var_show_crap_settings: 0 (every existing save) follows enemyHalfRate from yyl.cfg, shown under that value's name;
+ * 1 FULL RATE and 2 HALF RATE are chosen in the menu and override yyl.cfg. global.fullscreen never changes, so Destroy
+ * does nothing for it. The value is relabelled like TEXT SMOOTHING's (Draw's row index c). fps_mode_sync reads
+ * global.show_crap_settings once per frame, so a SAVE applies on the next frame.
  */
 static int fps30_cfg = -1; // fpsMode from yyl.cfg, kept once fps30 follows the menu (-1: the menu isn't installed)
+static int enemy_half_cfg = -1; // enemyHalfRate from yyl.cfg, the same for enemy_half_rate
+static int *var_show_crap_settings, *var_var_show_crap_settings, *var_var_fullscreen;
 static int *var_zoom_mode, *var_var_zoom_mode;
 static gml_script_fn orig_add_pausemenu_choice, orig_translate_option;
 static event_func orig_optionsmenu_step;
-static int fps_row, text_row; // the rows the menu shows
+static int fps_row, text_row, enemy_row; // the rows the menu shows
 enum { TEXT_SMOOTH_OFF, TEXT_SMOOTH_DIALOGUE, TEXT_SMOOTH_ALL };
 static int text_smooth = TEXT_SMOOTH_DIALOGUE; // the TEXT_SMOOTH_EVENTS wrappers, and with ALL the GR_Text_Draw ones
 static int text_smooth_hooked; // of the 7 draw events
@@ -67,6 +83,7 @@ static event_func orig_optionsmenu_draw;
 static void *text_draw_self; // the obj_optionsmenu running Draw
 static int text_draw_mode; // its var_vsync, as a mode
 static double text_label_c = -1; // its c when it asked for the "VSYNC" label
+static double enemy_label_c = -1; // and for the "FULLSCREEN" label
 static builtin_fn orig_display_reset;
 static void (*yy_create_string)(gml_rvalue *, const char *);
 static void (*yy_free_rvalue)(gml_rvalue *);
@@ -86,10 +103,11 @@ static void *fps_add_pausemenu_choice(void *self, void *other, void *result, int
 	void *r = orig_add_pausemenu_choice(self, other, result, argc, args);
 	const char *key = argc == 2 ? rv_string(args[0]) : NULL;
 	if (key && !strcmp(key, "BLOOD SPRAY")) { // the GRAPHICS page only (obj_options_main_menu Step)
-		static const char *const rows[2] = { "WINDOW ZOOM", "VSYNC" };
+		static const char *const rows[3] = { "WINDOW ZOOM", "VSYNC", "FULLSCREEN" };
+		const int shown[3] = { fps_row, text_row, enemy_row };
 		void *toggle = args[1]; // this call's "toggle"
-		for (int i = 0; i < 2; i++) {
-			if (!(i ? text_row : fps_row))
+		for (int i = 0; i < 3; i++) {
+			if (!shown[i])
 				continue;
 			gml_rvalue name = {0}, res = {0};
 			yy_create_string(&name, rows[i]);
@@ -116,6 +134,11 @@ static int text_mode_of(double v) {
 	return v == 1.0 ? TEXT_SMOOTH_OFF : v == 2.0 ? TEXT_SMOOTH_ALL : TEXT_SMOOTH_DIALOGUE;
 }
 
+// ENEMY AI's stored choice -> half-rate on: 1 FULL RATE, 2 HALF RATE, anything else (0: not chosen) yyl.cfg's
+static int enemy_half_of(double v) {
+	return v == 1.0 ? 0 : v == 2.0 ? 1 : enemy_half_cfg > 0;
+}
+
 // obj_optionsmenu Draw's row index (only read inside its Draw, where c exists)
 static double text_draw_c(void *self) {
 	gml_rvalue *c = instance_num(self, var_c);
@@ -140,11 +163,20 @@ static void *fps_translate_option(void *self, void *other, void *result, int arg
 		text = "TEXT SMOOTHING";
 		if (text_draw_self && self == text_draw_self)
 			text_label_c = text_draw_c(self);
-	} else if (text_draw_self && self == text_draw_self && text_label_c >= 0.0 && (!strcmp(key, "ON") || !strcmp(key, "OFF")) &&
-			text_draw_c(self) == text_label_c) {
-		// This row's value. OFF stays the game's own, translated (Draw asks for "OFF" then)
-		if (text_draw_mode != TEXT_SMOOTH_OFF)
-			text = text_draw_mode == TEXT_SMOOTH_ALL ? "ALL" : "DIALOGUE";
+	} else if (enemy_row && !strcmp(key, "FULLSCREEN")) {
+		text = "ENEMY AI";
+		if (text_draw_self && self == text_draw_self)
+			enemy_label_c = text_draw_c(self);
+	} else if (text_draw_self && self == text_draw_self && (text_label_c >= 0.0 || enemy_label_c >= 0.0) &&
+			(!strcmp(key, "ON") || !strcmp(key, "OFF"))) {
+		double c = text_draw_c(self);
+		if (c == text_label_c) {
+			// TEXT SMOOTHING's value. OFF stays the game's own, translated (Draw asks for "OFF" then)
+			if (text_draw_mode != TEXT_SMOOTH_OFF)
+				text = text_draw_mode == TEXT_SMOOTH_ALL ? "ALL" : "DIALOGUE";
+		} else if (c == enemy_label_c) {
+			text = key[1] == 'N' ? "HALF RATE" : "FULL RATE"; // var_fullscreen shows half-rate on (enemy_show)
+		}
 	}
 	if (!text)
 		return orig_translate_option(self, other, result, argc, args);
@@ -152,17 +184,53 @@ static void *fps_translate_option(void *self, void *other, void *result, int arg
 	return result;
 }
 
-// Three values each:
+// var_fullscreen showing ENEMY AI's value (true: HALF RATE) through a Step or Draw, put back after
+typedef struct { int set; double val; unsigned kind; } enemy_shown;
+
+static enemy_shown enemy_show(void *self) {
+	enemy_shown was = {0};
+	gml_rvalue *e = enemy_row ? instance_num(self, var_var_show_crap_settings) : NULL;
+	double stored = e ? e->val : 0.0; // copied before the next lookup
+	gml_rvalue *f = e ? instance_num(self, var_var_fullscreen) : NULL;
+	if (!f)
+		return was;
+	was = (enemy_shown){ 1, f->val, f->kind };
+	f->val = enemy_half_of(stored) ? 1.0 : 0.0;
+	return was;
+}
+
+static void enemy_unshow(void *self, enemy_shown was) {
+	gml_rvalue *f = was.set ? instance_num(self, var_var_fullscreen) : NULL; // looked up again: events add variables
+	if (f) {
+		f->val = was.val;
+		f->kind = was.kind;
+	}
+}
+
+// Three values each, two for ENEMY AI:
 // - FPS MODE: the game's toggle wraps 3 -> 0 ("not chosen"); make it 3 -> 1;
 // - TEXT SMOOTHING: the game's var_vsync = !var_vsync flips it; make that the next of OFF -> DIALOGUE -> ALL -> OFF
-//   (ALL is skipped if its hooks are missing).
+//   (ALL is skipped if its hooks are missing);
+// - ENEMY AI: the game's var_fullscreen = !var_fullscreen flips the shown value; store the other value (1 or 2).
 static void fps_optionsmenu_step(void *self, void *other) {
 	gml_rvalue *z = fps_row ? instance_var(self, var_var_zoom_mode) : NULL;
 	double zoom = z ? z->val : -1;
 	gml_rvalue *t = text_row ? instance_num(self, var_var_vsync) : NULL;
 	int have_smooth = t != NULL;
 	double smooth = t ? t->val : 0.0;
+	enemy_shown enemy = enemy_show(self);
 	orig_optionsmenu_step(self, other);
+	if (enemy.set) {
+		gml_rvalue *e = instance_num(self, var_var_show_crap_settings);
+		int shown = e ? enemy_half_of(e->val) : 0;
+		gml_rvalue *f = e ? instance_num(self, var_var_fullscreen) : NULL;
+		int flipped = f && (f->val != 0.0) != shown;
+		enemy_unshow(self, enemy);
+		if (flipped && (e = instance_num(self, var_var_show_crap_settings))) {
+			e->val = shown ? 1.0 : 2.0;
+			e->kind = VALUE_REAL;
+		}
+	}
 	if (zoom == 3.0 && (z = instance_var(self, var_var_zoom_mode)) && z->val == 0.0)
 		z->val = 1.0;
 	if (have_smooth && (t = instance_num(self, var_var_vsync)) && (t->val != 0.0) != (smooth != 0.0)) {
@@ -174,38 +242,45 @@ static void fps_optionsmenu_step(void *self, void *other) {
 	}
 }
 
-// Once per frame (t30_update): the saved menu choice drives fps30
+// Once per frame (t30_update): the saved menu choices drive fps30 and enemy_half_rate
 void fps_mode_sync(void) {
-	if (fps30_cfg < 0 || !*global_obj_ptr)
+	if (!*global_obj_ptr)
 		return;
-	gml_rvalue *z = global_var(var_zoom_mode);
-	int m = z ? (int)z->val : 0;
-	fps30 = m == 1 ? 0 : m == 2 ? 2 : m == 3 ? 1 : fps30_cfg;
+	if (fps30_cfg >= 0) {
+		gml_rvalue *z = global_var(var_zoom_mode);
+		int m = z ? (int)z->val : 0;
+		fps30 = m == 1 ? 0 : m == 2 ? 2 : m == 3 ? 1 : fps30_cfg;
+	}
+	if (enemy_half_cfg >= 0) {
+		gml_rvalue *e = global_var(var_show_crap_settings);
+		enemy_half_rate = enemy_half_of(e && (e->kind == VALUE_REAL || e->kind == VALUE_BOOL) ? e->val : 0.0);
+	}
 }
 
 // Draw shows OFF for a false var_vsync, and false (every existing save) means DIALOGUE: draw it with var_vsync true
 // for DIALOGUE and ALL, false for OFF, and fps_translate_option relabels the value (the game's ON/OFF if it can't).
 // Draw only reads var_vsync and runs no user event (SAVE), so the stored value never sees the change.
+// ENEMY AI is drawn the same way, with var_fullscreen showing its value (enemy_show).
 static void text_optionsmenu_draw(void *self, void *other) {
-	gml_rvalue *v = instance_num(self, var_var_vsync);
-	if (!v) {
-		orig_optionsmenu_draw(self, other);
-		return;
-	}
-	double was = v->val;
+	gml_rvalue *v = text_row ? instance_num(self, var_var_vsync) : NULL;
+	double was = v ? v->val : 0.0;
 	int mode = text_mode_of(was);
-	v->val = mode != TEXT_SMOOTH_OFF ? 1.0 : 0.0;
+	if (v)
+		v->val = mode != TEXT_SMOOTH_OFF ? 1.0 : 0.0;
+	enemy_shown enemy = enemy_show(self);
 	void *prev_self = text_draw_self;
 	int prev_mode = text_draw_mode;
-	double prev_c = text_label_c;
+	double prev_c = text_label_c, prev_enemy_c = enemy_label_c;
 	text_draw_self = self;
 	text_draw_mode = mode;
-	text_label_c = -1.0;
+	text_label_c = enemy_label_c = -1.0;
 	orig_optionsmenu_draw(self, other);
 	text_draw_self = prev_self;
 	text_draw_mode = prev_mode;
 	text_label_c = prev_c;
-	if ((v = instance_num(self, var_var_vsync))) // looked up again: Draw can add instance variables
+	enemy_label_c = prev_enemy_c;
+	enemy_unshow(self, enemy);
+	if (v && (v = instance_num(self, var_var_vsync))) // looked up again: Draw can add instance variables
 		v->val = was;
 }
 
@@ -243,15 +318,19 @@ void text_smooth_sync(void) {
 	text_smooth = text_mode_of(v ? v->val : 0.0);
 }
 
-// The FPS MODE and TEXT SMOOTHING rows, each installed only with everything it needs
+// The FPS MODE, TEXT SMOOTHING and ENEMY AI rows, each installed only with everything it needs
 void fps_menu_install(gml_func_entry *table) {
 	int want_fps = !exp_flag("fpsmenu0") && !exp_flag("t30force") && t30_installed;
 	int want_text = text_smooth && text_smooth_hooked && global_obj_ptr && !exp_flag("textmenu0");
+	int want_enemy = eh_installed;
 	var_zoom_mode = (int *)so_symbol(&yoyoloader_mod, "g_VAR_zoom_mode");
 	var_var_zoom_mode = (int *)so_symbol(&yoyoloader_mod, "g_VAR_var_zoom_mode");
 	var_vsync = (int *)so_symbol(&yoyoloader_mod, "g_VAR_vsync");
 	var_var_vsync = (int *)so_symbol(&yoyoloader_mod, "g_VAR_var_vsync");
 	var_c = (int *)so_symbol(&yoyoloader_mod, "g_VAR_c");
+	var_show_crap_settings = (int *)so_symbol(&yoyoloader_mod, "g_VAR_show_crap_settings");
+	var_var_show_crap_settings = (int *)so_symbol(&yoyoloader_mod, "g_VAR_var_show_crap_settings");
+	var_var_fullscreen = (int *)so_symbol(&yoyoloader_mod, "g_VAR_var_fullscreen");
 	yy_create_string = (void *)so_symbol(&yoyoloader_mod, "_Z14YYCreateStringP6RValuePKc");
 	yy_free_rvalue = (void *)so_symbol(&yoyoloader_mod, "_Z16FREE_RValue__PreP6RValue");
 
@@ -264,28 +343,35 @@ void fps_menu_install(gml_func_entry *table) {
 			guarded_display_reset);
 	debugPrintf("display_reset guard: %s\n", orig_display_reset ? "on" : "NOT installed");
 
-	if ((want_fps || want_text) && yy_create_string && yy_free_rvalue)
+	if ((want_fps || want_text || want_enemy) && yy_create_string && yy_free_rvalue)
 		orig_translate_option = entry_hook(so_symbol(&yoyoloader_mod,
 			"_Z27gml_Script_translate_optionP9CInstanceS0_R8YYRValueiPPS1_"), fps_translate_option);
 	// In this order, so a row is never added without its labels and its Step (and Draw) hook
 	int fps_ok = want_fps && orig_translate_option && var_zoom_mode && var_var_zoom_mode;
 	int text_ok = want_text && orig_translate_option && orig_display_reset && var_vsync && var_var_vsync && var_c;
-	if (fps_ok || text_ok)
+	int enemy_ok = want_enemy && orig_translate_option && var_show_crap_settings && var_var_show_crap_settings &&
+		var_var_fullscreen && var_c;
+	if (fps_ok || text_ok || enemy_ok)
 		orig_optionsmenu_step = gml_replace(table, "gml_Object_obj_optionsmenu_Step_0", fps_optionsmenu_step);
-	if (text_ok && orig_optionsmenu_step)
+	if ((text_ok || enemy_ok) && orig_optionsmenu_step)
 		orig_optionsmenu_draw = gml_replace(table, "gml_Object_obj_optionsmenu_Draw_0", text_optionsmenu_draw);
 	if ((fps_ok || orig_optionsmenu_draw) && orig_optionsmenu_step)
 		orig_add_pausemenu_choice = entry_hook(so_symbol(&yoyoloader_mod,
 			"_Z31gml_Script_add_pausemenu_choiceP9CInstanceS0_R8YYRValueiPPS1_"), fps_add_pausemenu_choice);
 	if (orig_add_pausemenu_choice) {
 		fps_row = fps_ok;
-		text_row = !!orig_optionsmenu_draw;
+		text_row = text_ok && orig_optionsmenu_draw;
+		enemy_row = enemy_ok && orig_optionsmenu_draw;
 	}
 	if (fps_row)
 		fps30_cfg = fps30; // from here on fps_mode_sync owns fps30
+	if (enemy_row)
+		enemy_half_cfg = enemy_half_rate; // and enemy_half_rate
 	debugPrintf("FPS mode menu: %s (yyl.cfg fpsMode %d)\n", fps_row ? "on" : want_fps ? "NOT installed" : "off", fps30);
 	debugPrintf("text smoothing menu: %s%s\n", text_row ? "on" : want_text ? "NOT installed" : "off",
 		text_row && text_all_hooked < 4 ? " (no ALL)" : "");
+	debugPrintf("enemy AI menu: %s (yyl.cfg enemyHalfRate %d)\n", enemy_row ? "on" : want_enemy ? "NOT installed" : "off",
+		enemy_half_rate);
 }
 
 // obj_interaction is the yes/no prompt behind interact_binary (pause, title and level-select confirms, interactable

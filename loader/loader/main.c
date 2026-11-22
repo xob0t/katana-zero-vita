@@ -211,6 +211,8 @@ void loadConfig(const char *game) {
 			else if (strcmp("frameSkip", buffer) == 0) frame_skip = value;
 			// fpsMode: 0 NATIVE, 1 DYNAMIC, 2 30 FPS (the FPS MODE menu overrides it); fps30 is its old name
 			else if (strcmp("fpsMode", buffer) == 0 || strcmp("fps30", buffer) == 0) { extern int fps30; fps30 = value; }
+			// enemyHalfRate: 1 enemy AI every other tick at 60 fps (default), 0 every tick (the ENEMY AI menu overrides it)
+			else if (strcmp("enemyHalfRate", buffer) == 0) { extern int enemy_half_rate; enemy_half_rate = value ? 1 : 0; }
 			else if (strcmp("stickDeadzone", buffer) == 0) { extern double stick_deadzone; stick_deadzone = (value < 0 ? 0 : value > 90 ? 90 : value) / 100.0; }
 			else if (strcmp("replays", buffer) == 0) replays = value;
 			else if (strcmp("rain", buffer) == 0) rain_level = value;

@@ -354,6 +354,19 @@ void katana_prof_report(int frames) {
 		debugPrintf("[FPS30] %u letter steps skipped on frozen ticks\n", t30_letter_skips);
 	if (t30_enemy_steps)
 		debugPrintf("[FPS30] enemy steps at 30 ticks/s %u, search ticks added %u\n", t30_enemy_steps, t30_search_ticks);
+	{
+		// Half-rate enemies, per frame of this report window
+		extern unsigned enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced, enemyhalf_kills[4];
+		static unsigned last[4];
+		unsigned now[4] = { enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced };
+		if (debugMode && frames > 0 && (now[0] != last[0] || now[2] != last[2]))
+			debugPrintf("[FPS30] half-rate enemies per tick: %.1f steps run (%.1f covering 2 ticks), %.1f skipped, %.2f run "
+				"for a hurt overlap | search ticks added %u | deaths: other event %u, overlap run %u, 2-tick %u, 1-tick %u\n",
+				(float)(now[0] - last[0]) / frames, (float)(now[1] - last[1]) / frames, (float)(now[2] - last[2]) / frames,
+				(float)(now[3] - last[3]) / frames, t30_search_ticks, enemyhalf_kills[0], enemyhalf_kills[1],
+				enemyhalf_kills[2], enemyhalf_kills[3]);
+		memcpy(last, now, sizeof(last));
+	}
 	extern unsigned t30_textbox_doubled;
 	if (t30_textbox_ticks[0] || t30_textbox_ticks[1])
 		debugPrintf("[FPS30] textbox ticks at 30 ticks/s: %u, passive %u (typing x2 %u)\n", t30_textbox_ticks[0],

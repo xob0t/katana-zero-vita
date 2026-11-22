@@ -1,7 +1,8 @@
 /*
  * katana_t30.c
  *
- * 30 fps mode (fpsMode in yyl.cfg, or the FPS MODE menu).
+ * 30 fps mode (fpsMode in yyl.cfg, or the FPS MODE menu), and half-rate enemies at 60 ticks/s (enemyHalfRate, or
+ * the ENEMY AI menu).
  */
 
 #include <vitasdk.h>
@@ -125,6 +126,8 @@ static void t30_gamepaused_step1(void *self, void *other) {
 	orig_gamepaused_step1(self, other);
 }
 
+static void eh_setting_check(void);
+
 static void t30_set(int on) {
 	if (on == t30_active)
 		return;
@@ -143,6 +146,7 @@ void t30_update(uint32_t work_us) {
 	uint64_t interval = last ? now - last : 0;
 	last = now;
 	fps_mode_sync();
+	eh_setting_check();
 	// The mode can change at runtime (GRAPHICS menu): leave 30 ticks/s when it turns off
 	if (!fps30 || t30_never || !current_room) {
 		t30_set(0);
@@ -378,12 +382,231 @@ static void t30_letter_step(void *self, void *other) {
 // step of two can't skip it). At 30 ticks/s that took twice as long: each Step that advanced it gets one more.
 static int *var_search_timeout;
 unsigned t30_search_ticks, t30_enemy_steps;
-static int t30_enemy_depth;
+static int t30_enemy_depth, t30_search;
+
+/*
+ * Half-rate enemies (enemyHalfRate in yyl.cfg: 1 on (default), 0 off; or the ENEMY AI menu, see fps_menu_install).
+ * Only while the game runs 60 ticks/s: in 30 fps mode every enemy Step runs as above. Enemy Steps (AI, AI_physics,
+ * enemy_hurt: 3-8 ms per tick in combat rooms) run every other tick, which saves 2.3-3.5 ms per tick in heavy rooms.
+ * - A Step that runs covers the ticks since the enemy's last one: global.fr is doubled for it (put back after,
+ *   unless the Step set fr itself, as enemy_hurt does for hit-stop) and its search_timeout gets the tick it missed,
+ *   as in 30 fps mode.
+ * - Half of the enemies run on even ticks and half on odd ones (instance id parity), so every tick carries half of
+ *   the AI.
+ * - Enemies find their own hits: enemy_hurt, inside their Step, polls place_meeting with obj_slash, obj_projectile
+ *   (bullets, throwables), obj_explosion and obj_flamethrower_explosion. On a skipped tick the same overlaps are
+ *   checked here, and an enemy touching one runs this tick (fr as it is), so hits land on the tick they would have.
+ * - Enemies run every tick during scripted sequences, and a Step that didn't run for longer than a skip (pause, 30 fps
+ *   mode, deactivation, the setting just turned on) covers one tick.
+ * Caveats: enemy movement, aim and reactions update at 30 Hz (sprite animation, alarms and built-in motion stay at
+ * 60), and anything an enemy counts in ticks without fr runs at half speed, as in 30 fps mode. Playtesting found no
+ * difference in enemy behaviour.
+ * Debug: the profile report has an [FPS30] half-rate line (steps run and skipped per tick), and enemy deaths
+ * (create_corpse) are counted by the kind of Step they happened in.
+ *
+ * Per enemy (instance id at +0x80) the table holds the tick its Step last ran. A room change or a change of the
+ * setting clears it, and entries not seen for EH_STALE ticks are reused (death restarts keep the room, with new ids).
+ */
+int enemy_half_rate = 1;
+int eh_installed; // t30_install found everything half-rate enemies need
+#define EH_SLOTS 512
+#define EH_STALE 120
+unsigned enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced; // debug counters
+static struct { uint32_t key, last; } eh_table[EH_SLOTS]; // key = id + 1, 0 = empty
+static int eh_room = -2;
+static runner_function **eh_functions, **eh_current_function;
+static const int *eh_fn_place_meeting, *eh_fn_instance_exists;
+static const char *const eh_source_names[] = { "obj_slash", "obj_projectile", "obj_explosion", "obj_flamethrower_explosion" };
+#define EH_SOURCES (int)(sizeof(eh_source_names) / sizeof(*eh_source_names))
+static int eh_sources[EH_SOURCES], eh_sources_found;
+static int (*eh_object_find)(const char *name);
+
+// Once per frame: a change of the setting (GRAPHICS menu) starts a fresh table, so no enemy covers more than two ticks
+static void eh_setting_check(void) {
+	static int seen = -1;
+	if (enemy_half_rate == seen)
+		return;
+	seen = enemy_half_rate;
+	eh_room = -2;
+	if (eh_installed)
+		debugPrintf("Half-rate enemies %s\n", enemy_half_rate ? "on" : "off");
+}
+
+// Once, at the first enemy Step: the object indices of the hurt sources. Without all of them half-rate stays off.
+static int eh_resolve_sources(void) {
+	if (eh_sources_found)
+		return 1;
+	int found = 0;
+	for (int i = 0; i < EH_SOURCES; i++)
+		found += (eh_sources[i] = eh_object_find(eh_source_names[i])) >= 0;
+	debugPrintf("Half-rate enemies: hurt sources %d/%d (%s %d, %s %d, %s %d, %s %d)\n", found, EH_SOURCES,
+		eh_source_names[0], eh_sources[0], eh_source_names[1], eh_sources[1], eh_source_names[2], eh_sources[2],
+		eh_source_names[3], eh_sources[3]);
+	if (found != EH_SOURCES) {
+		eh_installed = 0;
+		return 0;
+	}
+	return eh_sources_found = 1;
+}
+
+static uint32_t eh_word(const void *p, size_t off) {
+	uint32_t v;
+	memcpy(&v, (const char *)p + off, 4);
+	return v;
+}
+
+// A runner builtin through its registry entry, with g_pFunction set as the GML call sites do
+static int eh_builtin(const int *desc, void *self, int argc, gml_rvalue *args) {
+	runner_function *f = *eh_functions + desc[1], *saved = *eh_current_function;
+	gml_rvalue out = {0, 0, 5};
+	*eh_current_function = f;
+	((builtin_fn)f->func)(&out, self, self, argc, args);
+	*eh_current_function = saved;
+	return (out.kind == 0 || out.kind == 13) && out.val != 0;
+}
+
+static gml_rvalue eh_object(int index) {
+	gml_rvalue r = {0, 0, 15}; // an object reference, as YYC passes obj_* constants
+	uint32_t b[2] = {(uint32_t)index, 0x01000000};
+	memcpy(&r.val, b, 8);
+	return r;
+}
+
+// Does the enemy touch something enemy_hurt reacts to? Object existence is checked once per tick.
+static int eh_hurt_overlap(void *self, uint32_t tick) {
+	static uint32_t present_tick = ~0u;
+	static unsigned present;
+	if (present_tick != tick) {
+		present_tick = tick;
+		present = 0;
+		for (int i = 0; i < EH_SOURCES; i++) {
+			gml_rvalue obj = eh_object(eh_sources[i]);
+			if (eh_sources[i] >= 0 && eh_builtin(eh_fn_instance_exists, self, 1, &obj))
+				present |= 1u << i;
+		}
+	}
+	if (!present)
+		return 0;
+	float x, y;
+	memcpy(&x, (char *)self + 0xb8, 4);
+	memcpy(&y, (char *)self + 0xbc, 4);
+	for (int i = 0; i < EH_SOURCES; i++) {
+		if (!(present & (1u << i)))
+			continue;
+		gml_rvalue args[3] = {{x, 0, 0}, {y, 0, 0}, eh_object(eh_sources[i])};
+		if (eh_builtin(eh_fn_place_meeting, self, 3, args))
+			return 1;
+	}
+	return 0;
+}
+
+// How many ticks this Step covers: 0 skip, 1 or 2
+static int eh_decide(void *self) {
+	uint32_t tick = *frame_count;
+	if (*current_room != eh_room) {
+		eh_room = *current_room;
+		memset(eh_table, 0, sizeof(eh_table));
+	}
+	uint32_t key = eh_word(self, 0x80) + 1, i = (key * 2654435761u) % EH_SLOTS;
+	int found = -1, free_slot = -1;
+	for (int n = 0; n < EH_SLOTS; n++, i = (i + 1) % EH_SLOTS) {
+		if (eh_table[i].key == key) {
+			found = i;
+			break;
+		}
+		if (!eh_table[i].key) {
+			if (free_slot < 0)
+				free_slot = i;
+			break;
+		}
+		if (free_slot < 0 && tick - eh_table[i].last > EH_STALE)
+			free_slot = i;
+	}
+	if (found < 0) {
+		if (free_slot < 0) // table full: run every tick
+			return 1;
+		eh_table[free_slot].key = key;
+		// A new enemy runs now (one tick) or next tick (covering this one too), by id parity
+		eh_table[free_slot].last = (key ^ tick) & 1 ? tick - 3 : tick - 1;
+		found = free_slot;
+	}
+	uint32_t elapsed = tick - eh_table[found].last;
+	// Scripted sequences count ticks exactly: every tick. A Step that didn't run for longer than a skip (pause, the
+	// 30 fps mode, deactivation) covers one tick, as the original would.
+	if ((t30_scripted_tick && tick - t30_scripted_tick < 3) || elapsed > 2 || elapsed == 0) {
+		eh_table[found].last = tick;
+		return 1;
+	}
+	if (elapsed == 2) {
+		eh_table[found].last = tick;
+		return 2;
+	}
+	if (eh_hurt_overlap(self, tick)) {
+		eh_table[found].last = tick;
+		enemyhalf_forced++;
+		return 1;
+	}
+	return 0;
+}
+
+// Debug: enemy deaths (create_corpse calls) by the kind of Step they happened in:
+// 0 outside a half-rate enemy Step, 1 a Step run for a hurt overlap, 2 a Step covering two ticks, 3 a one-tick Step
+static gml_script_fn orig_create_corpse;
+static int eh_step_kind;
+unsigned enemyhalf_kills[4];
+static void *eh_create_corpse(void *self, void *other, void *result, int argc, void **args) {
+	static int lines;
+	enemyhalf_kills[eh_step_kind]++;
+	if (lines++ < 40)
+		debugPrintf("[ENEMYHALF] create_corpse at tick %u in %s\n", *frame_count, (const char *const[]){"another event",
+			"a step run for a hurt overlap", "a step covering 2 ticks", "a one-tick step"}[eh_step_kind]);
+	return orig_create_corpse(self, other, result, argc, args);
+}
+
+static void eh_enemy_step(event_func orig, void *self, void *other) {
+	unsigned forced = enemyhalf_forced;
+	int ticks = eh_decide(self);
+	if (!ticks) {
+		enemyhalf_skips++;
+		return;
+	}
+	enemyhalf_runs++;
+	eh_step_kind = forced != enemyhalf_forced ? 1 : ticks == 2 ? 2 : 3;
+	gml_rvalue *fr = NULL, *t;
+	double game_fr = 0, scaled = 0, before = -1;
+	if (ticks == 2 && (fr = global_var(var_fr)) && fr->kind == 0) {
+		game_fr = fr->val;
+		scaled = fr->val *= 2;
+		enemyhalf_doubled++;
+	} else {
+		fr = NULL;
+	}
+	if (ticks == 2 && (t = gml_vget(self, var_search_timeout[1])) && t->kind == 0)
+		before = t->val;
+	t30_enemy_depth++; // an inherited Step runs inside with this decision and fr
+	orig(self, other);
+	t30_enemy_depth--;
+	eh_step_kind = 0;
+	// enemy_hurt sets fr itself (0 for hit-stop on a kill): keep the game's value then
+	if (fr && (fr = global_var(var_fr)) && fr->kind == 0 && fr->val == scaled)
+		fr->val = game_fr;
+	if (before >= 0 && (t = instance_var(self, var_search_timeout))) {
+		double step = t->val - before;
+		if (step == 1 || step == 2) {
+			t->val += step;
+			t30_search_ticks++;
+		}
+	}
+}
 
 static void t30_enemy_search(event_func orig, void *self, void *other) {
+	if (enemy_half_rate && eh_installed && !t30_active && !t30_enemy_depth && eh_resolve_sources()) {
+		eh_enemy_step(orig, self, other);
+		return;
+	}
 	gml_rvalue *t;
 	double before = -1;
-	if (t30_active && !t30_enemy_depth && (t = gml_vget(self, var_search_timeout[1])) && t->kind == 0)
+	if (t30_active && t30_search && !t30_enemy_depth && (t = gml_vget(self, var_search_timeout[1])) && t->kind == 0)
 		before = t->val;
 	t30_enemy_steps += t30_active && !t30_enemy_depth;
 	t30_enemy_depth++;  // an inherited Step runs inside: only the outermost one adds
@@ -521,10 +744,25 @@ void t30_install(gml_func_entry *table) {
 	orig_cutscene_master_user0 = gml_replace(table, "gml_Object_obj_cutscene_master_Other_10", t30_cutscene_master_user0);
 	int enemies = 0;
 	var_search_timeout = (int *)so_symbol(&yoyoloader_mod, "g_VAR_search_timeout");
-	if (var_search_timeout && !exp_flag("t30search0")) {
+	t30_search = !exp_flag("t30search0");
+	if (var_search_timeout) {
 #define T30_ENEMY_HOOK(name) enemies += !!(orig_##name##_step = gml_replace(table, "gml_Object_obj_" #name "_Step_0", t30_##name##_step));
 		T30_ENEMY_STEPS(T30_ENEMY_HOOK)
 	}
+	// Half-rate enemies. The hurt source objects are looked up by name at the first enemy Step (the object table isn't
+	// loaded yet).
+	eh_object_find = (void *)so_symbol(&yoyoloader_mod, "_Z11Object_FindPKc");
+	eh_functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
+	eh_current_function = (runner_function **)so_symbol(&yoyoloader_mod, "g_pFunction");
+	eh_fn_place_meeting = (const int *)so_symbol(&yoyoloader_mod, "g_FUNC_place_meeting");
+	eh_fn_instance_exists = (const int *)so_symbol(&yoyoloader_mod, "g_FUNC_instance_exists");
+	eh_installed = enemies == 9 && eh_object_find && eh_functions && eh_current_function && eh_fn_place_meeting &&
+		eh_fn_instance_exists;
+	if (eh_installed && debugMode)
+		orig_create_corpse = entry_hook(so_symbol(&yoyoloader_mod,
+			"_Z24gml_Script_create_corpseP9CInstanceS0_R8YYRValueiPPS1_"), eh_create_corpse);
+	debugPrintf("Half-rate enemies: %s, yyl.cfg enemyHalfRate %d\n", eh_installed ? "installed" : "NOT installed",
+		enemy_half_rate);
 	t30_diag = debugMode && exp_flag("t30diag");
 	var_text_timer = (int *)so_symbol(&yoyoloader_mod, "g_VAR_text_timer");
 	var_text_complete = (int *)so_symbol(&yoyoloader_mod, "g_VAR_text_complete");
