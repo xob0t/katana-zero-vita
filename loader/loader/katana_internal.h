@@ -53,6 +53,7 @@ extern uint32_t recolor_changes, recolor_frames;
 extern double last_recolor_timer;
 extern int light_fast_mode;
 extern int t30_installed;
+extern int enemy_half_rate, eh_installed; // half-rate enemies (katana_t30.c)
 void *entry_hook(uintptr_t entry, void *replacement);
 event_func gml_replace(gml_func_entry *table, const char *name, event_func wrapper);
 gml_rvalue *global_var(int *var);
