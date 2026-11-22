@@ -1102,18 +1102,19 @@ static void patch_performance() {
 		extern int laser_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native lasers: %s\n", laser_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
-	// Static recompiler kill test (work/cpu_research/kill_test/REPORT.md), default off: exact natives of obj_orangelight
-	// Step and obj_lightback Step. exp_lightfast: the hand native (light_fast.c); exp_lightfast_inline: the same
-	// event with the runner's compare/truth/variable helpers inlined (light_fast_inline.c). Both hook the same two
-	// entries, so only one is installed; the inlined variant wins if both flags exist.
-	if (exp_flag("lightfast_inline")) {
-		extern int light_fast_inline_install(void *(*rx_alloc)(size_t));
-		light_fast_mode = light_fast_inline_install(katana_rx_alloc) ? 2 : 0;
-		debugPrintf("light fast: %s (inline)\n", light_fast_mode ? "installed" : "NOT installed");
-	} else if (exp_flag("lightfast")) {
+	// Exact natives of obj_orangelight Step and obj_lightback Step, from the static recompiler kill test
+	// (work/cpu_research/kill_test/REPORT.md): the events with the runner's compare/truth/variable helpers inlined
+	// (light_fast_inline.c). room_haunted_cart2 (129 lights): orangelight 2.13 -> 1.53 ms, lightback 0.51 -> 0.42 ms.
+	// Calls it can't take (~6%) run the original event. exp_lightfast0: the original GML; exp_lightfast: the older
+	// hand native (light_fast.c) instead. Both hook the same two entries, so only one is installed.
+	if (exp_flag("lightfast")) {
 		extern int light_fast_install(void *(*rx_alloc)(size_t));
 		light_fast_mode = light_fast_install(katana_rx_alloc) ? 1 : 0;
 		debugPrintf("light fast: %s (hand)\n", light_fast_mode ? "installed" : "NOT installed");
+	} else if (!exp_flag("lightfast0")) {
+		extern int light_fast_inline_install(void *(*rx_alloc)(size_t));
+		light_fast_mode = light_fast_inline_install(katana_rx_alloc) ? 2 : 0;
+		debugPrintf("light fast: %s (inline)\n", light_fast_mode ? "installed" : "NOT installed");
 	}
 	// Cathedral dust (obj_cathedral_dustspawner): every visible spawner redraws all ~208 particles through
 	// event_user(0), ~7.4 ms per frame: room_cathedral runs at 41 fps with it, 59 without. cathedralDust=0 (default)
