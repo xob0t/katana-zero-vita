@@ -349,7 +349,13 @@ static void *t30_bullettime_check(void *self, void *other, void *result, int arg
 	return r;
 }
 
+// Also carries the reduced-rate effects' animation repeat (fx_rate.c)
+int t30_animation_code_hooked;
 static void *t30_animation_code(void *self, void *other, void *result, int argc, void **args) {
+	extern int fx_anim_repeat;
+	extern void *fx_animation_code(gml_script_fn orig, void *self, void *other, void *result, int argc, void **args);
+	if (fx_anim_repeat > 1)
+		return fx_animation_code(orig_animation_code, self, other, result, argc, args);
 	gml_rvalue *fr;
 	if (!t30_active || !in_player_animation || !(fr = global_var(var_fr)) || fr->kind != 0 || fr->val != 1.0)
 		return orig_animation_code(self, other, result, argc, args);
@@ -774,6 +780,7 @@ void t30_install(gml_func_entry *table) {
 	orig_passive_textbox_user0 = gml_replace(table, "gml_Object_obj_passive_textbox_Other_10", t30_passive_textbox_user0);
 	orig_player_animation = entry_hook(so_symbol(&yoyoloader_mod, "_Z27gml_Script_player_animationP9CInstanceS0_R8YYRValueiPPS1_"), t30_player_animation);
 	orig_animation_code = orig_player_animation ? entry_hook(so_symbol(&yoyoloader_mod, "_Z25gml_Script_animation_codeP9CInstanceS0_R8YYRValueiPPS1_"), t30_animation_code) : NULL;
+	t30_animation_code_hooked = orig_animation_code != NULL;
 	// The script's hook also carries exp_t30trace's slowdown log, so it's installed with exp_t30slowmo0 too
 	var_slowdown = (int *)so_symbol(&yoyoloader_mod, "g_VAR_slowdown");
 	if (!exp_flag("t30slowmo0"))

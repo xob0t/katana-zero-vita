@@ -540,6 +540,8 @@ void katana_prof_report(int frames) {
 			debugPrintf("[BBOX] fast %u fallback %u\n", collision_fast_hits, collision_fallback_hits);
 	}
 	katana_cloth_report(frames);
+	extern void fx_rate_report(int frames);
+	fx_rate_report(frames);
 	static int builtins_hooked = 0;
 	if (!builtins_hooked) {
 		builtins_hooked = 1;
