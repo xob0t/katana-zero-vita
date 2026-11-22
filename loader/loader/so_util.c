@@ -645,6 +645,12 @@ static uintptr_t so_alloc_arena(so_module *so, uintptr_t range, uintptr_t dst, s
 	return (uintptr_t)NULL;
 }
 
+// Executable space within branch range (B_RANGE) of a call site: the patch arena or the code cave after .text.
+// Returns 0 if neither has room in range.
+uintptr_t so_alloc_near(so_module *so, uintptr_t site, size_t sz) {
+	return so_alloc_arena(so, B_RANGE, B_OFFSET(site), sz);
+}
+
 static void trampoline_ldm(so_module *mod, uint32_t *dst) {
 	uint32_t trampoline[1];
 	uint32_t funct[20] = {0xFAFAFAFA};

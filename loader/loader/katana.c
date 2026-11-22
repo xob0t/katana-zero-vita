@@ -1132,6 +1132,12 @@ static void patch_performance() {
 		extern int flash_mask_install(void *(*rx_alloc)(size_t));
 		debugPrintf("flashlight mask culling: %s\n", flash_mask_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
+	// The player's afterimage trails tint themselves from nearby lights: far lights skipped, the tint drawn natively
+	// (exact; trail_lights.c). club_7 while running: 1.9 -> 0.8 ms per frame.
+	if (!exp_flag("traillights0")) {
+		extern int trail_lights_install(void);
+		debugPrintf("trail light culling: %s\n", trail_lights_install() ? "installed" : "NOT installed");
+	}
 	// Club dancers' rim glow (obj_clubber user event 6): each dancer re-tints itself from every nearby club light
 	// with 2-4 outline sprites per light, each drawn twice: ~285 extra draws per frame in the club, 44 fps vs
 	// 52-56 without it. dancerGlow=0 (default) skips the event; the club light show itself stays. dancerGlow=1
