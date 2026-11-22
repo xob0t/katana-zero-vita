@@ -15,10 +15,11 @@
  *
  * With the glow already at 0 and the player farther than the threshold, the event writes 0 back into glow_alpha and
  * draws nothing; without a player it does nothing at all. Those calls return before the event: the check reads the
- * same values the event reads (instance_exists, obj_player.x/y through the runner's variable getter), and keeps a
- * pixel of margin over the threshold so a rounding difference can't flip the comparison. No random numbers, no
- * other state. exp_glowrest0 runs every event; exp_glowverify (debug) runs it after a skip as well and counts the
- * times glow_alpha didn't stay 0. Counters print with the profiler as [GLOWREST].
+ * same values the event reads (instance_exists, obj_player.x/y through the runner's variable getter, looked up once
+ * per obj_draw_static_objects Draw), and keeps a pixel of margin over the threshold so a rounding difference can't
+ * flip the comparison. No random numbers, no other state. exp_glowrest0 runs every event; exp_glowverify (debug)
+ * runs it after a skip as well and counts the times glow_alpha didn't stay 0, and compares the cached player lookup
+ * with a fresh one. Counters print with the profiler as [GLOWREST].
  */
 
 #include <vitasdk.h>
@@ -61,6 +62,53 @@ static int player_exists(void *self, void *other) {
 	return (result.kind & 0xffffff) == 13 || (result.kind & 0xffffff) == 0 ? result.val > 0.5 : -1;
 }
 
+// instance_exists(obj_player) and obj_player.x/y as the event reads them: 1 (exists, *x and *y set), 0 (no player),
+// -1 (anything unusual: run the event). Inside one obj_draw_static_objects Draw the answer is looked up once: the
+// tiles' and doors' user events 13-15 it dispatches only draw and fade glows, so the player can't change meanwhile
+// (exp_glowverify looks it up on every call and counts differences).
+static int cache_valid, cache_exists;
+static double cache_x, cache_y;
+static unsigned cache_checks, cache_mismatches;
+static int player_lookup_fresh(void *self, void *other, double *x, double *y) {
+	int exists = player_exists(self, other);
+	if (exists != 1)
+		return exists;
+	gml_rvalue px = {0, 0, 5}, py = {0, 0, 5};
+	object_var(OBJ_PLAYER, var_x[1], (int)0x80000000, &px, 0, 0);
+	object_var(OBJ_PLAYER, var_y[1], (int)0x80000000, &py, 0, 0);
+	return real_value(&px, x) && real_value(&py, y) ? 1 : -1;
+}
+static int player_lookup(void *self, void *other, double *x, double *y) {
+	if (cache_valid == 1) {
+		if (verify) {
+			double fx = 0, fy = 0;
+			int fresh = player_lookup_fresh(self, other, &fx, &fy);
+			cache_checks++;
+			if (fresh != cache_exists || (fresh == 1 && (fx != cache_x || fy != cache_y)))
+				cache_mismatches++;
+		}
+		*x = cache_x;
+		*y = cache_y;
+		return cache_exists;
+	}
+	int exists = player_lookup_fresh(self, other, x, y);
+	if (cache_valid == 2) { // first call inside the static objects' Draw
+		cache_exists = exists;
+		cache_x = *x;
+		cache_y = *y;
+		cache_valid = 1;
+	}
+	return exists;
+}
+
+static event_func orig_static_draw;
+static void static_draw(void *self, void *other) {
+	int outer = cache_valid;
+	cache_valid = 2;
+	orig_static_draw(self, other);
+	cache_valid = outer;
+}
+
 // 1: the event would change nothing (skip it), 0: run it. threshold < 0: read glow_distance (doors)
 static int glow_at_rest(void *self, void *other, double threshold) {
 	double glow, d;
@@ -69,20 +117,18 @@ static int glow_at_rest(void *self, void *other, double threshold) {
 		return 0;
 	if (threshold < 0 && !real_value(gml_vget(self, var_glow_distance[1]), &threshold))
 		return 0;
-	int exists = player_exists(self, other);
+	double ax, ay, bx, by;
+	int exists = player_lookup(self, other, &ax, &ay);
 	if (exists == 0) {
 		rest_noplayer++;
 		return 1;
 	}
 	if (exists < 0)
 		return 0;
-	gml_rvalue px = {0, 0, 5}, py = {0, 0, 5}, sx = {0, 0, 5}, sy = {0, 0, 5};
-	object_var(OBJ_PLAYER, var_x[1], (int)0x80000000, &px, 0, 0);
-	object_var(OBJ_PLAYER, var_y[1], (int)0x80000000, &py, 0, 0);
+	gml_rvalue sx = {0, 0, 5}, sy = {0, 0, 5};
 	gv_x(self, (int)0x80000000, &sx);
 	gv_y(self, (int)0x80000000, &sy);
-	double ax, ay, bx, by;
-	if (!real_value(&px, &ax) || !real_value(&py, &ay) || !real_value(&sx, &bx) || !real_value(&sy, &by))
+	if (!real_value(&sx, &bx) || !real_value(&sy, &by))
 		return 0;
 	d = sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by));
 	return d > threshold + MARGIN;
@@ -125,7 +171,8 @@ void glow_rest_report(int frames) {
 		debugPrintf("[GLOWREST] tile/door glow events skipped %.1f (no player %.1f) run %.1f per frame\n",
 			(float)rest_skips / frames, (float)rest_noplayer / frames, (float)rest_runs / frames);
 	if (verify)
-		debugPrintf("[GLOWREST] verify: %u skips checked, %u mismatches\n", verify_checks, verify_mismatches);
+		debugPrintf("[GLOWREST] verify: %u skips checked, %u mismatches; player lookups %u checked, %u differed\n",
+			verify_checks, verify_mismatches, cache_checks, cache_mismatches);
 	rest_skips = rest_runs = rest_noplayer = 0;
 }
 
@@ -147,6 +194,8 @@ void glow_rest_install(gml_func_entry *table) {
 	if (ok) {
 		orig_tile_u14 = gml_replace(table, "gml_Object_obj_ceiling_tile_Other_24", tile_u14);
 		orig_door_u14 = gml_replace(table, "gml_Object_obj_door_Other_24", door_u14);
+		if (orig_tile_u14 || orig_door_u14)
+			orig_static_draw = gml_replace(table, "gml_Object_obj_draw_static_objects_Draw_0", static_draw);
 	}
 	debugPrintf("glow events at rest: tiles %s, doors %s\n", orig_tile_u14 ? "skipped" : "NOT hooked",
 		orig_door_u14 ? "skipped" : "NOT hooked");
