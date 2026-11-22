@@ -851,8 +851,12 @@ void katana_texture_selftest(void) {
 static void touch_ui_draw_skip(void *self, void *other) {
 }
 
-// The mobile on-screen buttons (obj_screenBtn) keep their GUI Draw event, which also runs
-// button logic, but their sprites are rendered with colour writes off so they are invisible
+// The mobile on-screen buttons (obj_screenBtn) keep their GUI Draw event, which also runs button logic (layout, hit
+// areas, blink and press state, instance_create, random), but must stay invisible. The event's only drawing is seven
+// draw_sprite_ext calls (no draw state changes), so those calls become NOPs: the call returns nothing and every
+// register it clobbers is reloaded after it. Saves building and submitting the sprites plus two Graphics::Flush per
+// button (screenBtn GUI 0.33 ms per tick with 9 buttons). If a call site doesn't match, the sprites are drawn with
+// colour writes off instead, flushed around each button.
 static event_func orig_screen_btn_gui;
 static void (*graphics_flush)(void);
 
@@ -862,6 +866,30 @@ static void screen_btn_gui_hidden(void *self, void *other) {
 	orig_screen_btn_gui(self, other);
 	graphics_flush();
 	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+}
+
+static int screen_btn_nodraw_install(void) {
+	// ELF addresses in APK 1.10: the event, its draw_sprite_ext call sites and the PLT entry they call
+	enum { EVENT = 0x48742b0, PLT_DRAW_SPRITE_EXT = 0x4ab0e90 };
+	static const uint32_t sites[] = {0x4876f1c, 0x48777f0, 0x4879de4, 0x487a1c8, 0x487a368, 0x487a780, 0x487ac14};
+	static const uint32_t nop = 0xe320f000;
+	uintptr_t entry = so_symbol(&yoyoloader_mod, "_Z32gml_Object_obj_screenBtn_Draw_64P9CInstanceS0_");
+	uintptr_t draw = so_symbol(&yoyoloader_mod, "_Z21YYGML_draw_sprite_extP9CInstanceiffffffif");
+	if (!entry || !draw || ((uint32_t *)entry)[0] != 0xe92d4ff0 || ((uint32_t *)entry)[1] != 0xe28db01c)
+		return 0;
+	for (unsigned i = 0; i < sizeof(sites) / sizeof(*sites); i++) {
+		uintptr_t at = entry + sites[i] - EVENT;
+		uint32_t ins = *(uint32_t *)at;
+		uintptr_t target = at + 8 + (uintptr_t)((int32_t)(ins << 8) >> 6);
+		if ((ins >> 24) != 0xeb || (target != entry + PLT_DRAW_SPRITE_EXT - EVENT && target != draw))
+			return 0;
+	}
+	for (unsigned i = 0; i < sizeof(sites) / sizeof(*sites); i++) {
+		uintptr_t at = entry + sites[i] - EVENT;
+		kuKernelCpuUnrestrictedMemcpy((void *)at, &nop, 4);
+		kuKernelFlushCaches((void *)at, 4);
+	}
+	return 1;
 }
 
 /*
@@ -1039,8 +1067,12 @@ static void patch_performance() {
 	if (!exp_flag("touchui"))
 		gml_replace(table, "gml_Object_obj_onScreenKeyboard_Draw_0", touch_ui_draw_skip);
 	graphics_flush = (void *)so_symbol(&yoyoloader_mod, "_ZN8Graphics5FlushEv");
-	if (!exp_flag("touchui") && graphics_flush && (orig = gml_replace(table, "gml_Object_obj_screenBtn_Draw_64", screen_btn_gui_hidden)))
-		orig_screen_btn_gui = orig;
+	if (!exp_flag("touchui")) {
+		int nodraw = !exp_flag("btnnodraw0") && screen_btn_nodraw_install();
+		if (!nodraw && graphics_flush && (orig = gml_replace(table, "gml_Object_obj_screenBtn_Draw_64", screen_btn_gui_hidden)))
+			orig_screen_btn_gui = orig;
+		debugPrintf("on-screen buttons: %s\n", nodraw ? "sprites not drawn" : "drawn with colour writes off");
+	}
 	katana_menu_install(table);
 
 	katana_display_install();
