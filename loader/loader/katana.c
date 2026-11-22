@@ -1174,6 +1174,8 @@ static void patch_performance() {
 	fps_menu_install(table);
 	extern void fx_rate_install(gml_func_entry *table);
 	fx_rate_install(table); // after t30_install: uses its animation_code hook
+	extern void blood_drops_install(gml_func_entry *table);
+	blood_drops_install(table);
 
 	// Frame skipping (and its guard stubs) only when opted in with frameSkip=1
 	uintptr_t *draw_slot = frame_skip ? so_got_slot(&yoyoloader_mod, "_Z12DoAStep_Drawv") : NULL;

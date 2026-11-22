@@ -270,9 +270,19 @@ static void userprof_hooks(void) {
 
 static void stage_hook(const char *symbol, void **orig, void *wrapper) {
 	// Entry hook first: the deployed runner calls most functions directly (patch_plt_calls.py), past the GOT
-	void *tramp = entry_hook(so_symbol(&yoyoloader_mod, symbol), wrapper);
+	uintptr_t entry = so_symbol(&yoyoloader_mod, symbol);
+	void *tramp = entry_hook(entry, wrapper);
 	if (tramp) {
 		*orig = tramp;
+		return;
+	}
+	// Already entry-hooked by the loader (ldr pc, [pc, #-4]; target): profile in front of that hook
+	uint32_t *w = (uint32_t *)entry;
+	if (entry && !(entry & 3) && w[0] == 0xe51ff004) {
+		*orig = (void *)w[1];
+		uint32_t target = (uint32_t)wrapper;
+		kuKernelCpuUnrestrictedMemcpy(&w[1], &target, 4);
+		kuKernelFlushCaches(w, 8);
 		return;
 	}
 	uintptr_t *slot = so_got_slot(&yoyoloader_mod, symbol);
@@ -542,6 +552,8 @@ void katana_prof_report(int frames) {
 	katana_cloth_report(frames);
 	extern void fx_rate_report(int frames);
 	fx_rate_report(frames);
+	extern void blood_drops_report(int frames);
+	blood_drops_report(frames);
 	static int builtins_hooked = 0;
 	if (!builtins_hooked) {
 		builtins_hooked = 1;
