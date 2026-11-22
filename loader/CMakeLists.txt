@@ -75,6 +75,7 @@ add_executable(YoYoLoader
   loader/katana_t30.c
   loader/fx_rate.c
   loader/glow_rest.c
+  loader/wobble_rest.c
   loader/katana_menu.c
   loader/sound_limit.c
   loader/stdio_mt.c
