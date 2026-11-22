@@ -63,7 +63,6 @@ gml_rvalue *instance_var(void *self, int *var);
 void t30_install(gml_func_entry *table);
 void t30_update(uint32_t work_us);
 void fps_menu_install(gml_func_entry *table);
-void text_smooth_sync(void);
 void fps_mode_sync(void);
 void appsurf_copy_install(void);
 
