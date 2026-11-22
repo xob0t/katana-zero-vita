@@ -73,6 +73,7 @@ add_executable(YoYoLoader
   loader/katana_prof.c
   loader/katana_display.c
   loader/katana_t30.c
+  loader/fx_rate.c
   loader/katana_menu.c
   loader/sound_limit.c
   loader/stdio_mt.c

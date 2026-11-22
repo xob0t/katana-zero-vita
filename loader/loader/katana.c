@@ -1172,6 +1172,8 @@ static void patch_performance() {
 	// Whatever yyl.cfg says: the GRAPHICS menu can turn 30 fps mode on, and it needs the time doubling then
 	t30_install(table);
 	fps_menu_install(table);
+	extern void fx_rate_install(gml_func_entry *table);
+	fx_rate_install(table); // after t30_install: uses its animation_code hook
 
 	// Frame skipping (and its guard stubs) only when opted in with frameSkip=1
 	uintptr_t *draw_slot = frame_skip ? so_got_slot(&yoyoloader_mod, "_Z12DoAStep_Drawv") : NULL;
