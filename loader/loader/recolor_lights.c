@@ -276,6 +276,9 @@ static int body(const Caller *c, void *light, int write, Outcome *o) {
 	REQUIRE(rdist && !refcounted(rdist) && plain(radius));
 	// rdist = point_distance(x, y, other.x, other.y): the legacy dispatcher's result is {value, flags 0, kind 0}
 	RV res = {point_distance_f(field(light, 0xb8), field(light, 0xbc), field(caller, 0xb8), field(caller, 0xbc)), 0, 0};
+	// Non-finite inputs or results go to the original: which NaN payload survives depends on the compiler's operand
+	// order, which needn't match the runner's
+	REQUIRE(isfinite(res.value) && isfinite(radius->value));
 	if (BUG(2))
 		res.value = nextafter(res.value, INFINITY);
 	o->rdist = res;
@@ -286,6 +289,8 @@ static int body(const Caller *c, void *light, int write, Outcome *o) {
 	if (o->inside) {
 		RV *alpha = peek(&tl, ALPHA), *r = peek(&tl, R), *g = peek(&tl, G), *b = peek(&tl, B);
 		REQUIRE(plain(alpha) && plain(r) && plain(g) && plain(b));
+		REQUIRE(isfinite(alpha->value) && isfinite(r->value) && isfinite(g->value) && isfinite(b->value) &&
+			isfinite(field(caller, 0xb0)));
 		REQUIRE(c->sums_ok && c->blackout >= 0);
 		for (int k = 0; k < 4; k++)
 			o->sums[k] = c->sums[k];
@@ -327,6 +332,8 @@ static int body(const Caller *c, void *light, int write, Outcome *o) {
 		o->sum[3] = o->sums[3]->value + weight;
 		if (BUG(3))
 			o->sum[1] = o->sums[1]->value + rr * weight;
+		for (int k = 0; k < 4; k++)
+			REQUIRE(isfinite(o->sums[k]->value) && isfinite(o->sum[k]));
 	}
 	if (!write)
 		return 1;
@@ -345,7 +352,7 @@ static int body(const Caller *c, void *light, int write, Outcome *o) {
 }
 
 // Verify mode: the light the original body is running for, and what the native body computed for it
-static struct { int on; void *light, *caller; Outcome o; RV before[4]; } pending;
+static struct { int on; void *light, *caller; Outcome o; RV *watch[4]; RV before[4]; } pending;
 
 static int same(const RV *a, const RV *b) { return !memcmp(a, b, sizeof(RV)); }
 
@@ -357,6 +364,8 @@ static void verify_finish(void) {
 		RV want = {o->sum[k], pending.before[k].flags, pending.before[k].kind};
 		ok = same(o->sums[k], &want);
 	}
+	for (int k = 0; k < 4 && ok && !o->inside; k++) // predicted outside: the original must leave the sums alone
+		ok = !pending.watch[k] || same(pending.watch[k], &pending.before[k]);
 	if (ok) {
 		recolor_lights_verified++;
 	} else if (recolor_lights_mismatch++ < 8) {
@@ -468,9 +477,11 @@ static int step(int r, void *iterator, void **self, void **other) {
 			pending.light = *self;
 			pending.caller = *other;
 			pending.o = o;
-			if (o.inside)
-				for (int k = 0; k < 4; k++)
-					pending.before[k] = *o.sums[k];
+			for (int k = 0; k < 4; k++) { // the caller's sums (o.sums when inside)
+				pending.watch[k] = c.sums[k];
+				if (c.sums[k])
+					pending.before[k] = *c.sums[k];
+			}
 			return r;
 		}
 		recolor_lights_native++;
