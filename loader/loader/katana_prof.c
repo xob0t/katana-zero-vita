@@ -365,15 +365,16 @@ void katana_prof_report(int frames) {
 		debugPrintf("[FPS30] enemy steps at 30 ticks/s %u, search ticks added %u\n", t30_enemy_steps, t30_search_ticks);
 	{
 		// Half-rate enemies, per frame of this report window
-		extern unsigned enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced, enemyhalf_kills[4];
-		static unsigned last[4];
-		unsigned now[4] = { enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced };
+		extern unsigned enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced, enemyhalf_probes, enemyhalf_kills[4];
+		static unsigned last[5];
+		unsigned now[5] = { enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced, enemyhalf_probes };
 		if (debugMode && frames > 0 && (now[0] != last[0] || now[2] != last[2]))
 			debugPrintf("[FPS30] half-rate enemies per tick: %.1f steps run (%.1f covering 2 ticks), %.1f skipped, %.2f run "
-				"for a hurt overlap | search ticks added %u | deaths: other event %u, overlap run %u, 2-tick %u, 1-tick %u\n",
+				"for a hurt source near (%.2f probed) | search ticks added %u | deaths: other event %u, near run %u, 2-tick %u, "
+				"1-tick %u\n",
 				(float)(now[0] - last[0]) / frames, (float)(now[1] - last[1]) / frames, (float)(now[2] - last[2]) / frames,
-				(float)(now[3] - last[3]) / frames, t30_search_ticks, enemyhalf_kills[0], enemyhalf_kills[1],
-				enemyhalf_kills[2], enemyhalf_kills[3]);
+				(float)(now[3] - last[3]) / frames, (float)(now[4] - last[4]) / frames, t30_search_ticks, enemyhalf_kills[0],
+				enemyhalf_kills[1], enemyhalf_kills[2], enemyhalf_kills[3]);
 		memcpy(last, now, sizeof(last));
 	}
 	extern unsigned t30_textbox_doubled;
@@ -438,6 +439,8 @@ void katana_prof_report(int frames) {
 		extern unsigned dossier_children_dropped, dossier_children_kept;
 		if (dossier_children_dropped || dossier_children_kept)
 			debugPrintf("[DOSSIER] decorative circles dropped %u kept %u (totals)\n", dossier_children_dropped, dossier_children_kept);
+		extern void dossier_report(int frames);
+		dossier_report(frames);
 		extern uint64_t letter_time[6];
 		extern unsigned letter_time_n[6];
 		if (letter_time_n[0]) {
@@ -459,6 +462,46 @@ void katana_prof_report(int frames) {
 		extern unsigned wavy_verify_calls, wavy_verify_mismatch;
 		if (wavy_verify_calls)
 			debugPrintf("[WAVY] verify: %u strips compared, %u mismatches\n", wavy_verify_calls, wavy_verify_mismatch);
+		{
+			static unsigned last_calls, last_native, last_fallback;
+			static uint32_t last_us;
+			extern unsigned light_array_calls, light_array_native, light_array_fallback, light_array_verified,
+				light_array_mismatch, light_array_reject_line[16], light_array_reject_count[16];
+			extern uint32_t light_array_us, light_array_max_us;
+			unsigned calls = light_array_calls - last_calls;
+			if (frames > 0 && calls)
+				debugPrintf("[LIGHTARRAY] %.1f calls/frame %.1f us each (max %u) | lights %.1f native %.1f original per "
+					"frame | verify ok %u mismatch %u\n", (float)calls / frames,
+					(float)(light_array_us - last_us) / calls, (unsigned)light_array_max_us,
+					(float)(light_array_native - last_native) / frames, (float)(light_array_fallback - last_fallback) / frames,
+					light_array_verified, light_array_mismatch);
+			extern unsigned light_array_cross_region, light_array_door_blocked, light_array_door_clear,
+				light_array_rejected_checked, light_array_entries_checked;
+			if (frames > 0 && calls && light_array_verified)
+				debugPrintf("[LIGHTARRAY] verify coverage (totals): %u array entries, %u rejected lights' rdist | other "
+					"region %u: door ray blocked %u, clear %u\n", light_array_entries_checked, light_array_rejected_checked,
+					light_array_cross_region, light_array_door_blocked, light_array_door_clear);
+			for (int k = 0; k < 16 && light_array_reject_line[k] && calls; k++)
+				debugPrintf("[LIGHTARRAY] native body fell back at light_array_native.c:%u x%u\n", light_array_reject_line[k],
+					light_array_reject_count[k]);
+			last_calls = light_array_calls;
+			last_native = light_array_native;
+			last_fallback = light_array_fallback;
+			last_us = light_array_us;
+			light_array_max_us = 0;
+		}
+		extern unsigned shadow_native_fast, shadow_native_slow, shadow_native_rows;
+		if (shadow_native_fast || shadow_native_slow)
+			debugPrintf("[SHADOW] calls %u/%u (native/original), rows %u (totals)\n", shadow_native_fast, shadow_native_slow,
+				shadow_native_rows);
+		extern unsigned shadow_reject[9], shadow_reject_kind;
+		for (int i = 0; i < 9; i++)
+			if (shadow_reject[i])
+				debugPrintf("[SHADOW] reject %d x%u (kind %u)\n", i, shadow_reject[i], shadow_reject_kind);
+		extern unsigned shadow_verify_calls, shadow_verify_mismatch, shadow_verify_overflow, shadow_verify_results;
+		if (shadow_verify_calls || shadow_verify_overflow)
+			debugPrintf("[SHADOW] verify: %u rows and %u result slots compared, %u mismatches, %u calls over the record "
+				"(not compared)\n", shadow_verify_calls, shadow_verify_results, shadow_verify_mismatch, shadow_verify_overflow);
 
 		extern unsigned dustspawner_loop_native_calls, dustspawner_loop_native_hits, dustspawner_loop_native_loops;
 		extern unsigned dustspawner_loop_native_passes, dustspawner_loop_native_draws, dustspawner_loop_native_paused;
@@ -540,6 +583,88 @@ void katana_prof_report(int frames) {
 		last_fallback = trail_lights_fallback;
 	}
 	{
+		static unsigned last_kept, last_skipped;
+		extern unsigned bike_draw_kept, bike_draw_skipped, bike_draw_verified, bike_draw_mismatch, bike_draw_odd;
+		if (frames > 0 && (bike_draw_kept != last_kept || bike_draw_skipped != last_skipped))
+			debugPrintf("[BIKEDRAW] particle/trail loop instances per frame: %.1f run, %.1f stepped over | other kinds %u "
+				"| verify ok %u mismatch %u\n", (float)(bike_draw_kept - last_kept) / frames,
+				(float)(bike_draw_skipped - last_skipped) / frames, bike_draw_odd, bike_draw_verified, bike_draw_mismatch);
+		last_kept = bike_draw_kept;
+		last_skipped = bike_draw_skipped;
+		static unsigned last_native, last_layer, last_fallback;
+		extern unsigned bike_sort_native, bike_sort_layer, bike_sort_fallback, bike_sort_verified, bike_sort_mismatch;
+		if (frames > 0 && (bike_sort_native != last_native || bike_sort_fallback != last_fallback || bike_sort_verified))
+			debugPrintf("[BIKEDRAW] actor sort per frame: %.1f inserted natively, %.1f other layers, %.1f original body | "
+				"verify ok %u mismatch %u\n", (float)(bike_sort_native - last_native) / frames,
+				(float)(bike_sort_layer - last_layer) / frames, (float)(bike_sort_fallback - last_fallback) / frames,
+				bike_sort_verified, bike_sort_mismatch);
+		extern unsigned bike_sort_reject_line[8], bike_sort_reject_count[8], bike_sort_reject_kind;
+		for (int k = 0; k < 8 && bike_sort_reject_line[k] && frames > 0 &&
+				(bike_sort_native != last_native || bike_sort_fallback != last_fallback); k++)
+			debugPrintf("[BIKEDRAW] sort stopped at bike_draw.c:%u x%u (last value %u)\n", bike_sort_reject_line[k],
+				bike_sort_reject_count[k], bike_sort_reject_kind);
+		last_native = bike_sort_native;
+		last_layer = bike_sort_layer;
+		last_fallback = bike_sort_fallback;
+	}
+	{
+		// draw_sprite_recolored's light loop (recolor_lights.c): with loops entered, lights run natively (of them in
+		// batches past the first with) and by the original body; exp_recolorlightsab: off in every other window
+		extern unsigned recolor_lights_loops, recolor_lights_native, recolor_lights_fallback, recolor_lights_inside;
+		extern unsigned recolor_lights_batched, recolor_lights_verified, recolor_lights_ids_verified, recolor_lights_mismatch;
+		extern unsigned recolor_lights_reject_line[16], recolor_lights_reject_count[16];
+		extern int recolor_lights_ab, recolor_lights_ab_off;
+		static unsigned last_loops, last_native, last_fallback, last_batched, last_inside;
+		if (frames > 0 && (recolor_lights_loops != last_loops || recolor_lights_mismatch)) {
+			debugPrintf("[RECOLORLIGHTS] per frame: %.1f loops, lights %.1f native (%.1f batched, %.1f in radius), %.1f original | "
+				"verify ok %u ids %u mismatch %u%s\n",
+				(float)(recolor_lights_loops - last_loops) / frames, (float)(recolor_lights_native - last_native) / frames,
+				(float)(recolor_lights_batched - last_batched) / frames, (float)(recolor_lights_inside - last_inside) / frames,
+				(float)(recolor_lights_fallback - last_fallback) / frames,
+				recolor_lights_verified, recolor_lights_ids_verified, recolor_lights_mismatch,
+				recolor_lights_ab ? (recolor_lights_ab_off ? " | A/B: off" : " | A/B: on") : "");
+			for (int k = 0; k < 16 && recolor_lights_reject_line[k]; k++)
+				debugPrintf("[RECOLORLIGHTS] fell back at recolor_lights.c:%u x%u\n", recolor_lights_reject_line[k],
+					recolor_lights_reject_count[k]);
+		}
+		// Fog rooms: roll dust clouds drawn without lighting (fog_trail.c) or lit (fogTrailLights=1); with
+		// exp_fogtrailsample, the clouds' average lit layer (colour weighted by light_alpha, light_alpha / raised alpha)
+		extern unsigned fog_trail_native, fog_trail_original, fog_trail_samples;
+		extern double fog_trail_sum[5];
+		static unsigned last_fog_native, last_fog_original;
+		if (frames > 0 && (fog_trail_native != last_fog_native || fog_trail_original != last_fog_original)) {
+			char sampled[160] = "";
+			if (fog_trail_samples && fog_trail_sum[3] > 0)
+				snprintf(sampled, sizeof(sampled), " | lit layer: rgb %.0f %.0f %.0f, light_alpha %.3f, light_alpha / raised alpha %.3f (%u samples)",
+					fog_trail_sum[0] / fog_trail_sum[3], fog_trail_sum[1] / fog_trail_sum[3], fog_trail_sum[2] / fog_trail_sum[3],
+					fog_trail_sum[3] / fog_trail_samples, fog_trail_sum[4] / fog_trail_samples, fog_trail_samples);
+			debugPrintf("[FOGTRAIL] dust cloud draws per frame: %.1f unlit, %.1f lit%s\n", (float)(fog_trail_native -
+				last_fog_native) / frames, (float)(fog_trail_original - last_fog_original) / frames, sampled);
+		}
+		last_fog_native = fog_trail_native;
+		last_fog_original = fog_trail_original;
+		extern int fog_trail_ab, fog_trail_ab_off;
+		static unsigned fog_ab_windows;
+		if (fog_trail_ab && ++fog_ab_windows % 2 == 0)
+			fog_trail_ab_off = !fog_trail_ab_off;
+		// exp_recolorlightsprof: draw_sprite_recolored's own time (all calls, the cheap cached ones too)
+		extern uint32_t recolor_lights_prof_us, recolor_lights_prof_calls;
+		if (frames > 0 && recolor_lights_prof_calls) {
+			debugPrintf("[RECOLORPROF] draw_sprite_recolored %.3f ms/frame in %.1f calls (%.1f us each)%s\n",
+				recolor_lights_prof_us / 1000.0f / frames, (float)recolor_lights_prof_calls / frames,
+				(float)recolor_lights_prof_us / recolor_lights_prof_calls,
+				recolor_lights_ab ? (recolor_lights_ab_off ? " | A/B: off" : " | A/B: on") : "");
+			recolor_lights_prof_us = recolor_lights_prof_calls = 0;
+		}
+		last_loops = recolor_lights_loops;
+		last_native = recolor_lights_native;
+		last_fallback = recolor_lights_fallback;
+		last_batched = recolor_lights_batched;
+		last_inside = recolor_lights_inside;
+		if (recolor_lights_ab)
+			recolor_lights_ab_off = !recolor_lights_ab_off;
+	}
+	{
 		extern unsigned input_native_calls, input_native_hits, input_native_fallbacks, input_native_rejection_used;
 		extern struct { uint32_t line, count; } input_native_rejections[512];
 		if (input_native_calls)
@@ -589,6 +714,17 @@ void katana_prof_report(int frames) {
 	wobble_rest_report(frames);
 	extern void blood_drops_report(int frames);
 	blood_drops_report(frames);
+	extern void visibility_native_report(int frames);
+	visibility_native_report(frames);
+	extern void lightback_native_report(int frames), lightback_native_late(void);
+	lightback_native_late();
+	lightback_native_report(frames);
+	extern void held_native_report(int frames);
+	held_native_report(frames);
+	extern void smokedraw_native_report(int frames);
+	smokedraw_native_report(frames);
+	extern void fog_skip_report(int frames);
+	fog_skip_report(frames);
 	static int builtins_hooked = 0;
 	if (!builtins_hooked) {
 		builtins_hooked = 1;

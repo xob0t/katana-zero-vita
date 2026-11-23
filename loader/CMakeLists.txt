@@ -44,9 +44,11 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DSTANDALONE_MODE")
 endif(STANDALONE)
 
 # Native replacements must round exactly like the runner (no FMA contraction)
-set_source_files_properties(loader/collision_native.c loader/rope_fast.c loader/flash_mask.c loader/virtual_capture.c loader/input_native.c loader/laser_native.c loader/letter_native.c loader/minecart_native.c loader/clubber_native.c loader/dossier_native.c loader/wavy_native.c loader/trail_lights.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+set_source_files_properties(loader/collision_native.c loader/rope_fast.c loader/flash_mask.c loader/virtual_capture.c loader/input_native.c loader/laser_native.c loader/letter_native.c loader/minecart_native.c loader/clubber_native.c loader/dossier_native.c loader/wavy_native.c loader/trail_lights.c loader/bike_draw.c loader/shadow_native.c loader/light_array_native.c loader/visibility_native.c loader/lightback_native.c loader/held_native.c loader/recolor_lights.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 # Verified against the original ARM code with exactly these flags
 set_source_files_properties(loader/dustspawner_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-marm;-O2")
+# Unicorn-verified with exactly these flags (work/smokedraw/smokedraw_verify.py)
+set_source_files_properties(loader/smokedraw_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-O2")
 # Kill-test natives (exp_lightfast, exp_lightfast_inline): Unicorn-verified with exactly these flags. The sibling
 # call keeps the fallback into the original event at the caller's stack depth, as in the verified build.
 set_source_files_properties(loader/light_fast.c loader/light_fast_inline.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-O2;-foptimize-sibling-calls")
@@ -78,6 +80,7 @@ add_executable(YoYoLoader
   loader/glow_rest.c
   loader/wobble_rest.c
   loader/blood_drops.c
+  loader/fog_skip.c
   loader/katana_menu.c
   loader/sound_limit.c
   loader/stdio_mt.c
@@ -90,16 +93,25 @@ add_executable(YoYoLoader
   loader/flash_mask.c
   loader/virtual_capture.c
   loader/input_native.c
+  loader/held_native.c
   loader/laser_native.c
   loader/letter_native.c
   loader/clubber_native.c
   loader/minecart_native.c
+  loader/visibility_native.c
+  loader/lightback_native.c
   loader/dustspawner_native.c
   loader/dossier_native.c
   loader/wavy_native.c
   loader/light_fast.c
   loader/light_fast_inline.c
   loader/trail_lights.c
+  loader/bike_draw.c
+  loader/shadow_native.c
+  loader/light_array_native.c
+  loader/smokedraw_native.c
+  loader/recolor_lights.c
+  loader/fog_trail.c
   loader/evprof.c
   loader/hang_watch.c
   loader/gcalloc.c
