@@ -1,10 +1,9 @@
 #ifndef __SO_UTIL_H__
 #define __SO_UTIL_H__
 
-#include "elf.h"
+#include "so_elf.h"
 
 #define ALIGN_MEM(x, align) (((x) + ((align) - 1)) & ~((align) - 1))
-#define MAX_DATA_SEG 4
 
 typedef struct {
 	uintptr_t addr;
@@ -21,10 +20,6 @@ typedef struct so_module {
   size_t patch_size, cave_size, text_size, data_size[MAX_DATA_SEG];
   int n_data;
 
-  Elf32_Ehdr *ehdr;
-  Elf32_Phdr *phdr;
-  Elf32_Shdr *shdr;
-
   Elf32_Dyn *dynamic;
   Elf32_Sym *dynsym;
   Elf32_Rel *reldyn;
@@ -33,6 +28,7 @@ typedef struct so_module {
   int (** init_array)(void);
   uint32_t *hash;
   uint32_t *gnu_hash; // .gnu.hash (Android's libyoyo.so has no SysV .hash)
+  size_t hash_words, gnu_hash_words;
 
   int num_dynamic;
   int num_dynsym;
@@ -41,7 +37,6 @@ typedef struct so_module {
   int num_init_array;
 
   char *soname;
-  char *shstr;
   char *dynstr;
 } so_module;
 
