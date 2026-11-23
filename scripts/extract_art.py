@@ -15,20 +15,120 @@ import zipfile
 
 from PIL import Image
 
+FLAT_GAME = "assets/game.droid"
+NESTED_GAME = "assets/assets/game.droid"
+MAX_TEXTURE_SIZE = 4096  # vitaGL's GXM_TEX_MAX_SIZE
+
+
+def game_data_member(names):
+    """Pick the APK data member and therefore the layout of the rest of its assets."""
+    return next((name for name in (NESTED_GAME, FLAT_GAME) if name in names), None)
+
 
 def load_game_data(path):
     """Returns the bytes of game.droid from an APK, XAPK (APK inside a ZIP) or a plain data file."""
     if not zipfile.is_zipfile(path):
-        return open(path, "rb").read()
-    archives = [zipfile.ZipFile(path)]
-    while archives:
-        z = archives.pop()
-        for name in z.namelist():
-            if name.endswith("game.droid") or name.endswith("data.win"):
+        with open(path, "rb") as data:
+            return data.read()
+
+    def find(z):
+        names = z.namelist()
+        member = game_data_member(names)
+        if member:
+            if names.count(member) != 1:
+                raise ValueError(f"APK has duplicate entries for {member}")
+            return z.read(member)
+        if "AndroidManifest.xml" in names:
+            return None
+        for name in names:  # standalone data files inside a ZIP, or APKs inside an XAPK
+            if name.rsplit("/", 1)[-1] in ("game.droid", "data.win"):
                 return z.read(name)
+        for name in names:
             if name.endswith(".apk"):
-                archives.append(zipfile.ZipFile(io.BytesIO(z.read(name))))
+                with zipfile.ZipFile(io.BytesIO(z.read(name))) as inner:
+                    data = find(inner)
+                if data is not None:
+                    return data
+        return None
+
+    with zipfile.ZipFile(path) as z:
+        data = find(z)
+    if data is not None:
+        return data
     raise ValueError(f"no game.droid in {path}")
+
+
+def check_texture_dimensions(width, height):
+    if not (1 <= width <= MAX_TEXTURE_SIZE and 1 <= height <= MAX_TEXTURE_SIZE):
+        raise ValueError(f"invalid texture dimensions {width}x{height} (Vita limit {MAX_TEXTURE_SIZE})")
+
+
+# Total bytes consumed by each opcode. RUN_16 also reads its second byte to get the pixel count.
+QOI_OP_SIZE = (1,) * 0x60 + (2,) * 0x20 + (1,) * 0x40 + (2,) * 0x20 + (3,) * 0x10 + tuple(
+    1 + flags.bit_count() for flags in range(16)
+)
+
+
+def validate_gm_qoi(blob):
+    """Validate GameMaker QOI and return its dimensions without allocating decoded pixels."""
+    if len(blob) < 12 or blob[:4] != b"fioq":
+        raise ValueError("invalid GameMaker QOI header (expected fioq)")
+    width, height, length = struct.unpack_from("<HHI", blob, 4)
+    check_texture_dimensions(width, height)
+    end = len(blob)
+    if length != end - 12:
+        raise ValueError("QOI header length does not match its payload")
+
+    # Every bit pattern is a valid opcode, including every possible index and channel delta.
+    # Only byte consumption and run lengths can make the stream invalid.
+    expected = width * height
+    pixels, pos = 0, 12
+    while pos < end:
+        op = blob[pos]
+        if op & 0xc0 != 0x40:
+            pixels += 1
+        elif op & 0x20:
+            if pos + 1 == end:
+                raise ValueError("truncated QOI run opcode")
+            pixels += (((op & 0x1f) << 8) | blob[pos + 1]) + 33
+        else:
+            pixels += (op & 0x1f) + 1
+        pos += QOI_OP_SIZE[op]
+    if pos > end:
+        raise ValueError("truncated QOI opcode")
+    if pixels != expected:
+        raise ValueError(f"QOI stream decodes to {pixels} pixels, expected {expected}")
+    return width, height
+
+
+def unpack_gm_texture(blob):
+    """Return a validated QOI stream and its dimensions from a 2zoq or plain fioq page."""
+    if blob[:4] != b"2zoq":
+        return blob, validate_gm_qoi(blob)
+    if len(blob) < 12:
+        raise ValueError("truncated 2zoq header")
+    width, height, size = struct.unpack_from("<HHI", blob, 4)
+    check_texture_dimensions(width, height)
+    if not 12 < size <= 12 + 5 * width * height:
+        raise ValueError(f"invalid 2zoq uncompressed size {size}")
+    payload = blob[12:]
+    if payload.startswith(b"LZ4H"):
+        import lz4.block
+
+        if len(payload) < 8 or struct.unpack_from("<I", payload, 4)[0] != len(payload) - 8:
+            raise ValueError("invalid 2zoq LZ4 block length")
+        qoi = lz4.block.decompress(payload[8:], uncompressed_size=size)
+    else:
+        dec = bz2.BZ2Decompressor()
+        qoi = dec.decompress(payload, max_length=size + 1)
+        if not dec.eof or dec.unused_data:
+            raise ValueError("invalid or truncated 2zoq bzip2 stream")
+    if len(qoi) != size:
+        raise ValueError("2zoq uncompressed size does not match its QOI payload")
+    dimensions = validate_gm_qoi(qoi)
+    if dimensions != (width, height):
+        raise ValueError("2zoq dimensions do not match its QOI payload")
+    return qoi, dimensions
 
 
 def sx(value, bits):
@@ -36,12 +136,10 @@ def sx(value, bits):
     return value - (1 << bits) if value & (1 << (bits - 1)) else value
 
 
-def decode_gm_qoi(blob):
+def decode_gm_qoi(blob, dimensions=None):
     """Decodes GameMaker's QOI variant ("fioq": the pre-release QOI opcode set with signed diffs, BGRA order)."""
-    if blob[:4] != b"fioq":
-        raise ValueError("not a GameMaker QOI image")
-    width, height, length = struct.unpack_from("<HHI", blob, 4)
-    data = blob[12:12 + length]
+    width, height = validate_gm_qoi(blob) if dimensions is None else dimensions
+    data = blob[12:]
     out = bytearray(width * height * 4)
     index = bytearray(64 * 4)
     r = g = b = 0
@@ -50,7 +148,7 @@ def decode_gm_qoi(blob):
     for px in range(0, len(out), 4):
         if run > 0:
             run -= 1
-        elif pos < len(data):
+        else:
             b1 = data[pos]
             pos += 1
             if b1 & 0xc0 == 0x00:  # INDEX
@@ -126,16 +224,12 @@ class GameData:
             entry = self.u32(base + 4 + 4 * n)
             length, ptr = self.u32(entry + 8), self.u32(entry + 24)
             blob = self.d[ptr:ptr + length]
-            if blob[:4] == b"2zoq":
-                payload = blob[12:]
-                if payload[:4] == b"LZ4H":
-                    import lz4.block
-                    qoi = lz4.block.decompress(payload[8:8 + self.u32(ptr + 16)], uncompressed_size=struct.unpack_from("<I", blob, 8)[0])
-                else:
-                    qoi = bz2.decompress(payload)
-                img = decode_gm_qoi(qoi)
-            elif blob[:4] == b"fioq":
-                img = decode_gm_qoi(blob)
+            if blob[:4] in (b"2zoq", b"fioq"):
+                try:
+                    qoi, dimensions = unpack_gm_texture(blob)
+                except (ValueError, OSError, RuntimeError) as exc:
+                    raise ValueError(f"texture page {n}: {exc}") from exc
+                img = decode_gm_qoi(qoi, dimensions)
             else:
                 img = Image.open(io.BytesIO(blob)).convert("RGBA")
             self.pages[n] = img
