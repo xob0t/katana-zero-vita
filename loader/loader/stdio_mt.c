@@ -197,5 +197,8 @@ int mt_fclose(FILE *f) {
 		mt_forget(f);
 	}
 	pthread_mutex_unlock(&mt_lock);
-	return fclose(f);
+	int ret = fclose(f);
+	extern void hang_io_file_close(void *file);
+	hang_io_file_close(f); // after the close: save I/O ends when the file is flushed and closed
+	return ret;
 }

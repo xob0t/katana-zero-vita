@@ -208,7 +208,10 @@ void *netflix_call(void *ext) {
 	} else if (!strcmp(m, "NfxaCloudWrite")) {
 		if (!arg0 || !arg1)
 			return nfx_return_double(0.0);
+		extern void hang_io_begin(void), hang_io_end(void);
+		hang_io_begin(); // save I/O: no freeze-locator dump meanwhile
 		int err = nfx_write_slot(arg0, arg1);
+		hang_io_end();
 		debugPrintf("Nfxa: write slot %s (%u bytes) = %d\n", arg0, (unsigned)strlen(arg1), err); // the Vita printf has no %zu
 		nfx_send_event("Nfx_cloudWrite", NULL, NULL, "error", (double)err);
 		return nfx_return_double(1.0);
