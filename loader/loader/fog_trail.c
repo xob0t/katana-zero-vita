@@ -116,7 +116,7 @@ static void set(void *self, int n, RV v) { variable_set(self, VAR_ID(n), (int)0x
 static RV real(double v) { RV r = {v, 0, 0}; return r; }
 
 // The event without its lighting, reading and writing in the original's order with the runner's own calls
-static void unlit(void *self) {
+static void unlit(void *self, int fog) {
 	RV *g_blackout = vget(*global_obj, BLACKOUT); // read at the event's start (a reference, tested later)
 	if (!bool_value(vget(self, COLOR_ME))) {
 		draw_self(self);
@@ -140,9 +140,11 @@ static void unlit(void *self) {
 	RV a = get(self, IMAGE_ALPHA);
 	a.value = a.value * 1.5; // operator*= of two reals (GV_ImageAlpha gives a real)
 	set(self, IMAGE_ALPHA, a);
-	// The plain lit layer: the instance's sprite, frame, position, scale and angle, a fixed colour
+	// The plain lit layer: the instance's sprite, frame, position, scale and angle, a fixed colour. Only in the fog
+	// rooms: elsewhere the clouds normally get no light layer at all (no light close enough: draw_sprite_recolored
+	// returns before drawing), so the unlit cloud is drawn without one.
 	RV frame = get(self, IMAGE_INDEX);
-	if ((frame.kind & 0xffffff) == 0)
+	if (fog && (frame.kind & 0xffffff) == 0)
 		draw_sprite_ext(self, (int)word(self, 0x88), (float)frame.value, field(self, 0xb8), field(self, 0xbc),
 			field(self, 0xa4), field(self, 0xa8), field(self, 0xac), FOG_TRAIL_COLOUR, FOG_TRAIL_ALPHA * field(self, 0xb0));
 	a = get(self, IMAGE_ALPHA);
@@ -175,8 +177,9 @@ static void fog_trail_event(void *self, void *other) {
 	}
 	if (dustcloud >= 0 && (int)word(self, 0x84) == dustcloud && word(self, 0x50) == 1) {
 		// Unlit in the fog rooms (fogTrailLights=0, default) and, with trailLights=0, in every room
-		if ((in_fog_room(self) ? !fog_trail_lights : !trail_lights) && !fog_trail_ab_off) {
-			unlit(self);
+		int fog = in_fog_room(self);
+		if ((fog ? !fog_trail_lights : !trail_lights) && !fog_trail_ab_off) {
+			unlit(self, fog);
 			fog_trail_native++;
 			return;
 		}
