@@ -39,6 +39,9 @@ back the original.
 - **No coloured light tint on clotheslines.** It cost about 7 fps near them. `ropeLights=1`.
 - **No rim glow on club dancers.** It's about 285 extra draws per frame, 44 fps with it and 52-56 without. The light
   show stays. `dancerGlow=1`.
+- **No lighting on distant rockets in the helicopter fight.** The rockets rising in the background are drawn in
+  their plain colour, without light tint or rim shading. With 15-25 of them on screen the shading cost 15-35 ms per
+  frame. `farRocketLights=1`.
 - **No dust in the cathedral's window light.** 41 fps with it, 59 without. `cathedralDust=1`.
 - **Lower resolution in GPU-heavy rooms.** A room where the GPU can't keep up at 960x540, so frames miss the screen
   refresh while the CPU has time to spare, drops to 640x360 until the next room. `dynamicRes=0`.

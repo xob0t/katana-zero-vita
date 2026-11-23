@@ -51,6 +51,9 @@
  * isn't a plain real, the original body runs from then on (until the next frame). The list ends up the same, so the
  * draw order is the same.
  *
+ * The particle loop's list is also cut before the loop starts (part_new_with): the particles' parents are read once
+ * per Draw event and reused while the iterator list holds the same instances (see "Particle loop" below).
+ *
  * exp_bikedraw0 keeps the original. exp_bikedrawverify never steps over anything; it runs the runner's YYCompareVal
  * for every instance the wrapper would have stepped over and counts any that compared equal, and lets the original
  * sort body run, checking that it inserted each actor where the native search said ([BIKEDRAW] report; mismatches
@@ -60,6 +63,7 @@
 #include <string.h>
 #include <math.h>
 #include <kubridge.h>
+#include <psp2/kernel/processmgr.h>
 
 #include "main.h"
 #include "so_util.h"
@@ -105,31 +109,39 @@ static const RV *other_id(void *other) {
 	return &id_value;
 }
 
+// 1: a parent value certainly differs from the id; 0: it may be equal; -1: kinds this doesn't decide (both 0 and -1
+// leave the instance to the original body, which makes the real comparison)
+static int differs(const RV *parent, const RV *id) {
+	uint32_t pk = KIND(parent), ik = KIND(id);
+	if (pk == 0 && ik == 0) // instance ids are whole numbers: half a unit apart is far beyond the comparison's epsilon
+		return *epsilon >= 0 && *epsilon < 0.5 && fabs(parent->value - id->value) > 0.5; // only while eps < 0.5
+	if (pk == 15 && ik == 15) {
+		uint32_t pw[2], iw[2];
+		memcpy(pw, &parent->value, 8);
+		memcpy(iw, &id->value, 8);
+		return pw[1] == iw[1] && pw[0] != iw[0]; // same reference type, different index
+	}
+	if (pk == 0 && ik == 15)
+		return parent->value < 0; // noone / -1 against an instance reference (whose index is never negative)
+	return -1;
+}
+
+static RV *parent_of(void *self) {
+	return self && var_parent[1] >= 0 ? (*(var_fn *)(*(uint8_t **)self + 8))(self, var_parent[1]) : NULL;
+}
+
 // 1 if parent == other.id is certainly false for this instance
 static int certainly_other(void *self, void *other) {
 	if (!self || !other || var_parent[1] < 0 || var_id[1] < 0)
 		return 0;
-	RV *parent = (*(var_fn *)(*(uint8_t **)self + 8))(self, var_parent[1]);
+	RV *parent = parent_of(self);
 	const RV *id = other_id(other);
 	if (!parent)
 		return 0;
-	uint32_t pk = KIND(parent), ik = KIND(id);
-	int differs;
-	if (pk == 0 && ik == 0) {
-		// instance ids are whole numbers: half a unit apart is far beyond the comparison's epsilon
-		differs = *epsilon >= 0 && *epsilon < 0.5 && fabs(parent->value - id->value) > 0.5; // only while eps < 0.5
-	} else if (pk == 15 && ik == 15) {
-		uint32_t pw[2], iw[2];
-		memcpy(pw, &parent->value, 8);
-		memcpy(iw, &id->value, 8);
-		differs = pw[1] == iw[1] && pw[0] != iw[0]; // same reference type, different index
-	} else if (pk == 0 && ik == 15) {
-		differs = parent->value < 0; // noone / -1 against an instance reference (whose index is never negative)
-	} else {
+	int d = differs(parent, id);
+	if (d < 0)
 		bike_draw_odd++;
-		return 0;
-	}
-	if (!differs)
+	if (d <= 0)
 		return 0;
 	if (verify) {
 		if (compare(parent, id, *epsilon, 0) == 0)
@@ -141,13 +153,19 @@ static int certainly_other(void *self, void *other) {
 	return 1;
 }
 
+unsigned bike_draw_skip_us; // time in the wrappers' stepping (heavy profiling only)
+extern int heavy_profiling;
+
 static int skip(int r, void *iterator, void **self, void **other) {
+	uint32_t t0 = heavy_profiling ? sceKernelGetProcessTimeLow() : 0;
 	while (r > 0 && certainly_other(*self, *other)) {
 		bike_draw_skipped++;
 		r = next_with(iterator, self, other);
 	}
 	if (r > 0)
 		bike_draw_kept++;
+	if (heavy_profiling)
+		bike_draw_skip_us += sceKernelGetProcessTimeLow() - t0;
 	return r;
 }
 
@@ -158,6 +176,124 @@ static int ABI bike_new_with(void *iterator, void **self, void **other, const vo
 
 static int ABI bike_next_with(void *iterator, void **self, void **other) {
 	return skip(next_with(iterator, self, other), iterator, self, other);
+}
+
+// ---- Particle loop: the parents of the particles, read once per Draw event ----
+//
+// The particle loop runs once for every actor that owns particles (50 mortars in a volley) over every particle
+// (~250): its iterator list is the same each time. The first loop of a Draw event reads each particle's parent once;
+// later loops whose iterator list is the same instances in the same order reuse those values, and the list is cut
+// down to the particles whose parent may equal other.id before the loop starts (same order). Nothing in the Draw event
+// writes a particle's parent (the loop bodies are particles' and actors' user events 13/14/15/6/8, none of which
+// touches parent), so each comparison the original would make at that particle's turn has the same result.
+// exp_bikedrawverify checks exactly that: the lists aren't cut, and at each particle's turn the cached decision is
+// compared with the live parent.
+
+typedef struct { void *self, *other; void **list, **cursor; } with_iter; // SWithIterator; Next walks down to list[0] = NULL
+
+#define PCACHE_MAX 2048
+static void *pc_inst[PCACHE_MAX]; // the loop's instances in visiting order
+static RV pc_parent[PCACHE_MAX];  // their parent, when first read in this Draw event (kind 0xdead: no variable)
+static int pc_n;                  // 0: nothing read yet in this Draw event
+static void *pc_keep[PCACHE_MAX];
+unsigned bike_pcache_hits, bike_pcache_reads, bike_pcache_odd, bike_pcache_verified, bike_pcache_mismatch,
+	bike_pcache_conservative;
+
+// Verify mode: the cached decision per visiting position for the running loop
+static void *pv_iter;
+static int8_t pv_dec[PCACHE_MAX];
+static int pv_pos, pv_n;
+
+static void pv_check(void *iterator, void *self, void *other) {
+	if (iterator != pv_iter || pv_pos >= pv_n || !self || !other)
+		return;
+	int dec = pv_dec[pv_pos++];
+	RV *parent = parent_of(self);
+	int live = parent ? differs(parent, other_id(other)) : -1;
+	if (dec == 1 && live != 1)
+		bike_pcache_mismatch++; // would have stepped over a particle the original might draw
+	else if (dec != 1 && live == 1)
+		bike_pcache_conservative++; // kept one the original skips (exact, only slower)
+	else
+		bike_pcache_verified++;
+}
+
+// 1: the iterator list was cut (r set), 0: leave this loop to the stepping wrappers
+static int part_cut(void *iterator, void **self, void **other, int *r) {
+	with_iter *w = iterator;
+	if (*r <= 0 || !*self || !*other || var_parent[1] < 0 || var_id[1] < 0 || !w->list || w->cursor < w->list + 1 ||
+			w->list[0])
+		return 0;
+	int n = w->cursor - w->list; // *self, then cursor[-1] ... list[1]
+	if (n > PCACHE_MAX)
+		return 0;
+	int same = pc_n == n && pc_inst[0] == *self;
+	for (int i = 1; same && i < n; i++)
+		same = pc_inst[i] == w->cursor[-i];
+	if (!same) {
+		for (int i = 0; i < n; i++) {
+			void *inst = i ? w->cursor[-i] : *self;
+			RV *p = parent_of(inst);
+			pc_inst[i] = inst;
+			if (p)
+				pc_parent[i] = *p; // a real or a reference is copied as is; any other kind is never decided
+			else
+				pc_parent[i] = (RV){0, 0, 0xdead};
+		}
+		pc_n = n;
+		bike_pcache_reads += n;
+	} else
+		bike_pcache_hits += n;
+	const RV *id = other_id(*other);
+	int m = 0;
+	for (int i = 0; i < n; i++) {
+		int d = KIND(&pc_parent[i]) == 0xdead ? -1 : differs(&pc_parent[i], id);
+		if (d < 0)
+			bike_pcache_odd++;
+		if (verify)
+			pv_dec[i] = (int8_t)d;
+		else if (d != 1)
+			pc_keep[m++] = pc_inst[i];
+	}
+	if (verify) {
+		pv_iter = iterator;
+		pv_pos = 0;
+		pv_n = n;
+		return 0;
+	}
+	bike_draw_kept += m ? 1 : 0; // the others are counted as their turn comes
+	bike_draw_skipped += n - m;
+	if (m) {
+		*self = pc_keep[0];
+		for (int j = 1; j < m; j++)
+			w->list[m - j] = pc_keep[j];
+		w->cursor = w->list + m;
+	}
+	*r = m;
+	return 1;
+}
+
+static int ABI part_new_with(void *iterator, void **self, void **other, const void *target) {
+	id_other = NULL;
+	uint32_t t0 = heavy_profiling ? sceKernelGetProcessTimeLow() : 0;
+	int r = new_with(iterator, self, other, target);
+	int cut = part_cut(iterator, self, other, &r);
+	if (heavy_profiling)
+		bike_draw_skip_us += sceKernelGetProcessTimeLow() - t0;
+	if (cut)
+		return r;
+	if (verify && r > 0)
+		pv_check(iterator, *self, *other);
+	return skip(r, iterator, self, other);
+}
+
+static int ABI part_next_with(void *iterator, void **self, void **other) {
+	int r = next_with(iterator, self, other);
+	if (verify && r > 0)
+		pv_check(iterator, *self, *other);
+	// A cut list holds only particles whose parent may equal other.id: the stepping test keeps each of them (with
+	// their parent unchanged) at the cost of one variable read; a loop that wasn't cut steps as before
+	return skip(r, iterator, self, other);
 }
 
 // ---- Actor sort ----
@@ -282,6 +418,8 @@ static int sort_run(int r, void *iterator, void **self, void **other) {
 
 static int ABI sort_first_new_with(void *iterator, void **self, void **other, const void *target) {
 	pending_pos = -1;
+	pc_n = 0; // a new Draw event: the particles' parents are read again
+	pv_iter = NULL;
 	sort_n = 0;
 	sort_valid = 1;
 	sort_start = 1;
@@ -356,7 +494,7 @@ int bike_draw_install(void) {
 	enum { NSITES = 10 };
 	uintptr_t sites[NSITES] = {AT(PART_NEW), AT(PART_NEXT), AT(TRAIL_NEW), AT(TRAIL_NEXT), AT(SORT1_NEW), AT(SORT1_NEXT),
 		AT(SORT2_NEW), AT(SORT2_NEXT), AT(SORT3_NEW), AT(SORT3_NEXT)};
-	uintptr_t wrappers[NSITES] = {(uintptr_t)&bike_new_with, (uintptr_t)&bike_next_with, (uintptr_t)&bike_new_with,
+	uintptr_t wrappers[NSITES] = {(uintptr_t)&part_new_with, (uintptr_t)&part_next_with, (uintptr_t)&bike_new_with,
 		(uintptr_t)&bike_next_with, (uintptr_t)&sort_first_new_with, (uintptr_t)&sort_next_with,
 		(uintptr_t)&sort_new_with, (uintptr_t)&sort_next_with, (uintptr_t)&sort_new_with, (uintptr_t)&sort_next_with};
 	for (int k = 0; k < NSITES; k++) {
