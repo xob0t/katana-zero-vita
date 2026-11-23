@@ -172,6 +172,10 @@ void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
 	dynamic_res_update(swap_us, work_us);
 	after_swap_step_us[0] = s1 - s0;
 	after_swap_step_us[1] = sceKernelGetProcessTimeLow() - s1;
+	extern int katana_frame_skipped(void);
+	extern void qoi_pages_after_swap(void);
+	if (!katana_frame_skipped())
+		qoi_pages_after_swap();
 	if (!texture_flush)
 		return;
 	extern int vgl_failed_allocs;

@@ -72,6 +72,7 @@ add_executable(YoYoLoader
   loader/katana.c
   loader/katana_prof.c
   loader/katana_display.c
+  loader/qoi_pages.c
   loader/katana_t30.c
   loader/fx_rate.c
   loader/glow_rest.c

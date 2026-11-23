@@ -462,7 +462,9 @@ static void install_nursery_align(void) {
 
 // Payload: "LZ4H", u32 compressed size, LZ4 block. The runner passes the whole blob length
 // (header included) as src_len, so the block size has to come from the payload itself.
+uint32_t lz4_page_us, lz4_page_in, lz4_page_out; // debug: time spent decoding LZ4 pages, last page sizes
 static int lz4_page_decompress(char *dest, unsigned *dest_len, char *src, unsigned src_len, int small, int verbosity) {
+	uint32_t t0 = sceKernelGetProcessTimeLow();
 	if (src_len < 8 || memcmp(src, "LZ4H", 4))
 		fatal_error("game.apk has bzip2 texture pages. Rebuild it with scripts/prepare_apk.py.");
 	uint32_t block_len;
@@ -472,6 +474,9 @@ static int lz4_page_decompress(char *dest, unsigned *dest_len, char *src, unsign
 	int n = block_len <= src_len - 8 ? LZ4_decompress_safe(src + 8, dest, block_len, *dest_len) : -1;
 	if (n < 0 || (unsigned)n != *dest_len)
 		fatal_error("LZ4 texture page failed to decode (%u of %u bytes -> %u): %d", block_len, src_len, *dest_len, n);
+	lz4_page_us += sceKernelGetProcessTimeLow() - t0;
+	lz4_page_in = block_len;
+	lz4_page_out = n;
 	return 0; // BZ_OK
 }
 
@@ -1119,6 +1124,8 @@ static void patch_performance() {
 
 	// Texture pages repacked by prepare_apk.py as LZ4 inside the runner's "2zoq" container
 	install_lz4_pages();
+	extern void qoi_pages_install(void);
+	qoi_pages_install();
 	install_nursery_align();
 	if (!exp_flag("letternative0")) {
 		extern int letter_native_install(void *(*rx_alloc)(size_t));
