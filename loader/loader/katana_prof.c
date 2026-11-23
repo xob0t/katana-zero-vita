@@ -554,6 +554,18 @@ void katana_prof_report(int frames) {
 				laser_native_probe_hits, laser_native_probe_fallbacks);
 		for (int i = 0; i < 64 && laser_native_reject_line[i]; i++)
 			debugPrintf("[LASER] reject at laser_native.c:%u x%u\n", laser_native_reject_line[i], laser_native_reject_count[i]);
+		// exp_laserprof: the native draw's time, and how much of it is draw_sprite_ext; exp_laserab: its fast path is
+		// off in every other report window (in-run A/B)
+		extern int laser_prof, laser_ab, laser_ab_off;
+		extern unsigned laser_prof_us, laser_prof_sprite_us, laser_prof_calls, laser_prof_segments;
+		if (laser_prof && frames > 0) {
+			debugPrintf("[LASERPROF] native draw_laser %.3f ms/frame in %.2f calls, draw_sprite_ext %.3f ms in %.1f segments%s\n",
+				laser_prof_us / 1000.0f / frames, (float)laser_prof_calls / frames, laser_prof_sprite_us / 1000.0f / frames,
+				(float)laser_prof_segments / frames, laser_ab ? (laser_ab_off ? " | A/B: off" : " | A/B: on") : "");
+			laser_prof_us = laser_prof_sprite_us = laser_prof_calls = laser_prof_segments = 0;
+		}
+		if (laser_ab)
+			laser_ab_off = !laser_ab_off;
 	}
 	if (debugMode && light_fast_mode)
 		light_fast_report(frames);

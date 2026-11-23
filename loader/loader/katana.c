@@ -1155,6 +1155,9 @@ static void patch_performance() {
 		extern int clubber_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native dancer rim glow: %s\n", clubber_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
+	// Native ceiling-laser beam draw and height probe (laser_native.c). The draw's fast path builds no temporary
+	// array: bunker2_2 with 6 beams on screen, frames over 18 ms 230/min -> 1.4/min (GC passes), process 15.2 ->
+	// 14.2 ms. exp_laserfast0 keeps the original array; exp_lasernative0 the original GML.
 	if (!exp_flag("lasernative0")) {
 		extern int laser_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native lasers: %s\n", laser_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
