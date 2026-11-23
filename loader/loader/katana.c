@@ -1112,7 +1112,9 @@ static void patch_performance() {
 	if ((orig = gml_replace(table, "gml_Object_obj_particle_Other_25", particle_draw))) {
 		// In the fog rooms the roll's dust clouds skip their light tint (fogTrailLights=1 keeps it; fog_trail.c)
 		extern event_func fog_trail_install(event_func orig);
-		orig_particle_draw = fog_trail_install(orig);
+		// Under it, the event itself runs natively (exact; particle_native.c)
+		extern event_func particle_native_install(event_func orig);
+		orig_particle_draw = fog_trail_install(particle_native_install(orig));
 	}
 
 	instance_destroy_fn = (void *)so_symbol(&yoyoloader_mod, "_Z22YYGML_instance_destroyP9CInstanceS0_iPP8YYRValue");
