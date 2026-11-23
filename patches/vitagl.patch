@@ -1,5 +1,5 @@
 diff --git a/source/gxm.c b/source/gxm.c
-index 4cbb40b..c6c622d 100644
+index 4cbb40b..815a9ee 100644
 --- a/source/gxm.c
 +++ b/source/gxm.c
 @@ -67,6 +67,8 @@ GLboolean dirty_query = GL_FALSE; // Flag whether occlusion queries needs result
@@ -142,7 +142,7 @@ index 4cbb40b..c6c622d 100644
  		// Setting back current viewport if enabled cause sceGxm will reset it at sceGxmEndScene call
  		if (old_framebuffer != in_use_framebuffer) {
  			dirty_scissor_state = GL_TRUE;
-@@ -702,6 +746,24 @@ void scene_reset(void) {
+@@ -702,6 +746,36 @@ void scene_reset(void) {
  	if (dirty_scissor_state) {
  		update_scissor_test();
  	}
@@ -153,21 +153,33 @@ index 4cbb40b..c6c622d 100644
 +// scene right away, so a flush leaves an empty one open). The next draw begins a new scene and redraws the scissor
 +// mask; an empty scene has no depth/stencil contents to lose. Returns 0 if no scene is open, 1 if it ended an empty
 +// one, 2 if the open scene may hold commands (left open).
-+int vgl_end_unused_scene(void) {
++// vgl_end_scene_at_boundary also ends a scene holding commands: only for a point where the host knows drawing starts
++// over (the scissor mask is redrawn; depth contents of that scene would not carry over to the next one).
++static int end_scene_for_host(GLboolean even_if_used) {
 +	if (!vgl_scene_open)
 +		return 0;
-+	if (vgl_scene_used)
++	if (vgl_scene_used && !even_if_used)
 +		return 2;
++	GLboolean used = vgl_scene_used;
 +	scene_end();
 +	if (vgl_scene_open)
 +		return 2;
 +	dirty_framebuffer = GL_TRUE;
 +	dirty_scissor_state = GL_TRUE;
-+	return 1;
++	return used ? 3 : 1;
++}
++
++int vgl_end_unused_scene(void) {
++	return end_scene_for_host(GL_FALSE);
++}
++
++// Returns 0 if no scene was open, 1 if it ended an empty one, 3 if it ended one holding commands, 2 if ending failed
++int vgl_end_scene_at_boundary(void) {
++	return end_scene_for_host(GL_TRUE);
  }
  
  /*
-@@ -979,6 +1041,7 @@ void glFinish(void) {
+@@ -979,6 +1053,7 @@ void glFinish(void) {
  	if (scene_not_flushed) {
  		dirty_framebuffer = GL_TRUE;
  		scene_reset();
@@ -175,7 +187,7 @@ index 4cbb40b..c6c622d 100644
  		sceGxmFinish(gxm_context);
  		scene_not_flushed = GL_FALSE;
  	}
-@@ -999,6 +1062,7 @@ void glFlush(void) {
+@@ -999,6 +1074,7 @@ void glFlush(void) {
  	if (scene_not_flushed) {
  		dirty_framebuffer = GL_TRUE;
  		scene_reset();
