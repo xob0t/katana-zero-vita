@@ -108,7 +108,7 @@ def backup(dst):
             if files[name]["size"] != expected_size:
                 raise ValueError(f"Incomplete download of {name}")
             part.replace(dst / name)
-    manifest_part.write_text(json.dumps({"version": 1, "files": files}, indent=2) + "\n", encoding="utf-8")
+    manifest_part.write_text(json.dumps({"version": 1, "files": files}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     manifest_part.replace(dst / MANIFEST)
 
 
@@ -147,14 +147,23 @@ def restore(src, prune=True):
             parked.setdefault(remote_path(name).casefold(), []).extend(originals)
         uploaded = {}
         token = uuid4().hex
-        for i, (name, remote) in enumerate(paths.items()):
-            folder = remote.rsplit("/", 1)[0]
-            temporary = f"{folder}/{UPLOAD_PREFIX}{token}_{i}"
-            with entries[name].open("rb") as data:
-                f.storbinary(f"STOR {temporary}", data, BLOCK_SIZE)
-            if retrieve(f, temporary) != files[name]:
-                raise ValueError(f"Upload verification failed for {name}. Restore cancelled.")
-            uploaded[remote] = temporary
+        try:
+            for i, (name, remote) in enumerate(paths.items()):
+                folder = remote.rsplit("/", 1)[0]
+                temporary = f"{folder}/{UPLOAD_PREFIX}{token}_{i}"
+                uploaded[remote] = temporary  # before STOR, so a failed upload is cleaned up too
+                with entries[name].open("rb") as data:
+                    f.storbinary(f"STOR {temporary}", data, BLOCK_SIZE)
+                if retrieve(f, temporary) != files[name]:
+                    raise ValueError(f"Upload verification failed for {name}. Restore cancelled.")
+        except BaseException:
+            # Nothing has been replaced yet: remove this attempt's uploads and keep the live saves
+            for temporary in uploaded.values():
+                try:
+                    f.delete(temporary)
+                except Exception:
+                    pass
+            raise
 
         # VitaShell cannot rename over an existing file. Keep the original under a recoverable
         # name until every verified upload is in place. A retry can also finish a half-completed swap.

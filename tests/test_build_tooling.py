@@ -333,7 +333,12 @@ class SaveTests(unittest.TestCase):
             vita_saves.restore(self.dst)
         self.assertEqual(self.ftp.files[self.save], b"original")
         self.assertEqual(self.ftp.files[self.extra], b"keep")
-        self.assertFalse(any(event[0] in ("rename", "delete") for event in self.ftp.events))
+        self.assertFalse(any(event[0] == "rename" for event in self.ftp.events))
+        # Only this attempt's temporary upload is deleted, and nothing temporary is left behind
+        deleted = [event[1] for event in self.ftp.events if event[0] == "delete"]
+        self.assertTrue(deleted)
+        self.assertTrue(all(vita_saves.UPLOAD_PREFIX in path for path in deleted))
+        self.assertEqual(set(self.ftp.files), {self.save, self.extra})
 
     def test_disconnect_leaves_original_available_and_retry_finishes(self):
         vita_saves.backup(self.dst)
