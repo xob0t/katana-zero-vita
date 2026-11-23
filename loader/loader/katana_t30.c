@@ -147,8 +147,9 @@ void t30_update(uint32_t work_us) {
 	last = now;
 	fps_mode_sync();
 	eh_setting_check();
-	// The mode can change at runtime (GRAPHICS menu): leave 30 ticks/s when it turns off
-	if (!fps30 || t30_never || !current_room) {
+	// The mode can change at runtime (GRAPHICS menu): leave 30 ticks/s when it turns off. Without the time conversion
+	// (t30_install) two vblanks per tick would play at half speed.
+	if (!fps30 || t30_never || !current_room || !t30_installed) {
 		t30_set(0);
 		return;
 	}
@@ -400,8 +401,10 @@ static int t30_enemy_depth, t30_search;
  * - Half of the enemies run on even ticks and half on odd ones (instance id parity), so every tick carries half of
  *   the AI.
  * - Enemies find their own hits: enemy_hurt, inside their Step, polls place_meeting with obj_slash, obj_projectile
- *   (bullets, throwables), obj_explosion and obj_flamethrower_explosion. On a skipped tick the same overlaps are
- *   checked here, and an enemy touching one runs this tick (fr as it is), so hits land on the tick they would have.
+ *   (bullets, throwables), obj_explosion and obj_flamethrower_explosion, at the position AI_physics has just moved
+ *   the enemy to. On a skipped tick an enemy with one of those near enough to touch it after that move runs this tick
+ *   (fr as it is), so hits land on the tick they would have (eh_hurt_near). Which of them exist is checked for each
+ *   enemy: an attack made earlier in the tick (the player's slash) counts for every enemy after it.
  * - Enemies run every tick during scripted sequences, and a Step that didn't run for longer than a skip (pause, 30 fps
  *   mode, deactivation, the setting just turned on) covers one tick.
  * Caveats: enemy movement, aim and reactions update at 30 Hz (sprite animation, alarms and built-in motion stay at
@@ -421,7 +424,10 @@ unsigned enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced; /
 static struct { uint32_t key, last; } eh_table[EH_SLOTS]; // key = id + 1, 0 = empty
 static int eh_room = -2;
 static runner_function **eh_functions, **eh_current_function;
-static const int *eh_fn_place_meeting, *eh_fn_instance_exists;
+static const int *eh_fn_collision_rectangle, *eh_fn_instance_exists;
+typedef int (*builtin_var_get)(void *inst, int index, gml_rvalue *value);
+static builtin_var_get eh_bbox[4]; // GV_Bbl, GV_Bbt, GV_Bbr, GV_Bbb
+static int *eh_var_timestep, *eh_var_slope_slowdown, *eh_var_slope_tolerance;
 static const char *const eh_source_names[] = { "obj_slash", "obj_projectile", "obj_explosion", "obj_flamethrower_explosion" };
 #define EH_SOURCES (int)(sizeof(eh_source_names) / sizeof(*eh_source_names))
 static int eh_sources[EH_SOURCES], eh_sources_found;
@@ -461,14 +467,15 @@ static uint32_t eh_word(const void *p, size_t off) {
 	return v;
 }
 
-// A runner builtin through its registry entry, with g_pFunction set as the GML call sites do
+// A runner builtin through its registry entry, with g_pFunction set as the GML call sites do. True for a true
+// number or bool, or for an instance reference (collision_rectangle's hit; noone is the number -4).
 static int eh_builtin(const int *desc, void *self, int argc, gml_rvalue *args) {
 	runner_function *f = *eh_functions + desc[1], *saved = *eh_current_function;
 	gml_rvalue out = {0, 0, 5};
 	*eh_current_function = f;
 	((builtin_fn)f->func)(&out, self, self, argc, args);
 	*eh_current_function = saved;
-	return (out.kind == 0 || out.kind == 13) && out.val != 0;
+	return ((out.kind == 0 || out.kind == 13) && out.val != 0 && out.val != -4) || out.kind == 15;
 }
 
 static gml_rvalue eh_object(int index) {
@@ -478,29 +485,54 @@ static gml_rvalue eh_object(int index) {
 	return r;
 }
 
-// Does the enemy touch something enemy_hurt reacts to? Object existence is checked once per tick.
-static int eh_hurt_overlap(void *self, uint32_t tick) {
-	static uint32_t present_tick = ~0u;
-	static unsigned present;
-	if (present_tick != tick) {
-		present_tick = tick;
-		present = 0;
-		for (int i = 0; i < EH_SOURCES; i++) {
-			gml_rvalue obj = eh_object(eh_sources[i]);
-			if (eh_sources[i] >= 0 && eh_builtin(eh_fn_instance_exists, self, 1, &obj))
-				present |= 1u << i;
-		}
+static double eh_num(void *self, int *var, double fallback) {
+	gml_rvalue *v = var ? gml_vget(self, var[1]) : NULL;
+	return v && (v->kind == 0 || v->kind == 13) && isfinite(v->val) ? v->val : fallback;
+}
+
+// Could enemy_hurt find something it reacts to this tick? Its place_meeting calls test the enemy's mask after
+// AI_physics has moved it (and ai_state_control's at the position before), so the probe is a rectangle that holds
+// every place the mask can be by then, tested against the sources' bounding boxes (collision_rectangle, not
+// precise: it can only find more):
+// - the mask is a fixed sprite per enemy object (OBJT mask: spr_gruntmask, spr_gangstermask, ...), but the AI can
+//   flip image_xscale to face the other way: the box is the mask's bbox mirrored about x;
+// - AI_physics moves at most |hsp| or |vsp| * fr (both clamped to 20; on a slope hsp * fr * timestep *
+//   slope_slowdown) and its collision fixes add at most 2 * |hsp| + 5 (wall_check's search limit), 1 px plus
+//   slope_tolerance and the pixel loops (floor, slope, ceiling) a few px: 48 + 20 * fr * that factor + slope_tolerance
+//   on every side.
+// Existence of each source is checked first, for each enemy: attacks made earlier this tick count.
+unsigned enemyhalf_probes;
+static int eh_hurt_near(void *self) {
+	unsigned present = 0;
+	for (int i = 0; i < EH_SOURCES; i++) {
+		gml_rvalue obj = eh_object(eh_sources[i]);
+		if (eh_sources[i] >= 0 && eh_builtin(eh_fn_instance_exists, self, 1, &obj))
+			present |= 1u << i;
 	}
 	if (!present)
 		return 0;
-	float x, y;
-	memcpy(&x, (char *)self + 0xb8, 4);
-	memcpy(&y, (char *)self + 0xbc, 4);
+	enemyhalf_probes++;
+	double box[4];
+	for (int k = 0; k < 4; k++) {
+		gml_rvalue v = {0, 0, 0};
+		eh_bbox[k](self, (int)0x80000000, &v);
+		if (v.kind != 0 || !isfinite(v.val))
+			return 1; // no box: run the Step
+		box[k] = v.val;
+	}
+	float xf;
+	memcpy(&xf, (char *)self + 0xb8, 4);
+	double x = xf, half = fmax(fabs(x - box[0]), fabs(box[2] - x));
+	gml_rvalue *fr_v = global_var(var_fr);
+	double fr = fr_v && fr_v->kind == 0 && isfinite(fr_v->val) ? fabs(fr_v->val) : 1;
+	double slope = fabs(eh_num(self, eh_var_timestep, 1)) * fmax(1, fabs(eh_num(self, eh_var_slope_slowdown, 1)));
+	double d = 48 + 20 * fmax(fr, 1) * fmax(slope, 1) + fabs(eh_num(self, eh_var_slope_tolerance, 0));
 	for (int i = 0; i < EH_SOURCES; i++) {
 		if (!(present & (1u << i)))
 			continue;
-		gml_rvalue args[3] = {{x, 0, 0}, {y, 0, 0}, eh_object(eh_sources[i])};
-		if (eh_builtin(eh_fn_place_meeting, self, 3, args))
+		gml_rvalue args[7] = {{x - half - d, 0, 0}, {box[1] - d, 0, 0}, {x + half + d, 0, 0}, {box[3] + d, 0, 0},
+			eh_object(eh_sources[i]), {0, 0, 13}, {1, 0, 13}}; // prec false, notme true
+		if (eh_builtin(eh_fn_collision_rectangle, self, 7, args))
 			return 1;
 	}
 	return 0;
@@ -547,7 +579,7 @@ static int eh_decide(void *self) {
 		eh_table[found].last = tick;
 		return 2;
 	}
-	if (eh_hurt_overlap(self, tick)) {
+	if (eh_hurt_near(self)) {
 		eh_table[found].last = tick;
 		enemyhalf_forced++;
 		return 1;
@@ -556,7 +588,7 @@ static int eh_decide(void *self) {
 }
 
 // Debug: enemy deaths (create_corpse calls) by the kind of Step they happened in:
-// 0 outside a half-rate enemy Step, 1 a Step run for a hurt overlap, 2 a Step covering two ticks, 3 a one-tick Step
+// 0 outside a half-rate enemy Step, 1 a Step run for a hurt source near, 2 a Step covering two ticks, 3 a one-tick Step
 static gml_script_fn orig_create_corpse;
 static int eh_step_kind;
 unsigned enemyhalf_kills[4];
@@ -565,7 +597,7 @@ static void *eh_create_corpse(void *self, void *other, void *result, int argc, v
 	enemyhalf_kills[eh_step_kind]++;
 	if (lines++ < 40)
 		debugPrintf("[ENEMYHALF] create_corpse at tick %u in %s\n", *frame_count, (const char *const[]){"another event",
-			"a step run for a hurt overlap", "a step covering 2 ticks", "a one-tick step"}[eh_step_kind]);
+			"a step run for a hurt source near", "a step covering 2 ticks", "a one-tick step"}[eh_step_kind]);
 	return orig_create_corpse(self, other, result, argc, args);
 }
 
@@ -760,15 +792,17 @@ void t30_install(gml_func_entry *table) {
 	eh_object_find = (void *)so_symbol(&yoyoloader_mod, "_Z11Object_FindPKc");
 	eh_functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
 	eh_current_function = (runner_function **)so_symbol(&yoyoloader_mod, "g_pFunction");
-	eh_fn_place_meeting = (const int *)so_symbol(&yoyoloader_mod, "g_FUNC_place_meeting");
 	eh_fn_instance_exists = (const int *)so_symbol(&yoyoloader_mod, "g_FUNC_instance_exists");
-	eh_installed = enemies == 9 && eh_object_find && eh_functions && eh_current_function && eh_fn_place_meeting &&
-		eh_fn_instance_exists;
-	if (eh_installed && debugMode)
-		orig_create_corpse = entry_hook(so_symbol(&yoyoloader_mod,
-			"_Z24gml_Script_create_corpseP9CInstanceS0_R8YYRValueiPPS1_"), eh_create_corpse);
-	debugPrintf("Half-rate enemies: %s, yyl.cfg enemyHalfRate %d\n", eh_installed ? "installed" : "NOT installed",
-		enemy_half_rate);
+	eh_fn_collision_rectangle = (const int *)so_symbol(&yoyoloader_mod, "g_FUNC_collision_rectangle");
+	eh_var_timestep = (int *)so_symbol(&yoyoloader_mod, "g_VAR_timestep");
+	eh_var_slope_slowdown = (int *)so_symbol(&yoyoloader_mod, "g_VAR_slope_slowdown");
+	eh_var_slope_tolerance = (int *)so_symbol(&yoyoloader_mod, "g_VAR_slope_tolerance");
+	eh_bbox[0] = (builtin_var_get)so_symbol(&yoyoloader_mod, "_Z6GV_BblP9CInstanceiP6RValue");
+	eh_bbox[1] = (builtin_var_get)so_symbol(&yoyoloader_mod, "_Z6GV_BbtP9CInstanceiP6RValue");
+	eh_bbox[2] = (builtin_var_get)so_symbol(&yoyoloader_mod, "_Z6GV_BbrP9CInstanceiP6RValue");
+	eh_bbox[3] = (builtin_var_get)so_symbol(&yoyoloader_mod, "_Z6GV_BbbP9CInstanceiP6RValue");
+	int eh_symbols = enemies == 9 && eh_object_find && eh_functions && eh_current_function && eh_fn_collision_rectangle &&
+		eh_fn_instance_exists && eh_bbox[0] && eh_bbox[1] && eh_bbox[2] && eh_bbox[3];
 	t30_diag = debugMode && exp_flag("t30diag");
 	var_text_timer = (int *)so_symbol(&yoyoloader_mod, "g_VAR_text_timer");
 	var_text_complete = (int *)so_symbol(&yoyoloader_mod, "g_VAR_text_complete");
@@ -789,6 +823,13 @@ void t30_install(gml_func_entry *table) {
 	orig_bullettime_check = entry_hook(so_symbol(&yoyoloader_mod,
 		"_Z34gml_Script_player_bullettime_checkP9CInstanceS0_R8YYRValueiPPS1_"), t30_bullettime_check);
 	orig_override_control_init = entry_hook(so_symbol(&yoyoloader_mod, "_Z32gml_Script_override_control_initP9CInstanceS0_R8YYRValueiPPS1_"), t30_override_control_init);
+	// Half-rate enemies also run every tick in scripted sequences (override_control_init marks them)
+	eh_installed = eh_symbols && orig_override_control_init;
+	if (eh_installed && debugMode)
+		orig_create_corpse = entry_hook(so_symbol(&yoyoloader_mod,
+			"_Z24gml_Script_create_corpseP9CInstanceS0_R8YYRValueiPPS1_"), eh_create_corpse);
+	debugPrintf("Half-rate enemies: %s, yyl.cfg enemyHalfRate %d\n", eh_installed ? "installed" : "NOT installed",
+		enemy_half_rate);
 	orig_gamepaused_step1 = entry_hook(so_symbol(&yoyoloader_mod, "_Z32gml_Object_obj_gamepaused_Step_1P9CInstanceS0_"), t30_gamepaused_step1);
 	if (!orig_gamepaused_step1)
 		debugPrintf("30 fps mode: pause menu hook NOT installed\n");
@@ -806,12 +847,18 @@ void t30_install(gml_func_entry *table) {
 			sceKernelStartThread(th, 0, NULL);
 	}
 	t30_never = exp_flag("t30never");
-	if (exp_flag("t30force")) // testing: 30 ticks/s everywhere
+	// 30 ticks/s needs both time controllers (global.fr doubled) and the scripted-sequence guard: without them the mode
+	// never activates and its menu row isn't shown
+	t30_installed = orig_master_user0 && orig_cutscene_master_user0 && orig_override_control_init;
+	if (!t30_installed)
+		fps30 = 0;
+	else if (exp_flag("t30force")) // testing: 30 ticks/s everywhere
 		fps30 = 2;
 	debugPrintf("30 fps mode %d: master %s, cutscene master %s, player animation %s, scripts %s, letters %s, animate %s, alarms %s, motion %s, hit-stop %s, enemy search %d/9, textboxes %s, slow motion %s\n",
 		fps30, orig_master_user0 ? "hooked" : "NOT hooked", orig_cutscene_master_user0 ? "hooked" : "NOT hooked",
 		orig_animation_code ? "hooked" : "NOT hooked", orig_override_control_init ? "hooked" : "NOT hooked",
 		orig_letter_step ? "hooked" : "NOT hooked", t30_anim ? "x2" : "x1", t30_alarm ? "x2" : "x1", t30_move ? "x2" : "x1",
 		t30_freeze ? "x2" : "x1", enemies, orig_textbox_user0 && orig_passive_textbox_user0 ? "counted" : "NOT hooked", orig_bullettime_check && orig_controller_check_pressed ? "x2" : "x1");
-	t30_installed = 1;
+	if (!t30_installed)
+		debugPrintf("30 fps mode: NOT installed (time controller or scripted-sequence hook missing)\n");
 }

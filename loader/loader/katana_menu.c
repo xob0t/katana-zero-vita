@@ -42,7 +42,8 @@
  * - global.show_crap_settings is saved and loaded (KatanaOptions.zero), copied to var_show_crap_settings by Create and
  *   back by SAVE, and set false by obj_init and the reset scripts. Nothing else reads it: the LOW-END OPTIONS popup
  *   that sets it is compiled out on Android.
- * var_fullscreen only carries the shown value through Step and Draw (put back after each), and the choice is in
+ * var_fullscreen only carries the shown value through Step and Draw (put back after each, and around SAVE, which
+ * Step can run and which copies var_fullscreen to global.fullscreen), and the choice is in
  * var_show_crap_settings: 0 (every existing save) follows enemyHalfRate from yyl.cfg, shown under that value's name;
  * 1 FULL RATE and 2 HALF RATE are chosen in the menu and override yyl.cfg. global.fullscreen never changes, so Destroy
  * does nothing for it. Draw keeps its row index in the instance variable c: the label is translate_option(choice[c])
@@ -174,13 +175,43 @@ static void enemy_unshow(void *self, enemy_shown was) {
 	}
 }
 
+// The obj_optionsmenu whose Step runs with var_fullscreen showing ENEMY AI, and what it held before
+static void *step_show_self;
+static enemy_shown step_show;
+static event_func orig_optionsmenu_save;
+
+// SAVE (user event 0, run by Step on the SAVE choice) copies var_fullscreen to global.fullscreen: it runs with the
+// real value, and the shown one (or the toggle's flip of it) is put back after for the rest of Step
+static void enemy_optionsmenu_save(void *self, void *other) {
+	gml_rvalue *f = step_show_self == self && step_show.set ? instance_num(self, var_var_fullscreen) : NULL;
+	if (!f) {
+		orig_optionsmenu_save(self, other);
+		return;
+	}
+	double shown = f->val;
+	unsigned shown_kind = f->kind;
+	f->val = step_show.val;
+	f->kind = step_show.kind;
+	orig_optionsmenu_save(self, other);
+	if ((f = instance_num(self, var_var_fullscreen))) { // looked up again: events add variables
+		f->val = shown;
+		f->kind = shown_kind;
+	}
+}
+
 // - FPS MODE: three values; the game's toggle wraps 3 -> 0 ("not chosen"); make it 3 -> 1;
 // - ENEMY AI: two values; the game's var_fullscreen = !var_fullscreen flips the shown value; store the other value (1 or 2).
 static void fps_optionsmenu_step(void *self, void *other) {
 	gml_rvalue *z = fps_row ? instance_var(self, var_var_zoom_mode) : NULL;
 	double zoom = z ? z->val : -1;
 	enemy_shown enemy = enemy_show(self);
+	void *prev_self = step_show_self;
+	enemy_shown prev_show = step_show;
+	step_show_self = self;
+	step_show = enemy;
 	orig_optionsmenu_step(self, other);
+	step_show_self = prev_self;
+	step_show = prev_show;
 	if (enemy.set) {
 		gml_rvalue *e = instance_num(self, var_var_show_crap_settings);
 		int shown = e ? enemy_half_of(e->val) : 0;
@@ -287,6 +318,9 @@ void fps_menu_install(gml_func_entry *table) {
 	int fps_ok = want_fps && orig_translate_option && var_zoom_mode && var_var_zoom_mode;
 	int enemy_ok = want_enemy && orig_translate_option && var_show_crap_settings && var_var_show_crap_settings &&
 		var_var_fullscreen && var_c;
+	// ENEMY AI needs SAVE to see the real var_fullscreen
+	if (enemy_ok)
+		enemy_ok = !!(orig_optionsmenu_save = gml_replace(table, "gml_Object_obj_optionsmenu_Other_10", enemy_optionsmenu_save));
 	if (fps_ok || enemy_ok)
 		orig_optionsmenu_step = gml_replace(table, "gml_Object_obj_optionsmenu_Step_0", fps_optionsmenu_step);
 	if (enemy_ok && orig_optionsmenu_step)
