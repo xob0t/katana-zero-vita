@@ -589,6 +589,8 @@ void katana_prof_report(int frames) {
 	wobble_rest_report(frames);
 	extern void blood_drops_report(int frames);
 	blood_drops_report(frames);
+	extern void fog_skip_report(int frames);
+	fog_skip_report(frames);
 	static int builtins_hooked = 0;
 	if (!builtins_hooked) {
 		builtins_hooked = 1;

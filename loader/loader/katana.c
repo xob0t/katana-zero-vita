@@ -692,8 +692,15 @@ static int fog_take(void *p) {
 	return 1;
 }
 
+// Discarded puffs that exist now (created, first Step not run yet)
+unsigned fog_doomed_alive(void) {
+	return doomed_fog_count;
+}
+
+// Puffs created, plus those fog_skip.c didn't create: puff n is kept when n % fog_scale == 0
+unsigned fog_created;
+
 static void fog_create(void *self, void *other) {
-	static unsigned created;
 	orig_fog_create(self, other);
 	int room = current_room ? *current_room : -1;
 	if (room != doomed_fog_room) {
@@ -702,12 +709,16 @@ static void fog_create(void *self, void *other) {
 		memset(doomed_fog, 0, sizeof(doomed_fog));
 	}
 	fog_take(self); // a new instance can reuse the memory of a puff destroyed before its first Step
-	if (created++ % fog_scale)
+	if (fog_created++ % fog_scale)
 		fog_mark(self);
 }
 
 static void fog_step(void *self, void *other) {
+	extern void fog_skip_puff_step(void);
+	fog_skip_puff_step();
 	if (fog_take(self)) {
+		extern void fog_skip_doomed_step(void *self);
+		fog_skip_doomed_step(self);
 		fog_instance_destroy(self, other, 0, NULL);
 		fog_puffs_removed++;
 		return;
@@ -730,6 +741,10 @@ static void fog_install(void) {
 	if (fog_instance_destroy && var_draw_alpha && create && step && (orig_fog_step = entry_hook(step, fog_step)))
 		orig_fog_create = entry_hook(create, fog_create);
 	debugPrintf("fog scale %d: %s\n", fog_scale, orig_fog_create && orig_fog_step ? "installed" : "NOT installed");
+	if (orig_fog_create && orig_fog_step) {
+		extern void fog_skip_install(void);
+		fog_skip_install(); // don't create the puffs this would discard (fog_skip.c)
+	}
 }
 
 // The runner's frame limiter (Timing_Wait -> Timing_Sleep(us, spin)) sets a deadline now + us, usleep()s most of
