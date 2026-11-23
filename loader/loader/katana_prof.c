@@ -692,6 +692,33 @@ void katana_prof_report(int frames) {
 		if (laser_ab)
 			laser_ab_off = !laser_ab_off;
 	}
+	{
+		// move_contact_native.c, per frame: tested positions (steps); searches run/skipped; UpdateTree's tree update of
+		// the player run/skipped; tested boxes the tree move was deferred for, and flushes. Totals: candidate lists
+		// unusable (overflow / count mismatch); exp_mcverify checks of skipped work and of the insertion model.
+		// exp_mcab: native off in every other window.
+		extern int mc_ab, mc_ab_off, mc_prof;
+		extern unsigned mc_calls, mc_fallbacks, mc_steps, mc_search_real, mc_search_skipped, mc_tree_skipped, mc_tree_real;
+		extern unsigned mc_verify_ok, mc_verify_bad, mc_prof_us, mc_cand_overflow, mc_cand_mismatch;
+		extern unsigned mc_deferred_steps, mc_flushes, mc_model_ok, mc_model_bad;
+		if ((mc_calls || mc_fallbacks) && frames > 0) {
+			float f = (float)frames;
+			debugPrintf("[MOVECONTACT] native %.1f fallback %.1f calls, %.1f steps | search %.1f run %.1f skipped | tree "
+				"update %.1f run %.1f skipped | deferred %.1f flushes %.1f | candidates overflow %u mismatch %u | verify "
+				"ok %u mismatch %u, model ok %u mismatch %u%s\n",
+				mc_calls / f, mc_fallbacks / f, mc_steps / f, mc_search_real / f, mc_search_skipped / f, mc_tree_real / f,
+				mc_tree_skipped / f, mc_deferred_steps / f, mc_flushes / f, mc_cand_overflow, mc_cand_mismatch,
+				mc_verify_ok, mc_verify_bad, mc_model_ok, mc_model_bad,
+				mc_ab ? (mc_ab_off ? " | A/B: off" : " | A/B: on") : "");
+			if (mc_prof)
+				debugPrintf("[MOVECONTACT] native time %.3f ms/frame\n", mc_prof_us / 1000.0f / f);
+		}
+		mc_calls = mc_fallbacks = mc_steps = mc_search_real = mc_search_skipped = mc_tree_skipped = mc_tree_real = 0;
+		mc_deferred_steps = mc_flushes = 0;
+		mc_prof_us = 0;
+		if (mc_ab)
+			mc_ab_off = !mc_ab_off;
+	}
 	if (debugMode && light_fast_mode)
 		light_fast_report(frames);
 	{

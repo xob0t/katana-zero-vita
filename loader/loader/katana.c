@@ -1255,6 +1255,13 @@ static void patch_performance() {
 		extern int smokedraw_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native smoke cloud Draw: %s\n", smokedraw_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
+	// move_contact_solid without the redundant collision-tree work (move_contact_native.c, exact): the Dragon's dash
+	// aim calls it every frame and it walked the player pixel by pixel with tree updates and searches (1.2-3.6 ms/frame
+	// in room_dragon_3, more on long aims). exp_movecontact0 keeps the runner's Command_MoveContact.
+	if (!exp_flag("movecontact0")) {
+		extern int move_contact_native_install(void *(*hook)(uintptr_t entry, void *replacement));
+		debugPrintf("native move_contact_solid: %s\n", move_contact_native_install(entry_hook) ? "installed" : "NOT installed");
+	}
 	// Exact natives of obj_orangelight Step and obj_lightback Step, from the static recompiler kill test
 	// (work/cpu_research/kill_test/REPORT.md): the events with the runner's compare/truth/variable helpers inlined
 	// (light_fast_inline.c). room_haunted_cart2 (129 lights): orangelight 2.13 -> 1.53 ms, lightback 0.51 -> 0.42 ms.
