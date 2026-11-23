@@ -25,7 +25,8 @@
  *
  * exp_lightbacknative0 keeps the original event. exp_lbverify: for each light the native handled as
  * off-screen, also runs the original afterwards and checks that it left x/y unchanged (it writes the same
- * values again) and that it drew nothing (draw_sprite_stretched_ext calls counted around it).
+ * values again) and that it drew nothing (draw_sprite_stretched_ext calls counted around it). exp_lbab
+ * (measurement only) switches the native off and on every report window, so one run gives an A/B.
  */
 #include <string.h>
 #include "main.h"
@@ -54,7 +55,7 @@ typedef void ABI (*Free)(RV *);
 unsigned lightback_native_culled, lightback_native_visible, lightback_native_fallback;
 unsigned lightback_verify_calls, lightback_verify_mismatch, lightback_verify_draws;
 uint32_t lightback_native_us;
-static int lb_verify, lb_timing;
+static int lb_verify, lb_timing, lb_ab, lb_ab_off;
 static unsigned lb_reject_line[12], lb_reject_count[12];
 
 static Event original;
@@ -186,6 +187,10 @@ static void ABI counted_stretched(RV *out, void *self, void *other, int argc, RV
 }
 
 static void ABI lightback_native(void *self, void *other) {
+	if (lb_ab_off) {
+		original(self, other);
+		return;
+	}
 	uint32_t t0 = lb_timing ? sceKernelGetProcessTimeLow() : 0;
 	int done = handle(self);
 	if (lb_timing)
@@ -210,9 +215,10 @@ static void ABI lightback_native(void *self, void *other) {
 void lightback_native_report(int frames) {
 	if (!original || frames <= 0)
 		return;
-	debugPrintf("[LIGHTBACK] user 0: off-screen native %.1f, visible (original) %.1f, fallback %.1f per frame | native part %.3f ms\n",
+	debugPrintf("[LIGHTBACK] user 0: off-screen native %.1f, visible (original) %.1f, fallback %.1f per frame | native part %.3f ms%s\n",
 		(float)lightback_native_culled / frames, (float)lightback_native_visible / frames,
-		(float)lightback_native_fallback / frames, lightback_native_us / 1000.0f / frames);
+		(float)lightback_native_fallback / frames, lightback_native_us / 1000.0f / frames,
+		lb_ab ? (lb_ab_off ? " | A/B: off" : " | A/B: on") : "");
 	if (lb_verify)
 		debugPrintf("[LIGHTBACK] verify: %u off-screen calls re-run, %u mismatches, %u draws (session)\n",
 			lightback_verify_calls, lightback_verify_mismatch, lightback_verify_draws);
@@ -221,6 +227,8 @@ void lightback_native_report(int frames) {
 			lb_reject_count[i], reject_kind);
 	lightback_native_culled = lightback_native_visible = lightback_native_fallback = 0;
 	lightback_native_us = 0;
+	if (lb_ab)
+		lb_ab_off = !lb_ab_off;
 }
 
 // The verify wrapper needs the builtin registry (filled during runner init): installed at the first report
@@ -272,6 +280,7 @@ int lightback_native_install(void *(*rx_alloc)(size_t)) {
 	kuKernelFlushCaches(rx, sizeof(code));
 	original = (Event)rx;
 	lb_verify = exp_flag("lbverify");
+	lb_ab = exp_flag("lbab");
 	extern int heavy_profiling;
 	lb_timing = heavy_profiling;
 	hook_addr(entry, (uintptr_t)lightback_native);
