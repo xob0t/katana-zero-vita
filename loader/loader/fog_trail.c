@@ -60,9 +60,10 @@ typedef void ABI (*draw_ext_fn)(void *self, int sprite, float subimg, float x, f
 	int colour, float alpha);
 typedef int ABI (*exists_fn)(void *self, void *other, int object);
 
-// The plain lit layer: the clouds' average tint in room_prison_3 (exp_fogtrailsample, Nov 2026)
-#define FOG_TRAIL_COLOUR 0x808080
-#define FOG_TRAIL_ALPHA 0.5f
+// The plain lit layer: the clouds' average lit layer in room_prison_3 while rolling (exp_fogtrailsample, 38k samples):
+// rgb 202 197 249 (GML colours are BGR) at 0.47 x the raised image_alpha
+#define FOG_TRAIL_COLOUR 0xf9c5ca
+#define FOG_TRAIL_ALPHA 0.47f
 
 int fog_trail_lights = 0; // fogTrailLights in yyl.cfg: 1 keeps the clouds' original lighting
 unsigned fog_trail_native, fog_trail_original;
