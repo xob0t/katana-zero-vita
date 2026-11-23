@@ -41,10 +41,11 @@ static int FileExists_hook(const char *path) {
 void **global_obj_ptr;
 
 // Replaces a function at its entry with a native wrapper, returns a trampoline to the original
-// (NULL if the prologue isn't the relocatable push {..., lr}; add fp, sp, #imm).
+// (NULL if the prologue isn't the relocatable push {..., lr}; add fp, sp, #imm or mov fp, sp).
 void *entry_hook(uintptr_t entry, void *replacement) {
 	uint32_t *w = (uint32_t *)entry;
-	if (!entry || (entry & 3) || (w[0] & 0xffff4000) != 0xe92d4000 || (w[1] & 0xfffff000) != 0xe28db000)
+	if (!entry || (entry & 3) || (w[0] & 0xffff4000) != 0xe92d4000 ||
+			((w[1] & 0xfffff000) != 0xe28db000 && w[1] != 0xe1a0b00d))
 		return NULL;
 	uint32_t *tramp = katana_rx_alloc(16);
 	if (!tramp)
