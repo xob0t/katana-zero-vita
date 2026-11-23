@@ -32,7 +32,9 @@
  *    CollisionUpdate at the end (or as soon as a step would split or anything else differs) leaves the live tree as
  *    the original's last B does. (Unused branch slots may keep different stale bytes: Search, removal and insertion
  *    only read the first `count` branches.)
- * Anything else (move_contact_all, the managed-objects path, odd instances, non-finite direction, distance or
+ * Only obj_player moves natively, and only while its bounding-box updates can't run GML (no skeleton instance, draw
+ * and mask sprites absent or plain bitmaps: a Spine sprite would run skeleton animation and its events). Anything
+ * else (other movers, move_contact_all, the managed-objects path, odd instances, non-finite direction, distance or
  * position, a full candidate list) runs the original.
  *
  * Debug flags: exp_movecontact0 (original). exp_mcverify (no deferral; run the skipped work too and compare: a skipped
@@ -89,7 +91,7 @@ static ctor_fn tree_ctor;
 static dtor_fn tree_dtor;
 
 int mc_ab, mc_ab_off, mc_prof;
-static int mc_verify, mc_diff, mc_diff_break;
+static int mc_verify, mc_diff, mc_diff_break, in_diff_native;
 unsigned mc_calls, mc_fallbacks, mc_steps, mc_search_real, mc_search_skipped, mc_tree_skipped, mc_tree_real;
 unsigned mc_verify_ok, mc_verify_bad, mc_prof_us, mc_cand_overflow, mc_cand_mismatch;
 unsigned mc_deferred_steps, mc_flushes, mc_model_ok, mc_model_bad, mc_diff_ok, mc_diff_bad, mc_diff_skipped;
@@ -98,29 +100,38 @@ static uint32_t word(const void *p, size_t off) { uint32_t v; memcpy(&v, (const 
 static float scalar(const void *p, size_t off) { float v; memcpy(&v, (const uint8_t *)p + off, 4); return v; }
 
 // ---- Counting hooks: node allocation, CollisionUpdate, RemoveRect (found = 0), InsertRect ----
-// AllocNode is the tree's only allocator; frees are inlined pushes onto the pool's free list.
+// AllocNode is the tree's only allocator; frees are inlined pushes onto the pool's free list. The hooks count only
+// while a native move is armed: CollisionUpdate calls for the moving instance, tree operations on its tree. (All of
+// this runs on the game thread: collision, instance steps and these runner functions are never called from the
+// loader's other threads.)
 static alloc_fn original_alloc;
 static update_fn original_update;
 static remove_rect_fn original_remove_rect;
 static insert_rect_fn original_insert_rect;
+static void *armed_inst, *armed_tree;
 static uint32_t node_allocs, update_calls, remove_calls, remove_found, insert_calls;
 static void *AAPCS alloc_node(void *tree) {
-	node_allocs++;
+	if (armed_tree && tree == armed_tree)
+		node_allocs++;
 	return original_alloc(tree);
 }
 static void AAPCS counted_update(void *inst, const float *old_box) {
-	update_calls++;
+	if (armed_inst && inst == armed_inst)
+		update_calls++;
 	original_update(inst, old_box);
 }
 static int AAPCS counted_remove_rect(void *tree, void *rect, void *id, void *root) {
-	remove_calls++;
+	bool counted = armed_tree && tree == armed_tree;
+	if (counted)
+		remove_calls++;
 	int r = original_remove_rect(tree, rect, id, root);
-	if (!r)
+	if (counted && !r)
 		remove_found++;
 	return r;
 }
 static int AAPCS counted_insert_rect(void *tree, const void *branch, void *root, int level) {
-	insert_calls++;
+	if (armed_tree && tree == armed_tree)
+		insert_calls++;
 	return original_insert_rect(tree, branch, root, level);
 }
 
@@ -571,6 +582,9 @@ static void native_move(void *inst, float dir, float maxdist) {
 	if (maxdist <= 0.0f)
 		steps = 1000;
 	self_inst = inst;
+	uint32_t flags = word(inst, 0x7c);
+	armed_tree = tree_for_domain((flags & 0x4000000) ? 2 : (int)((flags >> 25) & 1));
+	armed_inst = inst;
 	cand_state = 0;
 	prev_b_clean = false;
 	deferred = false;
@@ -590,9 +604,10 @@ static void native_move(void *inst, float dir, float maxdist) {
 			set_position(inst, cs + scalar(inst, 0xb8), scalar(inst, 0xbc) - sn);
 		} while (--steps != 0);
 	}
-	if (mc_diff_break)
-		deferred = false; // negative control: the deferred tree move is lost
+	if (mc_diff_break && in_diff_native)
+		deferred = false; // negative control (exp_mcdiff copy only): the deferred tree move is lost
 	flush(); // the tree as the original's last B left it
+	armed_inst = armed_tree = NULL;
 }
 
 // ---- exp_mcdiff ----
@@ -683,6 +698,13 @@ static bool diff_move(void *inst, float dir, float maxdist) {
 	diff_n = 0;
 	if (!diff_add(inst) || !diff_add_list(dirty_list) || !diff_add_list(test_list) || ((uint8_t *)tree)[4])
 		return false;
+	// Only the mover's tree is copied: every instance either run can update must live in it, and none may own
+	// skeleton data (shared allocations the byte snapshots can't put back)
+	for (int i = 0; i < diff_n; i++) {
+		uint32_t f = word(diff_inst[i], 0x7c);
+		if (((f & 0x4000000) ? 2 : (int)((f >> 25) & 1)) != domain || word(diff_inst[i], 0x70) || word(diff_inst[i], 0x74))
+			return false;
+	}
 	uintptr_t lists_pre[6], lists_orig[6];
 	memcpy(lists_pre, dirty_list, 12);
 	memcpy(lists_pre + 3, test_list, 12);
@@ -713,7 +735,9 @@ static bool diff_move(void *inst, float dir, float maxdist) {
 	memcpy(dirty_list, lists_pre, 12);
 	memcpy(test_list, lists_pre + 3, 12);
 	collision_trees[domain] = copy;
+	in_diff_native = 1;
 	native_move(inst, dir, maxdist);
+	in_diff_native = 0;
 	collision_trees[domain] = tree;
 	int nb = live_serialize(diff_ser_b, (void *)(uintptr_t)word(copy, 0x14), 0, 0);
 	bool same = na > 0 && na == nb && !memcmp(diff_ser_a, diff_ser_b, na * 4) && *free_result == res_orig &&
@@ -736,9 +760,34 @@ static bool diff_move(void *inst, float dir, float maxdist) {
 	return true;
 }
 
+// The native only moves obj_player (the Dragon's dash aim) and only while its bounding-box updates can't run GML:
+// no skeleton instance (+0x70, +0x74) and the draw and mask sprites absent or plain bitmaps (type 0). A Spine sprite
+// would make SetPosition / Compute_BoundingBox create or animate a skeleton, whose events run GML synchronously.
+typedef int AAPCS (*find_fn)(const char *name);
+typedef int AAPCS (*exists_fn)(int sprite);
+typedef void *AAPCS (*sprite_fn)(int sprite);
+static find_fn object_find;
+static exists_fn sprite_exists;
+static sprite_fn sprite_data;
+static int player_object = -2; // -2: not looked up yet (Object_Find can't run while the loader installs)
+
+static bool plain_sprite(int sprite) {
+	if (sprite < 0 || !sprite_exists(sprite))
+		return true;
+	const void *sp = sprite_data(sprite);
+	return sp && word(sp, 0x84) == 0;
+}
+
+static bool native_mover(void *inst) {
+	if (player_object == -2)
+		player_object = object_find("obj_player");
+	return player_object >= 0 && (int)word(inst, 0x84) == player_object && !word(inst, 0x70) && !word(inst, 0x74) &&
+		plain_sprite((int)word(inst, 0x88)) && plain_sprite((int)word(inst, 0x14c));
+}
+
 static void AAPCS move_contact(void *inst, float dir, float maxdist, bool all) {
 	if (all || (mc_ab && mc_ab_off) || !inst || word(inst, 0x50) != 1 || *managed_objects || !isfinite(dir) ||
-		!isfinite(maxdist) || !isfinite(scalar(inst, 0xb8)) || !isfinite(scalar(inst, 0xbc))) {
+		!isfinite(maxdist) || !isfinite(scalar(inst, 0xb8)) || !isfinite(scalar(inst, 0xbc)) || !native_mover(inst)) {
 		mc_fallbacks++;
 		original_move(inst, dir, maxdist, all);
 		return;
@@ -765,9 +814,37 @@ static bool resolve(const char *name, uintptr_t addr, uint32_t first_word, uintp
 	return true;
 }
 
+// All five entry hooks or none: every prologue is checked and every trampoline written before any entry is patched
+// (hook_addr itself can't fail).
+extern void *katana_rx_alloc(size_t size);
+static bool hook_all(int n, const uintptr_t *entry, void *const *replacement, void **original) {
+	for (int i = 0; i < n; i++) {
+		const uint32_t *w = (const uint32_t *)entry[i];
+		if (!entry[i] || (entry[i] & 3) || (w[0] & 0xffff4000) != 0xe92d4000 || (w[1] & 0xfffff000) != 0xe28db000)
+			return false;
+	}
+	uint32_t *rx = katana_rx_alloc(16 * n);
+	if (!rx)
+		return false;
+	for (int i = 0; i < n; i++) {
+		const uint32_t *w = (const uint32_t *)entry[i];
+		uint32_t code[4] = { w[0], w[1], 0xe51ff004, (uint32_t)(entry[i] + 8) };
+		kuKernelCpuUnrestrictedMemcpy(rx + 4 * i, code, sizeof(code));
+	}
+	kuKernelFlushCaches(rx, 16 * n);
+	for (int i = 0; i < n; i++)
+		original[i] = rx + 4 * i;
+	for (int i = 0; i < n; i++) {
+		hook_addr(entry[i], (uintptr_t)replacement[i]);
+		kuKernelFlushCaches((void *)entry[i], 8);
+	}
+	return true;
+}
+
 int move_contact_native_install(void *(*hook)(uintptr_t entry, void *replacement)) {
 	static int installed;
-	if (installed || !hook)
+	(void)hook; // entry_hook patches one entry at a time; hook_all below patches all or none
+	if (installed)
 		return 0;
 	uintptr_t move = so_symbol(&yoyoloader_mod, "_Z19Command_MoveContactP9CInstanceffb");
 	uintptr_t isfree = so_symbol(&yoyoloader_mod, "_Z14Command_IsFreeP9CInstanceff");
@@ -824,15 +901,22 @@ int move_contact_native_install(void *(*hook)(uintptr_t entry, void *replacement
 	mc_diff_break = exp_flag("mcdiffbreak");
 	mc_ab = exp_flag("mcab");
 	mc_prof = exp_flag("mcprof");
-	// Counting hooks first: the native is only installed if all of them are
-	if (!(original_alloc = (alloc_fn)hook(al, alloc_node)) ||
-		!(original_update = (update_fn)hook(cu, counted_update)) ||
-		!(original_remove_rect = (remove_rect_fn)hook(rr, counted_remove_rect)) ||
-		!(original_insert_rect = (insert_rect_fn)hook(ir, counted_insert_rect)))
+	object_find = (find_fn)so_symbol(&yoyoloader_mod, "_Z11Object_FindPKc");
+	sprite_exists = (exists_fn)so_symbol(&yoyoloader_mod, "_Z13Sprite_Existsi");
+	sprite_data = (sprite_fn)so_symbol(&yoyoloader_mod, "_Z11Sprite_Datai");
+	if (!object_find || !sprite_exists || !sprite_data)
 		return 0;
-	original_move = (move_fn)hook(move, move_contact);
-	if (!original_move)
+	const uintptr_t entries[5] = { al, cu, rr, ir, move };
+	void *const replacements[5] = { (void *)alloc_node, (void *)counted_update, (void *)counted_remove_rect,
+		(void *)counted_insert_rect, (void *)move_contact };
+	void *originals[5];
+	if (!hook_all(5, entries, replacements, originals))
 		return 0;
+	original_alloc = (alloc_fn)originals[0];
+	original_update = (update_fn)originals[1];
+	original_remove_rect = (remove_rect_fn)originals[2];
+	original_insert_rect = (insert_rect_fn)originals[3];
+	original_move = (move_fn)originals[4];
 	installed = 1;
 	return 1;
 }
