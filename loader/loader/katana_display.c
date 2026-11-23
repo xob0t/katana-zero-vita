@@ -55,13 +55,15 @@ static int app_game_w, app_game_h; // size the game set, before the override
  * deleted right after drawing to it, its render target destroyed under its open scene) froze the game for good on a
  * device test, the same way the playtest froze entering room_prison_1 right after the game's flush.
  * So right after the game's flush returns the released memory is freed (vgl_collect_garbage_now: GPU finish, every
- * purge cycle), when no scene is open: every recorded command has been submitted, so nothing still to run refers to
- * it. Room start runs before anything is drawn, so that is the usual case. With a scene open the drain waits for the
- * start of Draw, or the next presented frame. The new room then loads its pages into free VRAM, and the forced
- * collection stays a rare last resort, reported by [FORCEDGC]. exp_texdrain0 disables.
+ * purge cycle), when no scene holds unsubmitted commands, so nothing still to run refers to it.
  * The check comes after the flush returns: the flush builtin first submits the runner's pending batch
- * (Graphics::Flush), and a virtual capture barrier can materialize a draw, either of which can open a scene. The loader's
- * own page recovery after the swap (below) drains the same way.
+ * (Graphics::Flush, ending in glFlush). vitaGL's glFlush ends the scene and begins a new, empty one, so an open scene
+ * is the usual case there: an empty one is ended first (vgl_end_unused_scene: nothing recorded, no depth/stencil
+ * contents to lose, the next draw begins a scene and redraws the scissor mask). A scene that may hold commands (a
+ * virtual capture barrier can materialize a draw) is left alone and the drain waits for the next presented frame.
+ * On a device soak before this, 16 of 21 game flushes found a scene open and drained only after the room's first frame.
+ * The new room then loads its pages into free VRAM, and the forced collection stays a rare last resort, reported by
+ * [FORCEDGC]. The loader's own page recovery after the swap (below) drains the same way. exp_texdrain0 disables.
  */
 extern GLboolean vgl_scene_open;
 static builtin_fn orig_texture_flush;
@@ -69,7 +71,11 @@ static const char *texdrain_pending; // what released the memory, until the drai
 unsigned texdrain_count;
 
 static void texdrain_run(const char *where) {
-	if (!texdrain_pending || vgl_scene_open)
+	if (!texdrain_pending)
+		return;
+	extern int vgl_end_unused_scene(void);
+	int scene = vgl_end_unused_scene();
+	if (scene == 2)
 		return;
 	const char *what = texdrain_pending;
 	texdrain_pending = NULL;
@@ -78,9 +84,9 @@ static void texdrain_run(const char *where) {
 	extern void vgl_collect_garbage_now(void);
 	vgl_collect_garbage_now();
 	texdrain_count++;
-	debugPrintf("[TEXDRAIN] freed after %s (%s, %.1f ms): free vram %uKB -> %uKB, phycont %uKB\n", what, where,
-		(sceKernelGetProcessTimeLow() - t0) / 1000.0f, before / 1024, vglMemFree(VGL_MEM_VRAM) / 1024,
-		vglMemFree(VGL_MEM_PHYCONT) / 1024);
+	debugPrintf("[TEXDRAIN] freed after %s (%s%s, %.1f ms): free vram %uKB -> %uKB, phycont %uKB\n", what, where,
+		scene == 1 ? ", ended an empty scene" : "", (sceKernelGetProcessTimeLow() - t0) / 1000.0f, before / 1024,
+		vglMemFree(VGL_MEM_VRAM) / 1024, vglMemFree(VGL_MEM_PHYCONT) / 1024);
 }
 
 static void texture_flush_drain(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) {
