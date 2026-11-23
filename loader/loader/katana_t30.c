@@ -426,6 +426,7 @@ static int eh_room = -2;
 static runner_function **eh_functions, **eh_current_function;
 static const int *eh_fn_collision_rectangle, *eh_fn_instance_exists;
 static int eh_collision_rectangle_desc[2]; // no GML calls collision_rectangle (no g_FUNC_): {0, its registry index}
+static int *eh_function_count;
 typedef int (*builtin_var_get)(void *inst, int index, gml_rvalue *value);
 static builtin_var_get eh_bbox[4]; // GV_Bbl, GV_Bbt, GV_Bbr, GV_Bbb
 static int *eh_var_timestep, *eh_var_slope_slowdown, *eh_var_slope_tolerance;
@@ -445,10 +446,21 @@ static void eh_setting_check(void) {
 		debugPrintf("Half-rate enemies %s\n", enemy_half_rate ? "on" : "off");
 }
 
-// Once, at the first enemy Step: the object indices of the hurt sources. Without all of them half-rate stays off.
+// Once, at the first enemy Step (the object table and the function registry aren't loaded at install): the object
+// indices of the hurt sources and collision_rectangle's registry index. Without all of them half-rate stays off.
 static int eh_resolve_sources(void) {
 	if (eh_sources_found)
 		return 1;
+	for (int i = 0; *eh_functions && i < *eh_function_count && !eh_fn_collision_rectangle; i++)
+		if ((*eh_functions)[i].name && !strcmp((*eh_functions)[i].name, "collision_rectangle")) {
+			eh_collision_rectangle_desc[1] = i;
+			eh_fn_collision_rectangle = eh_collision_rectangle_desc;
+		}
+	if (!eh_fn_collision_rectangle) {
+		debugPrintf("Half-rate enemies: collision_rectangle not in the function registry, off\n");
+		eh_installed = 0;
+		return 0;
+	}
 	int found = 0;
 	for (int i = 0; i < EH_SOURCES; i++)
 		found += (eh_sources[i] = eh_object_find(eh_source_names[i])) >= 0;
@@ -794,12 +806,7 @@ void t30_install(gml_func_entry *table) {
 	eh_functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
 	eh_current_function = (runner_function **)so_symbol(&yoyoloader_mod, "g_pFunction");
 	eh_fn_instance_exists = (const int *)so_symbol(&yoyoloader_mod, "g_FUNC_instance_exists");
-	int *function_count = (int *)so_symbol(&yoyoloader_mod, "the_numb");
-	for (int i = 0; eh_functions && *eh_functions && function_count && i < *function_count && !eh_fn_collision_rectangle; i++)
-		if ((*eh_functions)[i].name && !strcmp((*eh_functions)[i].name, "collision_rectangle")) {
-			eh_collision_rectangle_desc[1] = i;
-			eh_fn_collision_rectangle = eh_collision_rectangle_desc;
-		}
+	eh_function_count = (int *)so_symbol(&yoyoloader_mod, "the_numb");
 	eh_var_timestep = (int *)so_symbol(&yoyoloader_mod, "g_VAR_timestep");
 	eh_var_slope_slowdown = (int *)so_symbol(&yoyoloader_mod, "g_VAR_slope_slowdown");
 	eh_var_slope_tolerance = (int *)so_symbol(&yoyoloader_mod, "g_VAR_slope_tolerance");
@@ -807,7 +814,7 @@ void t30_install(gml_func_entry *table) {
 	eh_bbox[1] = (builtin_var_get)so_symbol(&yoyoloader_mod, "_Z6GV_BbtP9CInstanceiP6RValue");
 	eh_bbox[2] = (builtin_var_get)so_symbol(&yoyoloader_mod, "_Z6GV_BbrP9CInstanceiP6RValue");
 	eh_bbox[3] = (builtin_var_get)so_symbol(&yoyoloader_mod, "_Z6GV_BbbP9CInstanceiP6RValue");
-	int eh_symbols = enemies == 9 && eh_object_find && eh_functions && eh_current_function && eh_fn_collision_rectangle &&
+	int eh_symbols = enemies == 9 && eh_object_find && eh_functions && eh_current_function && eh_function_count &&
 		eh_fn_instance_exists && eh_bbox[0] && eh_bbox[1] && eh_bbox[2] && eh_bbox[3];
 	t30_diag = debugMode && exp_flag("t30diag");
 	var_text_timer = (int *)so_symbol(&yoyoloader_mod, "g_VAR_text_timer");
