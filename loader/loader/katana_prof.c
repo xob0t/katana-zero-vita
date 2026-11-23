@@ -595,6 +595,8 @@ void katana_prof_report(int frames) {
 	extern void lightback_native_report(int frames), lightback_native_late(void);
 	lightback_native_late();
 	lightback_native_report(frames);
+	extern void held_native_report(int frames);
+	held_native_report(frames);
 	static int builtins_hooked = 0;
 	if (!builtins_hooked) {
 		builtins_hooked = 1;
