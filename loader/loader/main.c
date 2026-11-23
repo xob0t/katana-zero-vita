@@ -48,6 +48,7 @@
 
 #include "main.h"
 #include "hang_watch.h"
+#include "asyncsave.h"
 #include "config.h"
 #include "dialog.h"
 #include "so_util.h"
@@ -219,6 +220,8 @@ void loadConfig(const char *game) {
 			else if (strcmp("enemyHalfRate", buffer) == 0) { extern int enemy_half_rate; enemy_half_rate = value ? 1 : 0; }
 			else if (strcmp("stickDeadzone", buffer) == 0) { extern double stick_deadzone; stick_deadzone = (value < 0 ? 0 : value > 90 ? 90 : value) / 100.0; }
 			else if (strcmp("replays", buffer) == 0) replays = value;
+			// asyncSave: 1 checkpoints and options are written by a background thread (default), 0 on the game thread
+			else if (strcmp("asyncSave", buffer) == 0) { extern int asyncsave_cfg; asyncsave_cfg = value; }
 			else if (strcmp("rain", buffer) == 0 && value >= 0 && value <= 2) rain_level = value;
 			else if (strcmp("ropeLights", buffer) == 0) rope_lights = value;
 			else if (strcmp("renderRes", buffer) == 0) {
@@ -452,6 +455,7 @@ int scandir_hook(const char *dir, struct android_dirent ***namelist,
 	int (*selector) (const struct dirent *),
 	int (*compar) (const struct dirent **, const struct dirent **))
 {
+	asyncsave_wait_all(); // the listing shows saves still in the background writer's queue
 	DIR *dp = opendir (dir);
 	struct dirent *current;
 	struct android_dirent d;
@@ -1295,6 +1299,7 @@ __attribute__((noreturn)) void __stack_chk_fail_fake(void) {
 	void *caller = __builtin_return_address(0);
 	sceClibPrintf("Stack corruption detected (called from %p).\n", caller);
 	debugPrintf("Stack corruption detected (called from %p).\n", caller);
+	asyncsave_flush(1000, "stack corruption");
 	debug_flush();
 	sceKernelExitProcess(1);
 	abort();
@@ -1703,6 +1708,8 @@ size_t __ctype_get_mb_cur_max() {
 static FILE __sF_fake[0x100][3];
 
 int stat_hook(const char *pathname, void *statbuf) {
+	if (asyncsave_is_save_file(pathname))
+		asyncsave_wait_path(pathname); // a save in the background writer's queue exists, with its new size
 	struct stat st;
 	int res = stat(pathname, &st);
 	if (res == 0)
@@ -1885,7 +1892,22 @@ static FILE *fopen_buffered(const char *file, const char *mode) {
 	return f;
 }
 
+// Save files (asyncsave.c): a write keeps the data in memory and fclose queues it for the background writer; any other
+// open waits for the file's pending write. NULL: open it as before.
+static FILE *fopen_save(const char *file, const char *mode, int *waited) {
+	*waited = 0;
+	if (!asyncsave_is_save_file(file))
+		return NULL;
+	FILE *f = mode[0] == 'w' && !strchr(mode, '+') ? asyncsave_fopen_write(file) : NULL;
+	if (!f) {
+		asyncsave_wait_path(file);
+		*waited = 1;
+	}
+	return f;
+}
+
 FILE *fopen_hook(char *file, char *mode) {
+	int waited;
 	char *s = strstr(file, "/ux0:");
 	if (s)
 		file = s + 1;
@@ -1909,10 +1931,14 @@ FILE *fopen_hook(char *file, char *mode) {
 #endif
 				char patched_fname[256];
 				sprintf(patched_fname, "%s%s", data_path_root, file);
-				return fopen_buffered(patched_fname, mode);
+				FILE *f = fopen_save(patched_fname, mode, &waited);
+				return f ? f : fopen_buffered(patched_fname, mode);
 			}
 		}
 	}
+	FILE *f = fopen_save(file, mode, &waited);
+	if (f)
+		return f;
 	if (mode[0] == 'w')
 		recursive_mkdir(file);
 	return fopen_buffered(file, mode);
@@ -2135,11 +2161,26 @@ static int bionic_to_newlib_oflags(int flags) {
 }
 
 int open_soloader(const char *path, int flags, int mode) {
+	if (asyncsave_is_save_file(path))
+		asyncsave_wait_path(path);
 	return open(path, bionic_to_newlib_oflags(flags));
 }
 
 int __open_2(const char *path, int flags) {
+	if (asyncsave_is_save_file(path))
+		asyncsave_wait_path(path);
 	return open(path, bionic_to_newlib_oflags(flags));
+}
+
+static DIR *opendir_hook(const char *path) {
+	asyncsave_wait_all(); // the listing shows saves still in the background writer's queue
+	return opendir(path);
+}
+
+// exit() from the runner: saves still in the background writer's queue go to the card first
+static void exit_hook(int status) {
+	asyncsave_flush(3000, "exit");
+	exit(status);
 }
 
 // Bionic fd_set is a plain bitmask of unsigned longs
@@ -2299,6 +2340,7 @@ static so_default_dynlib net_dynlib[] = {
 
 void abort_hook() {
 	debugPrintf("abort called by %p\n", __builtin_return_address(0));
+	asyncsave_flush(1000, "abort");
 	debug_flush();
 	sceKernelExitProcess(0);
 }
@@ -2495,7 +2537,7 @@ static so_default_dynlib default_dynlib[] = {
 	{ "mbsnrtowcs", (uintptr_t)&mbsnrtowcs },
 	{ "localeconv", (uintptr_t)&localeconv },
 	{ "_exit", (uintptr_t)&_exit },
-	{ "opendir", (uintptr_t)&opendir },
+	{ "opendir", (uintptr_t)&opendir_hook },
 	{ "closedir", (uintptr_t)&closedir },
 	{ "readdir", (uintptr_t)&readdir_soloader },
 	{ "raise", (uintptr_t)&ret0 },
@@ -2578,7 +2620,7 @@ static so_default_dynlib default_dynlib[] = {
 	{ "dlopen", (uintptr_t)&dlopen_hook },
 	{ "dlsym", (uintptr_t)&dlsym_hook },
 	{ "dlerror", (uintptr_t)&ret0 },
-	{ "exit", (uintptr_t)&exit },
+	{ "exit", (uintptr_t)&exit_hook },
 	{ "exp", (uintptr_t)&exp },
 	{ "expf", (uintptr_t)&expf },
 	{ "fclose", (uintptr_t)&mt_fclose },
@@ -2800,8 +2842,8 @@ static so_default_dynlib default_dynlib[] = {
 	{ "realloc", (uintptr_t)&prof_realloc },
 	//{ "recv", (uintptr_t)&recv },
 	//{ "recvfrom", (uintptr_t)&recvfrom },
-	{ "remove", (uintptr_t)&sceIoRemove },
-	{ "rename", (uintptr_t)&sceIoRename },
+	{ "remove", (uintptr_t)&asyncsave_remove }, // sceIoRemove after the file's pending write
+	{ "rename", (uintptr_t)&asyncsave_rename }, // sceIoRename after both files' pending writes
 	{ "rint", (uintptr_t)&rint },
 	{ "round", (uintptr_t)&round },
 	{ "roundf", (uintptr_t)&roundf },
@@ -3403,6 +3445,7 @@ void ReleasePrimitiveArrayCritical(void *env, void *arr, void *carray, int mode)
 
 static void game_end()
 {
+	asyncsave_flush(3000, "game_end");
 	if (voidstranger_hack) {
 		void (*Run_EndGame) () = (void *)so_symbol(&yoyoloader_mod, "_Z11Run_EndGamev");
 		Run_EndGame();
@@ -3775,6 +3818,8 @@ void *pthread_main(void *arg) {
 	//*g_fSuppressErrors = 1;
 	
 	patch_gamepad(game_name);
+	// Before the runner starts: recover a save whose commit a crash interrupted, start the background save writer
+	asyncsave_init(data_path, WORKER_THREAD_CPU_MASK);
 	patch_netflix();
 	patch_katana();
 #ifdef STANDALONE_MODE

@@ -16,6 +16,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "asyncsave.h"
 #include "file_replace.h"
 #include "main.h"
 #include "so_util.h"
@@ -46,17 +47,34 @@ typedef struct {
 // Save I/O is infrequent. One lock also covers slot names that alias on FAT.
 static pthread_mutex_t nfx_slot_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static int nfx_slot_path(nfx_slot_paths *paths, const char *slot) {
-	char dir[sizeof(data_path) + sizeof("netflix/")];
-	snprintf(dir, sizeof(dir), "%snetflix/", data_path);
-	recursive_mkdir(dir);
-	int len = snprintf(paths->save, sizeof(paths->save), "%s%s.sav", dir, slot);
+static void nfx_slot_dir(char *dir, size_t size) {
+	snprintf(dir, size, "%snetflix/", data_path);
+}
+
+static int nfx_paths_of(nfx_slot_paths *paths, const char *save) {
+	int len = snprintf(paths->save, sizeof(paths->save), "%s", save);
 	if (len < 0 || (size_t)len >= sizeof(paths->save))
 		return -1;
 	snprintf(paths->backup, sizeof(paths->backup), "%s.bak", paths->save);
 	snprintf(paths->legacy, sizeof(paths->legacy), "%s.tmp", paths->save);
 	snprintf(paths->stage, sizeof(paths->stage), "%s.new", paths->save);
 	return 0;
+}
+
+// The slot's file names. mkdir 0 doesn't touch the card (the async queue: the writer thread creates the folder).
+static int nfx_slot_names(nfx_slot_paths *paths, const char *slot, int mkdir) {
+	char dir[sizeof(data_path) + sizeof("netflix/")], save[sizeof(paths->save)];
+	nfx_slot_dir(dir, sizeof(dir));
+	if (mkdir)
+		recursive_mkdir(dir);
+	int len = snprintf(save, sizeof(save), "%s%s.sav", dir, slot);
+	if (len < 0 || (size_t)len >= sizeof(save))
+		return -1;
+	return nfx_paths_of(paths, save);
+}
+
+static int nfx_slot_path(nfx_slot_paths *paths, const char *slot) {
+	return nfx_slot_names(paths, slot, 1);
 }
 
 // CreateDsMap takes (key, double, string) triplets; a non-NULL string wins over the double
@@ -123,11 +141,10 @@ static int nfx_read_slot(const char *slot, char **data) {
 	return res < 0 ? -1 : 0;
 }
 
-static int nfx_commit_slot(const nfx_slot_paths *paths, const char *data) {
+static int nfx_commit_slot(const nfx_slot_paths *paths, const char *data, size_t len) {
 	FILE *f = fopen(paths->stage, "wb");
 	if (!f)
 		return -1;
-	size_t len = strlen(data);
 	int ok = fwrite(data, 1, len, f) == len && fflush(f) == 0 && fsync(fileno(f)) == 0;
 	if (fclose(f) != 0)
 		ok = 0;
@@ -144,9 +161,47 @@ static int nfx_write_slot(const char *slot, const char *data) {
 	pthread_mutex_lock(&nfx_slot_lock);
 	int res = nfx_slot_path(&paths, slot);
 	if (!res)
-		res = nfx_commit_slot(&paths, data);
+		res = nfx_commit_slot(&paths, data, strlen(data));
 	pthread_mutex_unlock(&nfx_slot_lock);
 	return res;
+}
+
+// Writer thread (asyncsave.c): commits a queued slot under the slot lock, as nfx_write_slot does
+static int nfx_commit_queued(const char *save, const char *data, size_t len) {
+	nfx_slot_paths paths;
+	char dir[sizeof(data_path) + sizeof("netflix/")];
+	nfx_slot_dir(dir, sizeof(dir));
+	pthread_mutex_lock(&nfx_slot_lock);
+	recursive_mkdir(dir);
+	int res = nfx_paths_of(&paths, save);
+	if (!res)
+		res = nfx_commit_slot(&paths, data, len);
+	pthread_mutex_unlock(&nfx_slot_lock);
+	return res;
+}
+
+// Hands the write to the background writer. -1: it couldn't be queued, write it now.
+static int nfx_queue_slot(const char *slot, const char *data) {
+	nfx_slot_paths paths;
+	if (!asyncsave_on || nfx_slot_names(&paths, slot, 0) < 0)
+		return -1;
+	size_t len = strlen(data);
+	char *copy = malloc(len + 1);
+	if (!copy)
+		return -1;
+	memcpy(copy, data, len + 1);
+	if (asyncsave_queue(paths.save, copy, len, nfx_commit_queued) < 0) {
+		free(copy);
+		return -1;
+	}
+	return 0;
+}
+
+// Reads and deletes see the slot as the game last wrote it: they wait for its pending write
+static void nfx_wait_slot(const char *slot) {
+	nfx_slot_paths paths;
+	if (nfx_slot_names(&paths, slot, 0) == 0)
+		asyncsave_wait_path(paths.save);
 }
 
 static int nfx_delete_slot(const char *slot) {
@@ -200,6 +255,7 @@ void *netflix_call(void *ext) {
 		if (!arg0)
 			return nfx_return_double(0.0);
 		char *data = NULL;
+		nfx_wait_slot(arg0);
 		int err = nfx_read_slot(arg0, &data);
 		debugPrintf("Nfxa: read slot %s (%s)\n", arg0, err ? "failed" : data ? "found" : "empty");
 		nfx_send_event("Nfx_cloudRead", data ? "string" : NULL, data, "error", (double)err);
@@ -208,16 +264,23 @@ void *netflix_call(void *ext) {
 	} else if (!strcmp(m, "NfxaCloudWrite")) {
 		if (!arg0 || !arg1)
 			return nfx_return_double(0.0);
-		extern void hang_io_begin(void), hang_io_end(void);
-		hang_io_begin(); // save I/O: no freeze-locator dump meanwhile
-		int err = nfx_write_slot(arg0, arg1);
-		hang_io_end();
-		debugPrintf("Nfxa: write slot %s (%u bytes) = %d\n", arg0, (unsigned)strlen(arg1), err); // the Vita printf has no %zu
+		// In the background (asyncsave.c): the game gets the answer a successful write gave. A write that fails
+		// later is logged and retried once; the next checkpoint writes the whole save again.
+		int queued = nfx_queue_slot(arg0, arg1) == 0, err = 0;
+		if (!queued) {
+			extern void hang_io_begin(void), hang_io_end(void);
+			hang_io_begin(); // save I/O: no freeze-locator dump meanwhile
+			err = nfx_write_slot(arg0, arg1);
+			hang_io_end();
+		}
+		debugPrintf("Nfxa: write slot %s (%u bytes) = %d%s\n", arg0, (unsigned)strlen(arg1), err,
+			queued ? " (queued)" : ""); // the Vita printf has no %zu
 		nfx_send_event("Nfx_cloudWrite", NULL, NULL, "error", (double)err);
 		return nfx_return_double(1.0);
 	} else if (!strcmp(m, "NfxaCloudDelete")) {
 		if (!arg0)
 			return nfx_return_double(0.0);
+		nfx_wait_slot(arg0);
 		int err = nfx_delete_slot(arg0);
 		debugPrintf("Nfxa: delete slot %s = %d\n", arg0, err);
 		nfx_send_event("Nfx_cloudDelete", NULL, NULL, "error", (double)err);
