@@ -124,18 +124,20 @@ static void forced_gc_report(void) {
 // Surface memory is freed once the GPU has finished the scenes that may use it (vitagl.patch: vgl_retire, the scene
 // completion fence); totals in debug mode when they change, at most every 2 s
 static void rt_free_report(void) {
-	extern uint32_t vgl_rt_retired_now, vgl_rt_retired_later, vgl_open_scene_retires, vgl_retire_overflows;
+	extern uint32_t vgl_rt_retired_now, vgl_rt_retired_later, vgl_open_scene_retires, vgl_rt_handle_retires,
+		vgl_retire_overflows;
+	extern int vgl_retire_pending(void);
 	static uint32_t seen, frames;
 	frames++;
-	uint32_t sum = vgl_rt_retired_now + vgl_rt_retired_later + vgl_open_scene_retires + vgl_retire_overflows;
+	uint32_t sum = vgl_rt_retired_now + vgl_rt_retired_later + vgl_open_scene_retires + vgl_rt_handle_retires +
+		vgl_retire_overflows;
 	if (!debugMode || frames < 120 || sum == seen)
 		return;
 	frames = 0;
 	seen = sum;
-	extern int vgl_retire_pending(void);
 	debugPrintf("[RTFREE] render-target frees: %u at once (GPU done), %u after their scene fence | open-scene texture frees "
-		"held back %u | queue full %u | waiting now %d\n", vgl_rt_retired_now, vgl_rt_retired_later,
-		vgl_open_scene_retires, vgl_retire_overflows, vgl_retire_pending());
+		"held back %u | render targets retired %u | not queued (no memory) %u | waiting now %d\n", vgl_rt_retired_now,
+		vgl_rt_retired_later, vgl_open_scene_retires, vgl_rt_handle_retires, vgl_retire_overflows, vgl_retire_pending());
 }
 
 // DoAStep_Draw hook: application surface size, then lighting at 30 Hz
