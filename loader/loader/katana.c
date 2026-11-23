@@ -800,6 +800,12 @@ void katana_late_install(void) {
 		extern int input_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native controller_check_pressed_ext: %s\n", input_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
+	// Exact native controller_check (held input, held_native.c): 2-4 calls per frame in every gameplay room at
+	// ~145 us each (getters over the on-screen keyboard's key list). exp_heldnative0: the original script.
+	if (!exp_flag("heldnative0")) {
+		extern int held_native_install(void *(*rx_alloc)(size_t));
+		debugPrintf("native controller_check: %s\n", held_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
 	if (!exp_flag("vcapture0")) {
 		extern int virtual_capture_install(void *(*rx_alloc)(size_t));
 		extern int virtual_capture_relaxed;
