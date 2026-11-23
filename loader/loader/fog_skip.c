@@ -28,11 +28,16 @@
  * discards. Puffs are counted for the 1-in-N choice the same way in both paths (fog_created), so the same puffs are
  * kept.
  *
- * A discarded puff also exists until its first Step, which is always in the next frame. In that window the only
- * thing that sees it is the particle budget: obj_timeMaster's Step runs obj_opto_master user event 5 after the
- * spawner, and it counts 0.5 * instance_number(obj_fog) into global.particle_scaler. That one instance_number call
- * gets the puffs not created this frame added (patch_budget_call), so the scaler stays the same. (The spawner's own
- * with (obj_fog) when frozen changes only writes the puffs' frozen.)
+ * A discarded puff also exists until its first Step, which is always in the next frame, or until the room ends. In
+ * that window the only game code that sees it is the particle budget: obj_timeMaster's Step runs obj_opto_master
+ * user event 5 after the spawner, and it counts 0.5 * instance_number(obj_fog) into global.particle_scaler. That one
+ * instance_number call gets the puffs not created that would still exist added (ghosts, patch_budget_call), so the
+ * scaler stays the same. (The spawner's own with (obj_fog) when frozen changes only writes the puffs' frozen.) Generic
+ * runner queries (with (all), instance_find, instance_count) can't see a skipped puff during its would-be lifetime;
+ * nothing in the game uses them on fog.
+ *
+ * All of this is APK 1.1.10 code: the spawner Step, obj_fog Create and user event 1 and the budget event must match
+ * their 1.1.10 fingerprints (code_fingerprint) before anything is hooked, in verify mode too.
  *
  * exp_fogskip0 keeps the create-and-destroy path. Debug builds report [FOGSKIP] with the profiler.
  * exp_fogskipverify (debug) creates every puff as before, but first runs the skip on the live state, records the
@@ -81,34 +86,112 @@ static int verify;
 unsigned fog_skipped, fog_skip_fallback;
 
 // Ghosts: puffs not created that would still exist. A discarded puff lives until its first Step, which comes in a
-// later frame (g_IOFrameCount). Instances step newest first, so in that frame every fog puff (all newer than the
-// spawner and obj_timeMaster) steps before the spawner and the budget: the first fog Step seen in a later frame ends
-// the ghosts of earlier frames. While the game is paused (instance_deactivate_all) no puff steps and they live on,
-// as the deactivated puff would come back with the instances.
-static uint32_t ghost_frame;
-static unsigned ghosts_now, ghosts_before; // created in ghost_frame / in earlier frames
+// later frame (g_IOFrameCount), or until its room ends. Instances step newest first, so in that later frame the puff
+// steps before every older instance: any fog puff Step or spawner Step seen in a later frame means the ghosts of
+// earlier frames have taken theirs (ghosts_expire). The room's end (also a restart of the same room) destroys the
+// puff together with the spawner that made it, so a ghost only counts while its spawner exists as an active
+// instance: in another room it doesn't, and while the game is paused (instance_deactivate_all) the deactivated
+// spawner isn't counted, as the deactivated puff wouldn't be.
+#define GHOST_MAX 64
+static struct { uint32_t frame; int spawner; } ghosts[GHOST_MAX];
+static int ghost_count;
+static int (*instance_exists)(void *self, void *other, int id); // active instances only, as instance_number
 
-static void ghost_add(void) {
-	uint32_t now = *frame_count;
-	if (now != ghost_frame) {
-		ghosts_before += ghosts_now;
-		ghosts_now = 0;
-		ghost_frame = now;
-	}
-	ghosts_now++;
+static void ghost_add(int spawner) {
+	ghosts[ghost_count].frame = *frame_count;
+	ghosts[ghost_count].spawner = spawner;
+	ghost_count++;
 }
 
-static unsigned ghosts_alive(void) {
-	return ghosts_now + ghosts_before;
+static void ghosts_expire(void) {
+	uint32_t now = *frame_count;
+	int kept = 0;
+	for (int i = 0; i < ghost_count; i++)
+		if (ghosts[i].frame == now)
+			ghosts[kept++] = ghosts[i];
+	ghost_count = kept;
+}
+
+static unsigned ghosts_alive(void *self, void *other) {
+	unsigned n = 0;
+	int last = -1, last_exists = 0;
+	for (int i = 0; i < ghost_count; i++) {
+		if (ghosts[i].spawner != last) {
+			last = ghosts[i].spawner;
+			last_exists = instance_exists(self, other, last) != 0;
+		}
+		n += last_exists;
+	}
+	return n;
 }
 
 // Called by katana.c's fog Step hook for every puff, before anything else
 void fog_skip_puff_step(void) {
-	if (!ghosts_now && !ghosts_before)
-		return;
-	if (*frame_count != ghost_frame)
-		ghosts_now = 0;
-	ghosts_before = 0;
+	if (ghost_count)
+		ghosts_expire();
+}
+
+static event_func orig_spawner_step;
+
+static void spawner_step(void *self, void *other) {
+	if (ghost_count)
+		ghosts_expire();
+	orig_spawner_step(self, other);
+}
+
+// FNV-1a over a function's words from the third on (the first two may be an entry hook), skipping pc-relative literal
+// pool words (ldr/vldr targets: relocated constants) and with every bl/blx word replaced by 0xb (patch_plt_calls and
+// call-site veneers change their targets). work/fogskip/fingerprint.py computes the same offline.
+static uint32_t code_fingerprint(uintptr_t entry, uint32_t size) {
+	const uint32_t *w = (const uint32_t *)entry;
+	uint32_t n = size / 4, h = 2166136261u;
+	static uint8_t pool[0x5000 / 4];
+	if (!entry || n > sizeof(pool))
+		return 0;
+	memset(pool, 0, n);
+	for (uint32_t i = 0; i < n; i++) {
+		uint32_t x = w[i], off, t;
+		if ((x & 0x0f7f0000) == 0x051f0000) { // ldr rd, [pc, #+-imm12]
+			off = x & 0xfff;
+			t = (i * 4 + 8 + (x & 0x00800000 ? off : -off)) / 4;
+			if (t < n)
+				pool[t] = 1;
+		} else if ((x & 0x0f3f0e00) == 0x0d1f0a00) { // vldr s/d, [pc, #+-imm8 * 4]
+			off = (x & 0xff) * 4;
+			t = (i * 4 + 8 + (x & 0x00800000 ? off : -off)) / 4;
+			if (t < n)
+				pool[t] = 1;
+			if (t + 1 < n)
+				pool[t + 1] = 1;
+		}
+	}
+	for (uint32_t i = 2; i < n; i++) {
+		if (pool[i])
+			continue;
+		uint32_t x = w[i];
+		if ((x & 0x0f000000) == 0x0b000000 || (x & 0xfe000000) == 0xfa000000)
+			x = 0xb;
+		for (int k = 0; k < 4; k++)
+			h = (h ^ ((x >> (8 * k)) & 0xff)) * 16777619u;
+	}
+	return h;
+}
+
+static int code_is_1110(void) {
+	static const struct { const char *symbol; uint32_t size, fingerprint; } code[] = {
+		{"_Z32gml_Object_obj_fogspawner_Step_0P9CInstanceS0_", 0x4ac0, 0xb22eaa1f}, // spawn at line 0x83, prefill 0x29
+		{"_Z27gml_Object_obj_fog_Create_0P9CInstanceS0_", 0x27f0, 0xde4b5508},      // two random draws
+		{"_Z27gml_Object_obj_fog_Other_11P9CInstanceS0_", 0x780, 0x16b06c43},       // no random draw
+		{"_Z35gml_Object_obj_opto_master_Other_15P9CInstanceS0_", 0x31c0, 0xe790201b}, // the budget call site
+	};
+	for (unsigned i = 0; i < sizeof(code) / sizeof(code[0]); i++) {
+		uint32_t f = code_fingerprint(so_symbol(&yoyoloader_mod, code[i].symbol), code[i].size);
+		if (f != code[i].fingerprint) {
+			debugPrintf("fog skip: %s fingerprint %08x, expected %08x\n", code[i].symbol, f, code[i].fingerprint);
+			return 0;
+		}
+	}
+	return 1;
 }
 
 static int object_arg(const gml_rvalue *v) {
@@ -179,16 +262,16 @@ static struct { uint32_t off, val; } diff_emu[DIFF_MAX], diff_orig[DIFF_MAX];
 static int diff_emu_n, diff_orig_n;
 
 static int pending_id = -1;
-static int *event_type, *event_number;
-static uint32_t last_doomed_frame;
 static fog_state predicted;
 static int diff_pending;
-// Verified puffs (the ones the skip would not create) that still exist, with their creation frame
-#define CHECKED_MAX 32
-static struct { void *inst; uint32_t frame; } checked[CHECKED_MAX];
-static unsigned checked_alive, checked_overflow;
+static int pending_spawner;
+// Verified puffs (the ones the skip would not create) not seen taking their first Step yet, by instance id
+#define CHECKED_MAX 64
+static struct { int id; uint32_t frame; } checked[CHECKED_MAX];
+static unsigned checked_overflow;
 
 unsigned fog_model_mismatch, fog_verified, fog_mismatch, fog_budget_calls, fog_budget_saw_doomed, fog_with_saw_doomed;
+unsigned fog_budget_teardown;
 unsigned fog_first_step_same, fog_first_step_later, fog_first_step_later2;
 static event_func orig_fog_user1, orig_opto_user5;
 static int (*orig_new_with)(void *it, void **self, void **other, const gml_rvalue *target);
@@ -264,7 +347,8 @@ static void fog_user1_verify(void *self, void *other) {
 		return;
 	fog_state now;
 	state_read(&now);
-	ghost_add();
+	if (ghost_count < GHOST_MAX)
+		ghost_add(pending_spawner);
 	if (!memcmp(&now, &predicted, sizeof(now)))
 		fog_verified++;
 	else if (fog_mismatch++ < 8)
@@ -282,32 +366,52 @@ static void fog_user1_verify(void *self, void *other) {
 		}
 	}
 	pending_id = -1;
-	last_doomed_frame = *frame_count;
 	for (int i = 0; i < CHECKED_MAX; i++)
-		if (!checked[i].inst) {
-			checked[i].inst = self;
+		if (!checked[i].id) {
+			checked[i].id = instance_id(self);
 			checked[i].frame = *frame_count;
-			checked_alive++;
 			return;
 		}
 	checked_overflow++;
 }
 
 
+// CInstance::ms_ID2Instance {buckets, mask, count}: each bucket {first, last}, each element {prev, next, id, instance}.
+// Holds deactivated instances too; a destroyed one leaves it at the end of its frame or with its room.
+static uint32_t *id_map;
+
+static int instance_known(int id) {
+	if (!id_map || !id_map[0])
+		return 1;
+	const uint32_t *e = (const uint32_t *)(uintptr_t)((const uint32_t *)(uintptr_t)id_map[0])[(id_map[1] & (uint32_t)id) * 2];
+	for (; e; e = (const uint32_t *)(uintptr_t)e[1])
+		if ((int)e[2] == id)
+			return 1;
+	return 0;
+}
+
+// The reference: the checked puffs that instance_number would count now (active instances, resolved by id). A
+// checked puff that no longer exists without having taken its Step was destroyed with its room.
 static void opto_user5_verify(void *self, void *other) {
 	fog_budget_calls++;
-	if (fog_doomed_alive())
+	unsigned real = 0, gone = 0;
+	for (int i = 0; i < CHECKED_MAX; i++)
+		if (checked[i].id) {
+			if (instance_exists(self, other, checked[i].id))
+				real++;
+			else if (!instance_known(checked[i].id)) {
+				checked[i].id = 0; // destroyed without its Step: the room ended
+				gone++;
+			}
+		}
+	if (real)
 		fog_budget_saw_doomed++;
-	if (ghosts_alive() != checked_alive && fog_model_mismatch++ < 8)
-		debugPrintf("[FOGSKIP] model mismatch: %u alive, model %u\n", checked_alive, ghosts_alive());
-	static int logged;
-	if (last_doomed_frame && logged < 16) {
-		stack_trace *t = *trace_top;
-		logged++;
-		debugPrintf("[FOGSKIP] budget call: event %d/%d in %s line %d, doomed alive %u, frames since last doomed %u\n",
-			event_type ? *event_type : -1, event_number ? *event_number : -1, t && t->name ? t->name : "?",
-			t ? t->line : -1, fog_doomed_alive(), *frame_count - last_doomed_frame);
-	}
+	if (gone)
+		fog_budget_teardown++;
+	unsigned model = ghosts_alive(self, other);
+	if (model != real && fog_model_mismatch++ < 8)
+		debugPrintf("[FOGSKIP] model mismatch: %u alive, model %u (room %d)\n", real, model,
+			current_room ? *current_room : -1);
 	orig_opto_user5(self, other);
 }
 
@@ -333,8 +437,11 @@ static int new_with_verify(void *it, void **self, void **other, const gml_rvalue
 
 // Called by katana.c's fog Step hook when it destroys a discarded puff
 void fog_skip_doomed_step(void *self) {
-	for (int i = 0; verify && i < CHECKED_MAX; i++)
-		if (checked[i].inst == self) {
+	if (!verify)
+		return;
+	int id = instance_id(self);
+	for (int i = 0; i < CHECKED_MAX; i++)
+		if (checked[i].id == id) {
 			uint32_t now = *frame_count;
 			if (now == checked[i].frame)
 				fog_first_step_same++;
@@ -342,22 +449,20 @@ void fog_skip_doomed_step(void *self) {
 				fog_first_step_later++;
 			else
 				fog_first_step_later2++;
-			checked[i].inst = NULL;
-			checked_alive--;
+			checked[i].id = 0;
 			return;
 		}
 }
 
 // ---- the particle budget ------------------------------------------------------------------------------------------
 // obj_opto_master user event 5 adds 0.5 * instance_number(obj_fog) to the particle count behind global.particle_scaler.
-// It runs while a discarded puff created this frame still exists (verify mode: the puff's first Step is always in the
-// next frame), so that call (APK 1.1.10 ELF 0x456c218, the 9th instance_number of the event) gets the puffs not
-// created this frame added.
+// It runs while a discarded puff created this frame still exists, so that call (APK 1.1.10 ELF 0x456c218, the 9th
+// instance_number of the event) gets the ghosts added.
 static int (*instance_number)(void *self, void *other, int obj);
 
 static int budget_fog_number(void *self, void *other, int obj) {
 	int n = instance_number(self, other, obj);
-	return obj == fog_object ? n + (int)ghosts_alive() : n;
+	return obj == fog_object && ghost_count ? n + (int)ghosts_alive(self, other) : n;
 }
 
 static int patch_budget_call(void) {
@@ -388,15 +493,16 @@ static int patch_budget_call(void) {
 
 static void create_depth_hook(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) {
 	if (argc == 4 && fog_created % fog_scale && object_arg(&args[3]) == fog_object && at_spawn_site()) {
-		if (!*run_room || !layer_with_depth(*run_room, get_int32(args, 2), 1)) {
+		if (!*run_room || !layer_with_depth(*run_room, get_int32(args, 2), 1) || ghost_count >= GHOST_MAX) {
 			fog_skip_fallback++;
 		} else if (!verify) {
 			fog_created++;
 			fog_skipped++;
-			ghost_add();
+			ghost_add(instance_id(self));
 			set_instance_ref(result, skip_puff());
 			return;
 		} else {
+			pending_spawner = instance_id(self);
 			fog_state before;
 			state_read(&before);
 			if (seg_copy && pending_id < 0) {
@@ -427,13 +533,14 @@ static void create_depth_hook(gml_rvalue *result, void *self, void *other, int a
 void fog_skip_report(int frames) {
 	if (!orig_create_depth)
 		return;
-	debugPrintf("[FOGSKIP] %s: %u puffs not created, %u fallbacks (no layer yet)\n",
+	debugPrintf("[FOGSKIP] %s: %u puffs not created, %u fallbacks (no layer yet or ghost table full)\n",
 		verify ? "verify" : "skip", fog_skipped, fog_skip_fallback);
 	if (verify)
 		debugPrintf("[FOGSKIP] verify: %u match, %u mismatch; checked puffs' first Step same frame %u, next %u, later %u "
-			"(%u untracked); budget calls %u, seeing a discarded puff %u, ghost model mismatch %u; with loops seeing one %u\n",
-			fog_verified, fog_mismatch, fog_first_step_same, fog_first_step_later, fog_first_step_later2, checked_overflow,
-			fog_budget_calls, fog_budget_saw_doomed, fog_model_mismatch, fog_with_saw_doomed);
+			"(%u untracked); budget calls %u, seeing a discarded puff %u, after a room end %u, ghost model mismatch %u; "
+			"with loops seeing one %u\n", fog_verified, fog_mismatch, fog_first_step_same, fog_first_step_later,
+			fog_first_step_later2, checked_overflow, fog_budget_calls, fog_budget_saw_doomed, fog_budget_teardown,
+			fog_model_mismatch, fog_with_saw_doomed);
 	(void)frames;
 }
 
@@ -454,6 +561,7 @@ void fog_skip_install(void) {
 	FS_RESOLVE(layer_with_depth, "_ZN13CLayerManager17GetLayerWithDepthEP5CRoomib");
 	FS_RESOLVE(get_int32, "_Z10YYGetInt32PK6RValuei");
 	FS_RESOLVE(random_step, "_Z8YYRandomv");
+	FS_RESOLVE(instance_exists, "_Z21YYGML_instance_existsP9CInstanceS0_i");
 	int (*object_find)(const char *);
 	FS_RESOLVE(object_find, "_Z11Object_FindPKc");
 	runner_function **functions;
@@ -462,15 +570,25 @@ void fog_skip_install(void) {
 	FS_RESOLVE(count, "the_numb");
 #undef FS_RESOLVE
 	if (!frame_count || !trace_top || !run_room || !room_maxid || !element_id || !layer_id || !create_counter || !rng_state ||
-			!rng_index || !layer_with_depth || !get_int32 || !random_step || !object_find || !functions || !count) {
+			!rng_index || !layer_with_depth || !get_int32 || !random_step || !instance_exists || !object_find || !functions ||
+			!count) {
 		debugPrintf("fog skip: NOT installed (symbols)\n");
+		return;
+	}
+	if (!code_is_1110()) {
+		debugPrintf("fog skip: NOT installed (not the APK 1.1.10 code)\n");
+		return;
+	}
+	orig_spawner_step = entry_hook(so_symbol(&yoyoloader_mod, "_Z32gml_Object_obj_fogspawner_Step_0P9CInstanceS0_"),
+		spawner_step);
+	if (!orig_spawner_step) {
+		debugPrintf("fog skip: NOT installed (spawner Step hook)\n");
 		return;
 	}
 	fog_object = object_find("obj_fog");
 	verify = debugMode && exp_flag("fogskipverify");
-	event_type = (int *)so_symbol(&yoyoloader_mod, "Current_Event_Type");
-	event_number = (int *)so_symbol(&yoyoloader_mod, "Current_Event_Number");
 	if (verify) {
+		id_map = (uint32_t *)so_symbol(&yoyoloader_mod, "_ZN9CInstance14ms_ID2InstanceE");
 		orig_fog_user1 = entry_hook(so_symbol(&yoyoloader_mod, "_Z27gml_Object_obj_fog_Other_11P9CInstanceS0_"),
 			fog_user1_verify);
 		if (!orig_fog_user1) {
