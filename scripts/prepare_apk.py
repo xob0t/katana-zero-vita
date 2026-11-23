@@ -12,18 +12,30 @@
 
 Usage: python scripts/prepare_apk.py [--xbox-glyphs] <input.apk> <output.apk>
 """
-import bz2
-
-import lz4.block
+import hashlib
+import io
+import os
 import struct
 import sys
+import tempfile
 import zipfile
+from collections import Counter
+
+import lz4.block
 
 import patch_plt_calls
+from extract_art import FLAT_GAME, NESTED_GAME, game_data_member, unpack_gm_texture, validate_gm_qoi
 from vita_glyphs import encode_gm_qoi, patched_pages
 
 KEEP_LIB = "lib/armeabi-v7a/libyoyo.so"
+MANIFEST = "AndroidManifest.xml"
+REQUIRED_OUTPUT = {MANIFEST, FLAT_GAME, KEEP_LIB}
 TEXTURE_ALIGN = 128
+TESTED_RUNNERS = {
+    "ab7014c19c449858c8ea53c75b2c7cd3d78642d6aad60297aa0d7db456bd4701": "1.1.10 (Netflix)",
+}
+UNKNOWN_RUNNER = ("This APK's runner is not the one the port was tested with (Netflix release 1.1.10). "
+                  "The VPK may not start.")
 
 
 def u32(buf, off):
@@ -31,60 +43,97 @@ def u32(buf, off):
 
 
 def parse_chunks(data):
-    if data[:4] != b"FORM":
+    if len(data) < 8 or data[:4] != b"FORM" or u32(data, 4) != len(data) - 8:
         raise ValueError("not a GameMaker data file")
     chunks, off = [], 8
     while off < len(data):
-        name = data[off:off + 4].decode()
+        if off + 8 > len(data):
+            raise ValueError(f"truncated GameMaker chunk header at {off:#x}")
+        name = data[off:off + 4].decode("ascii", errors="replace")
         size = u32(data, off + 4)
+        if off + 8 + size > len(data):
+            raise ValueError(f"{name} chunk extends past the end of game.droid")
         chunks.append((name, off, size))
         off += 8 + size
     return chunks
 
 
+def texture_entries(data, start, end):
+    if start + 4 > end:
+        raise ValueError("truncated TXTR page count")
+    count = u32(data, start)
+    table_end = start + 4 + 4 * count
+    if not count or table_end > end:
+        raise ValueError("invalid TXTR page count")
+    entries = []
+    for n in range(count):
+        entry = u32(data, start + 4 + 4 * n)
+        if not table_end <= entry <= end - 28:
+            raise ValueError(f"texture page {n}: entry outside TXTR")
+        length, ptr = u32(data, entry + 8), u32(data, entry + 24)
+        if ptr < table_end or length < 12 or ptr + length > end:
+            raise ValueError(f"texture page {n}: blob outside TXTR or truncated")
+        if data[ptr:ptr + 4] not in (b"2zoq", b"fioq"):
+            raise ValueError(f"texture page {n}: expected 2zoq or fioq header")
+        entries.append((entry, ptr, length))
+    first_blob = min(ptr for _, ptr, _ in entries)
+    for n, (entry, _, _) in enumerate(entries):
+        if entry + 28 > first_blob:
+            raise ValueError(f"texture page {n}: entry overlaps texture data")
+    for start_index, length_index in ((0, None), (1, 2)):
+        prev_end = 0
+        for n, entry in sorted(enumerate(entries), key=lambda item: item[1][start_index]):
+            offset = entry[start_index]
+            if offset < prev_end:
+                raise ValueError(f"texture page {n}: overlapping TXTR ranges")
+            prev_end = offset + (28 if length_index is None else entry[length_index])
+    return entries
+
+
 def recompress_textures(data, vita_glyphs=True):
     """Returns game.droid with the bzip2 payload of 2zoq texture pages replaced by LZ4 (and the Vita glyphs)."""
-    pages = patched_pages(data) if vita_glyphs else {}
     chunks = parse_chunks(data)
     names = [c[0] for c in chunks]
     if names[-2:] != ["TXTR", "AUDO"]:
         raise ValueError(f"unexpected chunk order: {names[-2:]}")
-    _, txtr_off, txtr_size = chunks[-2]
+    if names.count("TXTR") != 1 or names.count("AUDO") != 1:
+        raise ValueError("duplicate TXTR or AUDO chunk in game.droid")
+    _, txtr_off, _ = chunks[-2]
     _, audo_off, audo_size = chunks[-1]
-    base = txtr_off + 8
-
-    count = u32(data, base)
-    entries = [u32(data, base + 4 + 4 * i) for i in range(count)]
-    # Texture entry: ..., +8 blob length, ..., +24 blob pointer
+    entries = texture_entries(data, txtr_off + 8, audo_off)
+    if audo_size < 4 or 4 + 4 * u32(data, audo_off + 8) > audo_size:
+        raise ValueError("invalid AUDO entry table")
+    pages = patched_pages(data) if vita_glyphs else {}
     blobs = []
-    for n, e in enumerate(entries):
-        length, ptr = u32(data, e + 8), u32(data, e + 24)
+    for n, (_, ptr, length) in enumerate(entries):
         blob = data[ptr:ptr + length]
-        if n in pages and blob[:4] != b"2zoq":
-            raise ValueError(f"texture page {n} is not a 2zoq page")
-        if blob[:4] == b"2zoq":
-            qoi = bz2.decompress(blob[12:])
-            if qoi[:4] != b"fioq" or u32(blob, 8) != len(qoi):
-                raise ValueError("bzip2 payload is not a QOI image")
+        try:
+            qoi, dimensions = unpack_gm_texture(blob)
             if n in pages:
                 qoi = encode_gm_qoi(pages[n])
-                blob = blob[:8] + struct.pack("<I", len(qoi)) + blob[12:]
-            # Header (magic, width, height, QOI size) is kept; the runner allocates from the size
+                if validate_gm_qoi(qoi) != dimensions:
+                    raise ValueError("patched glyphs changed the texture dimensions")
+        except (ValueError, OSError, RuntimeError) as exc:
+            raise ValueError(f"texture page {n}: {exc}") from exc
+        if blob[:4] == b"2zoq":
+            # The runner allocates from the uncompressed QOI size in the header.
             # Payload: "LZ4H", u32 block size (the runner passes the whole blob length), LZ4 block
             block = lz4.block.compress(qoi, mode="high_compression", compression=12, store_size=False)
-            blob = blob[:12] + b"LZ4H" + struct.pack("<I", len(block)) + block
+            blob = blob[:8] + struct.pack("<I4sI", len(qoi), b"LZ4H", len(block)) + block
+        else:
+            blob = qoi
         blobs.append(blob)
 
-    first_blob = min(u32(data, e + 24) for e in entries)
+    first_blob = min(ptr for _, ptr, _ in entries)
     out = bytearray(data[:first_blob])
-    for e, blob in zip(entries, blobs):
+    for (entry, _, _), blob in zip(entries, blobs):
         while len(out) % TEXTURE_ALIGN:
             out.append(0)
-        struct.pack_into("<I", out, e + 24, len(out))
-        struct.pack_into("<I", out, e + 8, len(blob))
+        struct.pack_into("<I", out, entry + 24, len(out))
+        struct.pack_into("<I", out, entry + 8, len(blob))
         out += blob
-    txtr_end = txtr_off + 8 + txtr_size
-    out += data[len(out):txtr_end] if len(out) < txtr_end else b""
+    old_blob_end = max(ptr + length for _, ptr, length in entries)
+    out += data[old_blob_end:audo_off]
     while len(out) % 4:
         out.append(0)
     struct.pack_into("<I", out, txtr_off + 4, len(out) - (txtr_off + 8))
@@ -102,11 +151,36 @@ def recompress_textures(data, vita_glyphs=True):
     return bytes(out)
 
 
-def patch_runner(payload):
+def patch_runner(payload, log=print):
     """Rewrites the runner's PLT calls (scripts/patch_plt_calls.py) and returns the patched bytes."""
+    if runner_version(io.BytesIO(payload)) is None:
+        log(UNKNOWN_RUNNER)
     data, lines = patch_plt_calls.patch(payload)
-    print("libyoyo.so: " + lines[0])
+    log("libyoyo.so: " + lines[0])
     return data
+
+
+def runner_version(runner):
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: runner.read(1 << 20), b""):
+        digest.update(chunk)
+    return TESTED_RUNNERS.get(digest.hexdigest())
+
+
+def apk_entries(names, game):
+    nested = game == NESTED_GAME
+    entries = {}
+    for name in names:
+        if name.endswith("/"):
+            continue
+        if name in (MANIFEST, KEEP_LIB):
+            entries[name] = name
+        elif nested and name.startswith("assets/assets/"):
+            entries["assets/" + name.removeprefix("assets/assets/")] = name
+        elif name in ("assets/splash.png", "assets/portrait_splash.png") or (
+                not nested and name.startswith("assets/") and not name.startswith("assets/assets/")):
+            entries.setdefault(name, name)
+    return entries
 
 
 def apk_problem(names):
@@ -122,40 +196,40 @@ def apk_problem(names):
             return ("This APK has no runner library. It is probably the base APK of a split install, which keeps "
                     "the runner in a separate APK. Use a single APK that includes lib/armeabi-v7a/libyoyo.so.")
         return "This APK has no 32-bit ARM runner, lib/armeabi-v7a/libyoyo.so."
-    if "assets/assets/game.droid" not in names and "assets/game.droid" not in names:
+    game = game_data_member(names)
+    if game is None:
         return "This APK has no game data (assets/game.droid). Is it Katana ZERO?"
+    entries = apk_entries(names, game)
+    missing = REQUIRED_OUTPUT - entries.keys()
+    if missing:
+        return "This APK is missing required files: " + ", ".join(sorted(missing))
+    counts = Counter(names)
+    for name in entries.values():
+        if counts[name] > 1:
+            return f"This APK has duplicate entries for {name}."
     return None
 
 
-def prepare(src, dst, vita_glyphs=True):
+def prepare(src, dst, vita_glyphs=True, *, log=print):
     """Writes the loader's game.apk to `dst` (a path or a writable file) from the Android APK `src`."""
     with zipfile.ZipFile(src) as zi:
-        names = set(zi.namelist())
+        names = zi.namelist()
         problem = apk_problem(names)
         if problem:
-            raise SystemExit(problem)
-        nested = any(n.startswith("assets/assets/") for n in names)
-        entries = {}
-        for info in zi.infolist():
-            n = info.filename
-            if n == "AndroidManifest.xml" or n == KEEP_LIB:
-                entries[n] = n
-            elif nested and n.startswith("assets/assets/"):
-                entries["assets/" + n[len("assets/assets/"):]] = n
-            elif n in ("assets/splash.png", "assets/portrait_splash.png") or (not nested and n.startswith("assets/")):
-                entries.setdefault(n, n)
+            raise ValueError(problem)
+        entries = apk_entries(names, game_data_member(names))
         with zipfile.ZipFile(dst, "w", zipfile.ZIP_STORED) as zo:
             for out_name, in_name in sorted(entries.items()):
                 payload = zi.read(in_name)
                 if out_name == KEEP_LIB:
-                    payload = patch_runner(payload)
-                if out_name == "assets/game.droid":
+                    payload = patch_runner(payload, log)
+                if out_name == FLAT_GAME:
                     before = len(payload)
                     payload = recompress_textures(payload, vita_glyphs)
-                    print(f"game.droid: {before / 1e6:.1f}MB -> {len(payload) / 1e6:.1f}MB (textures recompressed to LZ4"
-                          + (", Vita button glyphs)" if vita_glyphs else ")"))
+                    log(f"game.droid: {before / 1e6:.1f}MB -> {len(payload) / 1e6:.1f}MB (textures recompressed to LZ4"
+                        + (", Vita button glyphs)" if vita_glyphs else ")"))
                 zo.writestr(zipfile.ZipInfo(out_name, (2020, 1, 1, 0, 0, 0)), payload)
-    print(f"wrote {dst} ({len(entries)} entries)")
+    log(f"wrote {dst} ({len(entries)} entries)")
 
 
 def main():
@@ -164,7 +238,14 @@ def main():
     args = [a for a in args if a != "--xbox-glyphs"]
     if len(args) != 2:
         raise SystemExit(__doc__)
-    prepare(*args, vita_glyphs)
+    src, dst = args
+    with tempfile.TemporaryDirectory(dir=os.path.dirname(dst) or ".") as work:
+        temporary = os.path.join(work, os.path.basename(dst))
+        try:
+            prepare(src, temporary, vita_glyphs)
+            os.replace(temporary, dst)
+        except (ValueError, OSError, zipfile.BadZipFile) as exc:
+            raise SystemExit(f"Could not prepare {dst}: {exc}") from exc
 
 
 if __name__ == "__main__":

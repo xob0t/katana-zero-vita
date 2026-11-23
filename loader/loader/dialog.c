@@ -137,7 +137,7 @@ void fatal_error(const char *fmt, ...) {
 	if (!vgl_booted)
 		vglInit(0);
 	
-	debugPrintf(string);
+	debugPrintf("%s\n", string);
 	debug_flush();
 	
 	// We don't throw a message dialog with maximizeMem on since common dialog is broken

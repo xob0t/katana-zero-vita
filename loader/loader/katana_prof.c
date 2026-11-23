@@ -365,15 +365,16 @@ void katana_prof_report(int frames) {
 		debugPrintf("[FPS30] enemy steps at 30 ticks/s %u, search ticks added %u\n", t30_enemy_steps, t30_search_ticks);
 	{
 		// Half-rate enemies, per frame of this report window
-		extern unsigned enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced, enemyhalf_kills[4];
-		static unsigned last[4];
-		unsigned now[4] = { enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced };
+		extern unsigned enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced, enemyhalf_probes, enemyhalf_kills[4];
+		static unsigned last[5];
+		unsigned now[5] = { enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced, enemyhalf_probes };
 		if (debugMode && frames > 0 && (now[0] != last[0] || now[2] != last[2]))
 			debugPrintf("[FPS30] half-rate enemies per tick: %.1f steps run (%.1f covering 2 ticks), %.1f skipped, %.2f run "
-				"for a hurt overlap | search ticks added %u | deaths: other event %u, overlap run %u, 2-tick %u, 1-tick %u\n",
+				"for a hurt source near (%.2f probed) | search ticks added %u | deaths: other event %u, near run %u, 2-tick %u, "
+				"1-tick %u\n",
 				(float)(now[0] - last[0]) / frames, (float)(now[1] - last[1]) / frames, (float)(now[2] - last[2]) / frames,
-				(float)(now[3] - last[3]) / frames, t30_search_ticks, enemyhalf_kills[0], enemyhalf_kills[1],
-				enemyhalf_kills[2], enemyhalf_kills[3]);
+				(float)(now[3] - last[3]) / frames, (float)(now[4] - last[4]) / frames, t30_search_ticks, enemyhalf_kills[0],
+				enemyhalf_kills[1], enemyhalf_kills[2], enemyhalf_kills[3]);
 		memcpy(last, now, sizeof(last));
 	}
 	extern unsigned t30_textbox_doubled;
@@ -438,6 +439,8 @@ void katana_prof_report(int frames) {
 		extern unsigned dossier_children_dropped, dossier_children_kept;
 		if (dossier_children_dropped || dossier_children_kept)
 			debugPrintf("[DOSSIER] decorative circles dropped %u kept %u (totals)\n", dossier_children_dropped, dossier_children_kept);
+		extern void dossier_report(int frames);
+		dossier_report(frames);
 		extern uint64_t letter_time[6];
 		extern unsigned letter_time_n[6];
 		if (letter_time_n[0]) {
@@ -626,6 +629,17 @@ void katana_prof_report(int frames) {
 	wobble_rest_report(frames);
 	extern void blood_drops_report(int frames);
 	blood_drops_report(frames);
+	extern void visibility_native_report(int frames);
+	visibility_native_report(frames);
+	extern void lightback_native_report(int frames), lightback_native_late(void);
+	lightback_native_late();
+	lightback_native_report(frames);
+	extern void held_native_report(int frames);
+	held_native_report(frames);
+	extern void smokedraw_native_report(int frames);
+	smokedraw_native_report(frames);
+	extern void fog_skip_report(int frames);
+	fog_skip_report(frames);
 	static int builtins_hooked = 0;
 	if (!builtins_hooked) {
 		builtins_hooked = 1;
