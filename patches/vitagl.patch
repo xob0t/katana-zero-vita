@@ -1,5 +1,51 @@
+diff --git a/source/framebuffers.c b/source/framebuffers.c
+index 15e59ea..468db45 100644
+--- a/source/framebuffers.c
++++ b/source/framebuffers.c
+@@ -50,7 +50,16 @@ uint32_t get_alpha_channel_size(SceGxmColorFormat type) {
+ }
+ 
+ // glReadPixels variant that uses sceGxmTransfer
++// Re-attaches the read framebuffer's texture if its storage moved since it was attached (fb->data, size and stride
++// come from the attach). A texture deleted while attached (dirty) keeps its storage until the fbo lets it go.
++static inline __attribute__((always_inline)) void refresh_read_attachment(void) {
++	if (active_read_fb && active_read_fb->tex && !active_read_fb->tex->dirty && active_read_fb->tex->data &&
++		active_read_fb->tex->data != active_read_fb->data)
++		_glFramebufferTexture2D(active_read_fb, GL_COLOR_ATTACHMENT0, active_read_fb->tex, 1);
++}
++
+ GLboolean _glReadPixels_gpu(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *data, GLboolean is_mapped) {
++	refresh_read_attachment();
+ 	SceGxmTransferFormat dst_fmt;
+ 	int dst_bpp;
+ 	switch (format) {
+@@ -581,6 +590,7 @@ void glGetFramebufferAttachmentParameteriv(GLenum target, GLenum attachment, GLe
+ 
+ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *data) {
+ 	THREAD_SAFE()
++	refresh_read_attachment();
+ 
+ 	/*
+ 	 * Callbacks are actually used to just perform down/up-sampling
+@@ -689,6 +699,7 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format
+ 		sceGxmFinish(gxm_context);
+ 	}
+ #endif
++	refresh_read_attachment();
+ 
+ 	if (!fast_store) {
+ 		// Attempt first to use sceGxmTransfer variant since faster
+@@ -849,6 +860,8 @@ void glBlitNamedFramebuffer(GLuint readFramebuffer, GLuint drawFramebuffer, GLin
+ 	// Set fragment texture to read framebuffer bound color attachment
+ 	framebuffer *read_fb = (framebuffer *)readFramebuffer;
+ 	SceGxmTexture *tex = readFramebuffer ? &read_fb->tex->gxm_tex : &gxm_color_surfaces[display_read_mode == GL_BACK ? gxm_back_buffer_index : gxm_front_buffer_index].backgroundTex;
++	if (readFramebuffer && read_fb->tex)
++		read_fb->tex->rt_written = GL_TRUE; // the blit's scene reads it: retire it against the scene fence
+ 	if (filter == GL_LINEAR) {
+ 		vglSetTexMagFilter(tex, SCE_GXM_TEXTURE_FILTER_LINEAR);
+ 		vglSetTexMinFilter(tex, SCE_GXM_TEXTURE_FILTER_LINEAR);
 diff --git a/source/gxm.c b/source/gxm.c
-index 4cbb40b..1b48522 100644
+index 4cbb40b..064876c 100644
 --- a/source/gxm.c
 +++ b/source/gxm.c
 @@ -67,6 +67,10 @@ GLboolean dirty_query = GL_FALSE; // Flag whether occlusion queries needs result
@@ -96,58 +142,90 @@ index 4cbb40b..1b48522 100644
  #ifndef HAVE_SINGLE_THREADED_GC
  	// Initializing garbage collector
  	gc_mutex[0] = sceKernelCreateSema("vitaGL GC Sema Push", 0, 0, FRAME_PURGE_FREQ, NULL);
-@@ -567,10 +605,19 @@ void start_shader_patcher(void) {
+@@ -567,27 +605,44 @@ void start_shader_patcher(void) {
  #endif
  }
  
-+uint32_t vgl_scene_end_us, vgl_scene_begin_us, vgl_scene_count; // stats for the host
- static inline __attribute__((always_inline)) void scene_end(void) {
+-static inline __attribute__((always_inline)) void scene_end(void) {
 -	// Ends current gxm scene
++uint32_t vgl_scene_end_us, vgl_scene_begin_us, vgl_scene_count; // stats for the host
++// Returns GL_FALSE if a scene is still open afterwards (sceGxmEndScene failed)
++static inline __attribute__((always_inline)) GLboolean scene_end(void) {
 +	// Ends current gxm scene (vgl_end_unused_scene may have ended it already)
 +	if (!vgl_scene_open)
-+		return;
++		return GL_TRUE;
  	query_fence.value++;
 -	sceGxmEndScene(gxm_context, NULL, &query_fence);
 +	uint32_t t0 = sceKernelGetProcessTimeLow();
-+	if (sceGxmEndScene(gxm_context, NULL, &query_fence) == 0) {
++	GLboolean ended = sceGxmEndScene(gxm_context, NULL, &query_fence) == 0;
++	if (ended) {
 +		vgl_scene_open = GL_FALSE;
 +		vgl_scene_used = GL_FALSE;
 +		vgl_scene_depth_stencil = GL_FALSE;
-+	}
++	} else
++		query_fence.value--; // no notification will carry this value
++	// Memory and render targets whose last scenes the GPU has finished can go now
++	vgl_retire_drain();
 +	vgl_scene_end_us += sceKernelGetProcessTimeLow() - t0;
  	if (system_app_mode && vsync_interval)
  		sceDisplayWaitVblankStartMulti(vsync_interval);
++	return ended;
  }
-@@ -578,6 +625,7 @@ static inline __attribute__((always_inline)) void scene_end(void) {
+ 
  void scene_reset(void) {
  	if (in_use_framebuffer != active_write_fb || needs_scene_reset || dirty_framebuffer || dirty_query) {
++		// Ending drawing scene (also one a failed end in vglSwapBuffers left open). If it can't end, it is still the
++		// open scene: change nothing, the next call retries
++		if (!scene_end())
++			return;
  		scene_not_flushed = GL_TRUE;
 +		vgl_scene_depth_stencil = GL_FALSE;
  		dirty_framebuffer = GL_FALSE;
  		dirty_query = GL_FALSE;
  		needs_scene_reset = GL_FALSE;
-@@ -611,6 +659,8 @@ void scene_reset(void) {
+ 		in_use_framebuffer = active_write_fb;
+ 		is_fbo_float = in_use_framebuffer ? in_use_framebuffer->is_float : GL_FALSE;
+ 
+-		// Ending drawing scene
+-		if (needs_end_scene) {
+-			scene_end();
+-		} else {
++		if (!needs_end_scene) {
+ 			if (legacy_pool_size) {
+ 				legacy_pool = (float *)gpu_alloc_mapped_temp(legacy_pool_size);
+ 				legacy_pool_ptr = legacy_pool;
+@@ -611,6 +666,7 @@ void scene_reset(void) {
  #endif
  
  		// Starting drawing scene
 +		uint32_t begin_t0 = sceKernelGetProcessTimeLow();
-+		vgl_scene_count++;
  		is_rendering_display = !active_write_fb;
  		if (is_rendering_display) { // Default framebuffer is used
  			if (system_app_mode) {
-@@ -623,6 +673,7 @@ void scene_reset(void) {
+@@ -623,6 +679,11 @@ void scene_reset(void) {
  				gxm_sync_objects[gxm_back_buffer_index],
  				&gxm_color_surfaces[gxm_back_buffer_index],
  				&gxm_depth_stencil_surface);
-+			vgl_scene_open = GL_TRUE;
++			vgl_scene_open = r == 0;
++			if (r)
++				needs_scene_reset = GL_TRUE; // no scene: the next draw tries again
++			else
++				vgl_scene_count++;
  #ifdef LOG_ERRORS
  			if (r) {
  				vgl_log("%s:%d Scene reset failed due to sceGxmBeginScene erroring (%s) on display.\n", __FILE__, __LINE__, get_gxm_error_literal(r));
-@@ -675,12 +726,14 @@ void scene_reset(void) {
+@@ -675,12 +736,21 @@ void scene_reset(void) {
  					NULL, NULL, NULL,
  					&active_write_fb->colorbuffer,
  					active_write_fb->depthbuffer_ptr);
-+			vgl_scene_open = GL_TRUE;
++			vgl_scene_open = r == 0;
++			if (r)
++				needs_scene_reset = GL_TRUE; // no scene: the next draw tries again
++			else
++				vgl_scene_count++;
++			// Its memory is retired against the scene fence when freed (vgl_retire)
++			if (r == 0 && active_write_fb->tex)
++				active_write_fb->tex->rt_written = GL_TRUE;
  #ifdef LOG_ERRORS
  			if (r)
  				vgl_log("%s:%d Scene reset failed due to sceGxmBeginScene erroring (%s) on framebuffer 0x%08X.\n", __FILE__, __LINE__, get_gxm_error_literal(r), active_write_fb);
@@ -158,7 +236,7 @@ index 4cbb40b..1b48522 100644
  		// Setting back current viewport if enabled cause sceGxm will reset it at sceGxmEndScene call
  		if (old_framebuffer != in_use_framebuffer) {
  			dirty_scissor_state = GL_TRUE;
-@@ -702,6 +755,41 @@ void scene_reset(void) {
+@@ -702,6 +772,41 @@ void scene_reset(void) {
  	if (dirty_scissor_state) {
  		update_scissor_test();
  	}
@@ -200,7 +278,7 @@ index 4cbb40b..1b48522 100644
  }
  
  /*
-@@ -979,6 +1067,8 @@ void glFinish(void) {
+@@ -979,6 +1084,8 @@ void glFinish(void) {
  	if (scene_not_flushed) {
  		dirty_framebuffer = GL_TRUE;
  		scene_reset();
@@ -209,7 +287,7 @@ index 4cbb40b..1b48522 100644
  		sceGxmFinish(gxm_context);
  		scene_not_flushed = GL_FALSE;
  	}
-@@ -999,6 +1089,8 @@ void glFlush(void) {
+@@ -999,6 +1106,8 @@ void glFlush(void) {
  	if (scene_not_flushed) {
  		dirty_framebuffer = GL_TRUE;
  		scene_reset();
@@ -237,8 +315,32 @@ index 238f052..b06d6d3 100644
  
  	// Invalidating viewport and culling
  	invalidate_viewport();
+diff --git a/source/shared.h b/source/shared.h
+index 167e4f2..c1ae5d3 100644
+--- a/source/shared.h
++++ b/source/shared.h
+@@ -220,6 +220,7 @@ typedef struct texture {
+ #ifdef HAVE_UNPURE_TEXTURES
+ 	int8_t mip_start;
+ #endif
++	GLboolean rt_written; // Drawn into as a framebuffer colour attachment (or blitted from) since its allocation
+ } texture;
+ 
+ // Memory file cache settings
+diff --git a/source/textures.c b/source/textures.c
+index 7b5d704..f5710dd 100644
+--- a/source/textures.c
++++ b/source/textures.c
+@@ -1734,6 +1734,7 @@ inline __attribute__((always_inline)) void glGenTextures(GLsizei n, GLuint *res)
+ 
+ 			// Resetting texture parameters to their default values
+ 			texture_slots[i].dirty = GL_FALSE;
++			texture_slots[i].rt_written = GL_FALSE;
+ #ifndef TEXTURES_SPEEDHACK
+ 			texture_slots[i].last_frame = OBJ_NOT_USED;
+ #endif
 diff --git a/source/utils/gpu_utils.c b/source/utils/gpu_utils.c
-index 4464db5..5a7a7c1 100644
+index 4464db5..ac2f647 100644
 --- a/source/utils/gpu_utils.c
 +++ b/source/utils/gpu_utils.c
 @@ -100,9 +100,15 @@ static inline __attribute__((always_inline)) void *gpu_alloc_mapped_aligned_for_
@@ -257,7 +359,7 @@ index 4464db5..5a7a7c1 100644
  	vgl_alloc_attempt(alignment, size, VGL_MEM_RAM)
  	vgl_alloc_attempt(alignment, size, VGL_MEM_PHYCONT)
  	vgl_alloc_attempt(alignment, size, VGL_MEM_BUDGET)
-@@ -153,10 +159,43 @@ static inline __attribute__((always_inline)) uint32_t vgl_cache_old_textures(siz
+@@ -153,18 +159,171 @@ static inline __attribute__((always_inline)) uint32_t vgl_cache_old_textures(siz
  #endif
  
  int unsafe_allocator_counter = 0;
@@ -273,8 +375,122 @@ index 4464db5..5a7a7c1 100644
 +void (*vgl_alloc_fail_cb)(size_t size, size_t alignment, int for_gpu, void *caller) = NULL; // host diagnostics on a failed allocation
 +// Host API: frees everything waiting in the garbage collector's purge lists now (GPU finish, then one cycle per
 +// purge slot), so memory released this frame is available to the next allocations instead of a few frames later
++// Retirement against the scene completion fence. query_fence.value is the notification value of the last scene
++// ended; the GPU writes each scene's value to *query_fence.address when its fragment work is done, and scenes on the
++// one immediate context finish in order, so one FIFO in fence order is enough. Game (GL) thread only.
++extern SceGxmNotification query_fence;
++typedef struct {
++	void *ptr;
++	uint32_t fence;
++	uint8_t is_rt; // a SceGxmRenderTarget handle (destroyed) rather than memory (freed)
++} retire_entry;
++#define RETIRE_RESERVE 1024
++static retire_entry retire_reserve[RETIRE_RESERVE]; // never fails; malloc'd only beyond it
++static retire_entry *retire_queue = retire_reserve;
++static int retire_cap = RETIRE_RESERVE, retire_head = 0, retire_count = 0;
++// Stats for the host: render-target texture frees done at once (the GPU had finished) or after their fence; frees of
++// textures the open scene sampled; render-target handles retired; entries that couldn't be queued (no memory)
++uint32_t vgl_rt_retired_now = 0, vgl_rt_retired_later = 0, vgl_open_scene_retires = 0, vgl_rt_handle_retires = 0,
++	vgl_retire_overflows = 0;
++
++static inline __attribute__((always_inline)) int fence_passed(uint32_t fence) {
++	return (int32_t)(*(volatile uint32_t *)query_fence.address - fence) >= 0;
++}
++
++static inline __attribute__((always_inline)) void retire_release(retire_entry *e) {
++	if (e->is_rt)
++		sceGxmDestroyRenderTarget((SceGxmRenderTarget *)e->ptr);
++	else
++		vgl_free(e->ptr);
++}
++
++void vgl_retire_drain(void) {
++	while (retire_count && fence_passed(retire_queue[retire_head].fence)) {
++		retire_release(&retire_queue[retire_head]);
++		retire_head = (retire_head + 1) % retire_cap;
++		retire_count--;
++	}
++}
++
++int vgl_retire_pending(void) {
++	return retire_count;
++}
++
++// Queues an entry; 0 if it had to be released another way
++static int retire_push(void *ptr, uint32_t fence, uint8_t is_rt) {
++	if (retire_count == retire_cap) {
++		vgl_retire_drain(); // entries already finished make room first
++		if (retire_count == retire_cap) {
++			// Grow: entries keep their fences (the open scene's ones can't be waited for here)
++			int cap = retire_cap * 2;
++			retire_entry *q = (retire_entry *)malloc(cap * sizeof(retire_entry));
++			if (!q) {
++				// Out of memory: wait for every submitted scene; only the open scene's entries remain then
++				sceGxmFinish(gxm_context);
++				vgl_retire_drain();
++				if (retire_count == retire_cap) {
++					vgl_retire_overflows++;
++					return 0;
++				}
++			} else {
++				for (int i = 0; i < retire_count; i++)
++					q[i] = retire_queue[(retire_head + i) % retire_cap];
++				if (retire_queue != retire_reserve)
++					free(retire_queue);
++				retire_queue = q;
++				retire_cap = cap;
++				retire_head = 0;
++			}
++		}
++	}
++	retire_entry *e = &retire_queue[(retire_head + retire_count) % retire_cap];
++	e->ptr = ptr;
++	e->fence = fence;
++	e->is_rt = is_rt;
++	retire_count++;
++	return 1;
++}
++
++// Every scene that can have used it: those ended so far, and the open one (it ends with value + 1)
++static inline __attribute__((always_inline)) uint32_t retire_fence(void) {
++	return query_fence.value + (vgl_scene_open ? 1 : 0);
++}
++
++void vgl_retire(void *ptr, GLboolean render_target) {
++	if (!ptr)
++		return;
++	uint32_t fence = retire_fence();
++	if (fence_passed(fence)) {
++		vgl_rt_retired_now += render_target;
++		vgl_free(ptr);
++		return;
++	}
++	if (!retire_push(ptr, fence, 0)) {
++		mark_as_dirty(ptr); // out of memory for the queue: vitaGL's frame-count delay as before
++		return;
++	}
++	if (render_target)
++		vgl_rt_retired_later++;
++	else
++		vgl_open_scene_retires++;
++}
++
++void vgl_retire_rt(SceGxmRenderTarget *rt) {
++	if (!rt)
++		return;
++	vgl_rt_handle_retires++;
++	uint32_t fence = retire_fence();
++	if (fence_passed(fence)) {
++		sceGxmDestroyRenderTarget(rt);
++		return;
++	}
++	if (!retire_push(rt, fence, 1))
++		vgl_purge_append_rt(rt);
++}
++
 +void vgl_collect_garbage_now(void) {
 +	sceGxmFinish(gxm_context);
++	vgl_retire_drain();
 +	for (int i = 0; i < FRAME_PURGE_FREQ; i++) {
 +#if defined(HAVE_SINGLE_THREADED_GC) && !defined(HAVE_PTHREAD)
 +		garbage_collector(0, NULL);
@@ -299,9 +515,11 @@ index 4464db5..5a7a7c1 100644
 +		vgl_forced_gc_runs++;
 +		__sync_synchronize();
  		glFinish();
++		sceGxmFinish(gxm_context); // glFinish returns at once after a glFlush: the purge rotations need the GPU idle
++		vgl_retire_drain(); // what finished with the submitted scenes; the open scene's memory stays
  	}
  #if defined(HAVE_SINGLE_THREADED_GC) && !defined(HAVE_PTHREAD)
-@@ -164,7 +203,11 @@ void *gpu_alloc_mapped_aligned_unsafe_for_cpu(size_t alignment, size_t size) {
+ 	garbage_collector(0, NULL);
  #else
  	sceKernelWaitSema(gc_mutex[1], 1, NULL);
  	sceKernelSignalSema(gc_mutex[0], 1);
@@ -314,7 +532,7 @@ index 4464db5..5a7a7c1 100644
  #endif
  
  	// Allocating requested memblock
-@@ -182,6 +225,11 @@ void *gpu_alloc_mapped_aligned_unsafe_for_gpu(size_t alignment, size_t size) {
+@@ -182,15 +341,25 @@ void *gpu_alloc_mapped_aligned_unsafe_for_gpu(size_t alignment, size_t size) {
  	// Performing a garbage collection cycle prior to attempting to allocate the memory again
  	unsafe_allocator_counter++;
  	if (unsafe_allocator_counter == 1) {
@@ -325,8 +543,10 @@ index 4464db5..5a7a7c1 100644
 +		__sync_synchronize();
  		// Ideally we'd want glFinish here, but this would cause a circular dependency if the allocation failing is related to a depthstencil surface allocation
  		sceGxmFinish(gxm_context);
++		vgl_retire_drain(); // what finished with the submitted scenes; the open scene's memory stays
  	}
-@@ -190,7 +238,11 @@ void *gpu_alloc_mapped_aligned_unsafe_for_gpu(size_t alignment, size_t size) {
+ #if defined(HAVE_SINGLE_THREADED_GC) && !defined(HAVE_PTHREAD)
+ 	garbage_collector(0, NULL);
  #else
  	sceKernelWaitSema(gc_mutex[1], 1, NULL);
  	sceKernelSignalSema(gc_mutex[0], 1);
@@ -339,7 +559,7 @@ index 4464db5..5a7a7c1 100644
  #endif
  
  	// Allocating requested memblock
-@@ -221,6 +273,14 @@ void *gpu_alloc_mapped_aligned_for_cpu(size_t alignment, size_t size) {
+@@ -221,6 +390,14 @@ void *gpu_alloc_mapped_aligned_for_cpu(size_t alignment, size_t size) {
  #endif
  	unsafe_allocator_counter = 0;
  	res = gpu_alloc_mapped_aligned_unsafe_for_cpu(alignment, size);
@@ -354,7 +574,7 @@ index 4464db5..5a7a7c1 100644
  
  #ifdef LOG_ERRORS
  	if (!res) {
-@@ -250,6 +310,14 @@ void *gpu_alloc_mapped_aligned_for_gpu(size_t alignment, size_t size) {
+@@ -250,6 +427,14 @@ void *gpu_alloc_mapped_aligned_for_gpu(size_t alignment, size_t size) {
  #endif
  	unsafe_allocator_counter = 0;
  	res = gpu_alloc_mapped_aligned_unsafe_for_gpu(alignment, size);
@@ -369,6 +589,45 @@ index 4464db5..5a7a7c1 100644
  
  #ifdef LOG_ERRORS
  	if (!res) {
+diff --git a/source/utils/gpu_utils.h b/source/utils/gpu_utils.h
+index 8abf57b..95f505c 100644
+--- a/source/utils/gpu_utils.h
++++ b/source/utils/gpu_utils.h
+@@ -151,6 +151,12 @@ void gpu_alloc_paletted_texture(int32_t level, uint32_t w, uint32_t h, SceGxmTex
+ void gpu_alloc_planar_texture(uint32_t w, uint32_t h, SceGxmTextureFormat format, const void *data, texture *tex);
+ 
+ // Dealloc a texture data
++// Frees memory once every scene ended so far, and the open one, has finished on the GPU (the fragment notification
++// passed to sceGxmEndScene). Used for textures drawn into as render targets, whose GPU use last_frame doesn't track,
++// and for textures the open scene sampled, which a forced collection must not reclaim before that scene is submitted.
++void vgl_retire(void *ptr, GLboolean render_target);
++void vgl_retire_drain(void);
++extern GLboolean vgl_scene_open;
+ static inline __attribute__((always_inline)) void gpu_free_texture_data(texture *tex) {
+ 	// Deallocating texture
+ 	if (tex->data != NULL) {
+@@ -179,6 +185,13 @@ static inline __attribute__((always_inline)) void gpu_free_texture_data(texture
+ 			tex->prev = NULL;
+ 		}
+ #endif
++		if (tex->rt_written
++#ifndef TEXTURES_SPEEDHACK
++			|| (vgl_scene_open && tex->last_frame == vgl_framecount)
++#endif
++		) {
++			vgl_retire(tex->data, tex->rt_written);
++		} else
+ #ifndef TEXTURES_SPEEDHACK
+ 		if (vgl_framecount - tex->last_frame > FRAME_PURGE_FREQ) {
+ 			vgl_free(tex->data);
+@@ -188,6 +201,7 @@ static inline __attribute__((always_inline)) void gpu_free_texture_data(texture
+ 			mark_as_dirty(tex->data);
+ 		}
+ 		tex->data = NULL;
++		tex->rt_written = GL_FALSE;
+ 	}
+ 	if (tex->palette_data != NULL) {
+ #ifndef TEXTURES_SPEEDHACK
 diff --git a/source/utils/mem_utils.c b/source/utils/mem_utils.c
 index 4b791b7..1500b57 100644
 --- a/source/utils/mem_utils.c
@@ -490,7 +749,7 @@ index 4b791b7..1500b57 100644
  #else
  	return heap_realloc(type, ptr, size);
 diff --git a/source/utils/mem_utils.h b/source/utils/mem_utils.h
-index 80f3f86..1a591c8 100644
+index 80f3f86..87c26f7 100644
 --- a/source/utils/mem_utils.h
 +++ b/source/utils/mem_utils.h
 @@ -50,16 +50,12 @@ extern int frame_purge_idx; // Index for currently populatable purge list
@@ -516,9 +775,13 @@ index 80f3f86..1a591c8 100644
  #ifdef HAVE_SHARED_RENDERTARGETS
  typedef struct {
  	SceGxmRenderTarget *rt;
-@@ -72,26 +68,10 @@ typedef struct {
+@@ -71,27 +67,15 @@ typedef struct {
+ 	uint32_t last_frame;
  #endif
  } render_target;
++// Render-target handles are destroyed once the scenes that may use them have finished (gpu_utils.c, vgl_retire_rt),
++// not through the purge lists: a forced collection rotates those without waiting for the open scene
++void vgl_retire_rt(SceGxmRenderTarget *rt);
  void __mark_rt_as_dirty(render_target *rt);
 -#ifdef DEBUG_GC
 -#define _mark_rt_as_dirty(x) \
@@ -529,7 +792,7 @@ index 80f3f86..1a591c8 100644
 -#else
 -#define _mark_rt_as_dirty(x) frame_rt_purge_list[frame_purge_idx][frame_rt_purge_idx++] = x
 -#endif
-+#define _mark_rt_as_dirty(x) vgl_purge_append_rt(x)
++#define _mark_rt_as_dirty(x) vgl_retire_rt(x)
  #define mark_rt_as_dirty(x) __mark_rt_as_dirty((render_target *)x)
  #else
 -#ifdef DEBUG_GC
@@ -541,7 +804,8 @@ index 80f3f86..1a591c8 100644
 -#else
 -#define mark_rt_as_dirty(x) frame_rt_purge_list[frame_purge_idx][frame_rt_purge_idx++] = x
 -#endif
-+#define mark_rt_as_dirty(x) vgl_purge_append_rt(x)
++void vgl_retire_rt(SceGxmRenderTarget *rt);
++#define mark_rt_as_dirty(x) vgl_retire_rt(x)
  #endif
  
  void vgl_mem_init(size_t size_ram, size_t size_cdram, size_t size_phycont, size_t size_cdlg);

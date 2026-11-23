@@ -121,6 +121,25 @@ static void forced_gc_report(void) {
 	seen_open = vgl_forced_gc_open_scene;
 }
 
+// Surface memory is freed once the GPU has finished the scenes that may use it (vitagl.patch: vgl_retire, the scene
+// completion fence); totals in debug mode when they change, at most every 2 s
+static void rt_free_report(void) {
+	extern uint32_t vgl_rt_retired_now, vgl_rt_retired_later, vgl_open_scene_retires, vgl_rt_handle_retires,
+		vgl_retire_overflows;
+	extern int vgl_retire_pending(void);
+	static uint32_t seen, frames;
+	frames++;
+	uint32_t sum = vgl_rt_retired_now + vgl_rt_retired_later + vgl_open_scene_retires + vgl_rt_handle_retires +
+		vgl_retire_overflows;
+	if (!debugMode || frames < 120 || sum == seen)
+		return;
+	frames = 0;
+	seen = sum;
+	debugPrintf("[RTFREE] render-target frees: %u at once (GPU done), %u after their scene fence | open-scene texture frees "
+		"held back %u | render targets retired %u | not queued (no memory) %u | waiting now %d\n", vgl_rt_retired_now,
+		vgl_rt_retired_later, vgl_open_scene_retires, vgl_rt_handle_retires, vgl_retire_overflows, vgl_retire_pending());
+}
+
 // DoAStep_Draw hook: application surface size, then lighting at 30 Hz
 static void (*katana_orig_draw)(void);
 
@@ -251,6 +270,7 @@ void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
 	dynamic_res_update(swap_us, work_us);
 	after_swap_step_us[0] = s1 - s0;
 	after_swap_step_us[1] = sceKernelGetProcessTimeLow() - s1;
+	rt_free_report();
 	// A frame that skipped its swap (frameSkip) may leave scenes open: no collection until a presented frame
 	if (vgl_scene_open)
 		return;
