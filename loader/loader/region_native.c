@@ -40,6 +40,8 @@
 #include <string.h>
 #include <math.h>
 
+#include <psp2/kernel/processmgr.h>
+
 #include "main.h"
 #include "so_util.h"
 
@@ -76,6 +78,10 @@ static int (*object_find)(const char *name);
 static const int *v_region, *v_room, *v_my_room, *v_oth_x, *v_oth_y, *v_x, *v_y, *v_room_width, *v_room_height,
 	*v_regionmap, *v_chq, *v_update_light_timer;
 static int verify, room_seed = -2;
+static void ***object_hash;                       // g_ObjectHash: {buckets, mask}, node {?, next, key, CObjectGM *}
+static const uint32_t *change_array, *activate_array; // {data, ?, count}
+unsigned region_native_us, region_fast_seed;
+extern int heavy_profiling;
 
 unsigned region_native_calls, region_native_fallback, region_verify_ok, region_verify_mismatch, region_verify_skipped;
 unsigned region_fallback_reason[8];
@@ -123,6 +129,33 @@ static int fail(int reason) {
 	return 0;
 }
 
+// The obj_room_seed instance as instance_exists and with (obj_room_seed) would see it, read from the object's instance
+// list, when that is certain: one instance in the object's list (its children included), active ((flags & 0x100007) == 4,
+// so instance_exists' test (flags & 0x100003) == 0 holds too) and no instance pending an object change or
+// (de)activation, which both functions would also look at. NULL: ask the runner.
+static void *single_seed(void) {
+	static uint8_t *seed_object;
+	if (!seed_object) {
+		uint32_t *hash = *(uint32_t **)object_hash;
+		if (!hash)
+			return NULL;
+		uint32_t *node = ((uint32_t **)hash[0])[2 * (room_seed & hash[1])];
+		for (; node; node = (uint32_t *)node[1])
+			if ((int)node[2] == room_seed)
+				break;
+		if (!node || !node[3])
+			return NULL;
+		seed_object = (uint8_t *)node[3];
+	}
+	if (change_array[2] || activate_array[2] || *(int *)(seed_object + 0x4c) != 1)
+		return NULL;
+	uint32_t *node = *(uint32_t **)(seed_object + 0x44);
+	uint8_t *inst = node ? (uint8_t *)node[2] : NULL;
+	if (!inst || node[0] || (*(uint32_t *)(inst + 0x7c) & 0x100007) != 4)
+		return NULL;
+	return inst;
+}
+
 // One grid probe: r = ds_grid_get(regionmap, max(0, ceil(gx)), max(0, ceil(gy))) with gx, gy the quotients
 static int probe(void *seed, double qx, double qy, RV *r) {
 	RV *map = rd(seed, v_regionmap);
@@ -151,8 +184,12 @@ static int region_native(void *self, void *other, writes *w) {
 	RV target = {0, 0, 15};
 	uint32_t ref[2] = {(uint32_t)room_seed, 0x1000000}; // an object reference, as the script builds it
 	memcpy(&target.value, ref, 8);
-	RV exists = {0, 0, 0xffffff};
-	instance_exists(&exists, self, other, 1, &target);
+	void *fast = single_seed();
+	RV exists = {1.0, 0, 0};
+	if (fast)
+		region_fast_seed++;
+	else
+		instance_exists(&exists, self, other, 1, &target);
 	if (KIND(&exists) != 0 && KIND(&exists) != 13) // a real or a bool; BOOL_RValue of either is value > 0.5
 		return fail(2);
 	if (!(exists.value > 0.5)) {
@@ -160,9 +197,11 @@ static int region_native(void *self, void *other, writes *w) {
 	} else {
 		uint32_t it[4];
 		void *s = self, *o = other;
-		int n = new_with(it, &s, &o, &target);
+		int n = fast ? 1 : new_with(it, &s, &o, &target);
+		if (fast)
+			s = fast;
 		// exactly one seed: the first instance in *self and an empty list below it (list[0] is the NULL sentinel)
-		if (n > 0 && (it[3] - it[2]) / 4 != 1)
+		if (!fast && n > 0 && (it[3] - it[2]) / 4 != 1)
 			n = 2;
 		if (n != 1) {
 			if (n > 0)
@@ -183,13 +222,13 @@ static int region_native(void *self, void *other, writes *w) {
 			variable_get(&inst, v_y[1], (int)0x80000000, &yv, 0, 0);
 			builtin_get(seed, v_room_height[1], (int)0x80000000, &hv);
 			if (KIND(&xv) || KIND(&yv) || KIND(&wv) || KIND(&hv)) {
-				delete_with(it, &s, &o);
+				if (!fast) delete_with(it, &s, &o);
 				return fail(4);
 			}
 			RV mxo = {0, 0, 0xffffff}, myo = {0, 0, 0xffffff}, *ax[2] = {&xv, &wv}, *ay[2] = {&yv, &hv};
 			RV *ox = yy_min(&mxo, 2, ax), *oy = yy_min(&myo, 2, ay);
 			if (KIND(ox) || KIND(oy)) {
-				delete_with(it, &s, &o);
+				if (!fast) delete_with(it, &s, &o);
 				return fail(4);
 			}
 			put_full(w, W_OTH_X, seed, v_oth_x, ox);
@@ -197,7 +236,7 @@ static int region_native(void *self, void *other, writes *w) {
 			double X = ox->value, Y = oy->value, chq = 32.0;
 			RV r, zero = {0, 0, 0};
 			if (!probe(seed, X / 32.0, (Y - 64.0) / 32.0, &r)) {
-				delete_with(it, &s, &o);
+				if (!fast) delete_with(it, &s, &o);
 				return 0;
 			}
 			if (compare(&r, &zero, *epsilon, 0) != 0)
@@ -208,7 +247,7 @@ static int region_native(void *self, void *other, writes *w) {
 				const double qy[4] = {(Y - 64.0) / 32.0, (Y - 64.0) / 32.0, (Y + chq - 64.0) / 32.0, (Y - chq - 64.0) / 32.0};
 				for (int k = 0; k < 4; k++) {
 					if (!probe(seed, qx[k], qy[k], &r)) {
-						delete_with(it, &s, &o);
+						if (!fast) delete_with(it, &s, &o);
 						return 0;
 					}
 					if (compare(&r, &zero, *epsilon, 0) != 0) {
@@ -218,10 +257,10 @@ static int region_native(void *self, void *other, writes *w) {
 				}
 			}
 		} else if (!ok) {
-			delete_with(it, &s, &o);
+			if (!fast) delete_with(it, &s, &o);
 			return fail(4);
 		}
-		delete_with(it, &s, &o);
+		if (!fast) delete_with(it, &s, &o);
 	}
 	// if (prev != region) update_light_timer = 0;
 	RV now = w->set[W_REGION] ? w->val[W_REGION] : *reg;
@@ -235,7 +274,15 @@ static int region_native(void *self, void *other, writes *w) {
 	return 1;
 }
 
+static void native_update_region_body(void *self, void *other, RV *result, int argc, RV **args);
 static void ABI native_update_region(void *self, void *other, RV *result, int argc, RV **args) {
+	uint32_t t0 = heavy_profiling ? sceKernelGetProcessTimeLow() : 0;
+	native_update_region_body(self, other, result, argc, args);
+	if (heavy_profiling)
+		region_native_us += sceKernelGetProcessTimeLow() - t0;
+}
+
+static void native_update_region_body(void *self, void *other, RV *result, int argc, RV **args) {
 	region_native_calls++;
 	if (verify) {
 		writes w;
@@ -307,6 +354,9 @@ int region_native_install(void *(*hook)(uintptr_t entry, void *replacement)) {
 	delete_with = (delete_fn)SYM("_Z24YYGML_DeleteWithIteratorP13SWithIteratorPP12YYObjectBaseS3_");
 	epsilon = (const double *)SYM("g_GMLMathEpsilon");
 	object_find = (int (*)(const char *))SYM("_Z11Object_FindPKc");
+	object_hash = (void ***)SYM("g_ObjectHash");
+	change_array = (const uint32_t *)SYM("g_InstanceChangeArray");
+	activate_array = (const uint32_t *)SYM("g_InstanceActivateDeactive");
 	v_region = (const int *)SYM("g_VAR_region");
 	v_room = (const int *)SYM("g_VAR_room");
 	v_my_room = (const int *)SYM("g_VAR_my_room");
@@ -321,7 +371,7 @@ int region_native_install(void *(*hook)(uintptr_t entry, void *replacement)) {
 	v_update_light_timer = (const int *)SYM("g_VAR_update_light_timer");
 #undef SYM
 	if (!entry || !variable_get || !builtin_get || !compare || !instance_exists || !yy_min || !grid_get || !int32_rvalue ||
-			!free_rvalue || !new_with || !next_with || !delete_with || !epsilon || !object_find || !v_region || !v_room ||
+			!free_rvalue || !new_with || !next_with || !delete_with || !epsilon || !object_find || !object_hash || !change_array || !activate_array || !v_region || !v_room ||
 			!v_my_room || !v_oth_x || !v_oth_y || !v_x || !v_y || !v_room_width || !v_room_height || !v_regionmap || !v_chq ||
 			!v_update_light_timer)
 		return 0;

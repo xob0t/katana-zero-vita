@@ -273,13 +273,20 @@ static int part_cut(void *iterator, void **self, void **other, int *r) {
 	return 1;
 }
 
+extern int debugMode;
+static int no_cut; // exp_bikepcache0 (debug): step as in the first version
+unsigned bike_draw_newwith_us; // the runner's NewWithIterator for the particle loop (heavy profiling only)
+
 static int ABI part_new_with(void *iterator, void **self, void **other, const void *target) {
 	id_other = NULL;
 	uint32_t t0 = heavy_profiling ? sceKernelGetProcessTimeLow() : 0;
 	int r = new_with(iterator, self, other, target);
-	int cut = part_cut(iterator, self, other, &r);
-	if (heavy_profiling)
-		bike_draw_skip_us += sceKernelGetProcessTimeLow() - t0;
+	uint32_t t1 = heavy_profiling ? sceKernelGetProcessTimeLow() : 0;
+	int cut = !no_cut && part_cut(iterator, self, other, &r);
+	if (heavy_profiling) {
+		bike_draw_newwith_us += t1 - t0;
+		bike_draw_skip_us += sceKernelGetProcessTimeLow() - t1;
+	}
 	if (cut)
 		return r;
 	if (verify && r > 0)
@@ -515,6 +522,7 @@ int bike_draw_install(void) {
 	for (int k = 0; k < NSITES; k++)
 		patch_call(sites[k], wrappers[k], veneers[k]);
 	verify = exp_flag("bikedrawverify");
+	no_cut = debugMode && exp_flag("bikepcache0");
 	debugPrintf("bike draw: native actor sort, particle/trail loops step over other actors' instances%s\n",
 		verify ? " (verify mode)" : "");
 	return 1;

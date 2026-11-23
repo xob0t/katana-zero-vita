@@ -631,6 +631,11 @@ void katana_prof_report(int frames) {
 					n += snprintf(line + n, sizeof(line) - n, " %02x:%u", k, region_verify_paths[k]);
 			debugPrintf("[REGION] verify paths (written slots: oth_x 1 oth_y 2 chq 4 region 8 timer 10):%s%c", line, 10);
 		}
+		extern unsigned region_native_us, region_fast_seed;
+		if (frames > 0 && region_native_us && region_native_calls != last_c)
+			debugPrintf("[REGION] %.2f ms per frame, %.1f us per call, seed read directly %u (total)%c", region_native_us / 1000.0f / frames,
+				(float)region_native_us / (region_native_calls - last_c), region_fast_seed, 10);
+		region_native_us = 0;
 		last_c = region_native_calls;
 		last_f = region_native_fallback;
 	}
@@ -672,7 +677,10 @@ void katana_prof_report(int frames) {
 				bike_pcache_mismatch, bike_pcache_conservative);
 		last_hits = bike_pcache_hits;
 		last_reads = bike_pcache_reads;
-		extern unsigned bike_draw_skip_us;
+		extern unsigned bike_draw_skip_us, bike_draw_newwith_us;
+		if (frames > 0 && bike_draw_newwith_us)
+			debugPrintf("[BIKEDRAW] particle loop NewWithIterator %.2f ms per frame%c", bike_draw_newwith_us / 1000.0f / frames, 10);
+		bike_draw_newwith_us = 0;
 		if (frames > 0 && bike_draw_skip_us)
 			debugPrintf("[BIKEDRAW] stepping %.2f ms per frame\n", bike_draw_skip_us / 1000.0f / frames);
 		bike_draw_skip_us = 0;
