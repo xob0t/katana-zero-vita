@@ -381,11 +381,25 @@ static void *instance_of(int id) {
 	return NULL;
 }
 
-// The instance id a with target names (an id > 99999 held as a real), or -1: another kind of target
+// The instance id a with target names, or -1: another kind of target. NewWithIterator takes INT32_RValue of a real
+// (truncated), an int32 or a reference (kind 15, what `id` returns: the id in the low word); above 99999 it is an
+// instance id.
 static int target_id(const RV *t) {
-	if ((t->kind & 0xffffff) != 0 || !(t->value >= 100000.0 && t->value < 2147483648.0))
+	int id;
+	switch (t->kind & 0xffffff) {
+	case 0:
+		if (!(t->value >= 100000.0 && t->value < 2147483648.0))
+			return -1;
+		id = (int)t->value;
+		break;
+	case 7:
+	case 15:
+		id = (int)word(&t->value, 0);
+		break;
+	default:
 		return -1;
-	return (int)t->value; // INT32_RValue: truncation
+	}
+	return id > 99999 ? id : -1;
 }
 
 // After a light's with has run natively, the rest of the original loop (GML lines 72-74, repeated):
