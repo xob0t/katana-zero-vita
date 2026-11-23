@@ -164,6 +164,10 @@ static void ABI draw_capture(void *self, int sprite, float subimg, float x, floa
 	draw_sprite_ext(self, sprite, subimg, x, y, xs, ys, rot, colour, alpha);
 }
 
+// trailLights=0 (default): the light-tinted copies aren't drawn; everything else, the random() calls included, is
+extern int trail_lights, fog_trail_ab_off;
+unsigned trail_lights_tints_skipped;
+
 // self: the trail, other: the light (inside with (other) in the light's scope). Returns 0 to fall back to the original.
 static int native_body(void *self, void *other, int dry) {
 	if (!*global_obj)
@@ -236,8 +240,10 @@ static int native_body(void *self, void *other, int dry) {
 				nat_draws[nat_count] = (Draw){sprite, col, (float)anim->value, (float)x, (float)y, (float)xs, 2.0f,
 					0.0f, (float)a};
 			nat_count++;
-		} else {
+		} else if (trail_lights || fog_trail_ab_off) {
 			draw_sprite_ext(self, sprite, (float)anim->value, (float)x, (float)y, (float)xs, 2.0f, 0.0f, col, (float)a);
+		} else {
+			trail_lights_tints_skipped++; // trailLights=0: the tint copy isn't drawn (its random() calls still are)
 		}
 		i = i + smooth;
 	}

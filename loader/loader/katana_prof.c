@@ -638,8 +638,12 @@ void katana_prof_report(int frames) {
 				snprintf(sampled, sizeof(sampled), " | lit layer: rgb %.0f %.0f %.0f, light_alpha %.3f, light_alpha / raised alpha %.3f (%u samples)",
 					fog_trail_sum[0] / fog_trail_sum[3], fog_trail_sum[1] / fog_trail_sum[3], fog_trail_sum[2] / fog_trail_sum[3],
 					fog_trail_sum[3] / fog_trail_samples, fog_trail_sum[4] / fog_trail_samples, fog_trail_samples);
-			debugPrintf("[FOGTRAIL] dust cloud draws per frame: %.1f unlit, %.1f lit%s\n", (float)(fog_trail_native -
-				last_fog_native) / frames, (float)(fog_trail_original - last_fog_original) / frames, sampled);
+			extern unsigned trail_lights_tints_skipped;
+			static unsigned last_tints;
+			debugPrintf("[FOGTRAIL] dust cloud draws per frame: %.1f unlit, %.1f lit | afterimage tints not drawn %.1f%s\n",
+				(float)(fog_trail_native - last_fog_native) / frames, (float)(fog_trail_original - last_fog_original) / frames,
+				(float)(trail_lights_tints_skipped - last_tints) / frames, sampled);
+			last_tints = trail_lights_tints_skipped;
 		}
 		last_fog_native = fog_trail_native;
 		last_fog_original = fog_trail_original;
