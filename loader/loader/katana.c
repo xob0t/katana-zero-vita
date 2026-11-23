@@ -1125,7 +1125,9 @@ static void patch_performance() {
 		debugPrintf("native dialogue letters: %s\n", letter_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
 	// Exact natives of the view tests inside_screen_point / inside_screen (visibility_native.c): the runner's own
-	// global getters and comparisons without the GML temporaries. exp_visibilitynative0: the original scripts.
+	// global getters and comparisons without the GML temporaries. In-run A/B (exp_visab), process per frame:
+	// haunted_cart2 -0.68 ms (450 + 57 calls), club_4 with smoke -0.43 ms, bunker2_3 -0.23 ms.
+	// exp_visibilitynative0: the original scripts.
 	if (!exp_flag("visibilitynative0")) {
 		extern int visibility_native_install(void *(*rx_alloc)(size_t));
 		int r = visibility_native_install(katana_rx_alloc);
