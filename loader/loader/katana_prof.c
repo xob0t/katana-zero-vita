@@ -656,6 +656,10 @@ void katana_prof_report(int frames) {
 				(float)(particle_native_fallbacks - last_particle_fallbacks) / frames, particle_verified, particle_mismatch);
 		last_particle_native = particle_native_calls;
 		last_particle_fallbacks = particle_native_fallbacks;
+		extern int particle_ab, particle_ab_off;
+		static unsigned particle_ab_windows;
+		if (particle_ab && ++particle_ab_windows % 2 == 0)
+			particle_ab_off = !particle_ab_off;
 		// exp_recolorlightsprof: draw_sprite_recolored's own time (all calls, the cheap cached ones too)
 		extern uint32_t recolor_lights_prof_us, recolor_lights_prof_calls;
 		if (frames > 0 && recolor_lights_prof_calls) {

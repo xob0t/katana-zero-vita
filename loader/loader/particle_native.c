@@ -36,7 +36,8 @@
  * The checks (an instance, the variable ids, the builtin getters, point_distance's registry entry) all come before
  * anything is called; if one fails the original event runs.
  *
- * exp_particlenative0 keeps the original. [PARTICLE] report line: native / original calls. exp_particleverify (debug
+ * exp_particlenative0 keeps the original. [PARTICLE] report line: native / original calls. exp_particleab (debug):
+ * the original in every other pair of report windows (in-run A/B, ~4 s per state). exp_particleverify (debug
  * mode): every call first runs the native event dry (its draws and script calls recorded, not made; its setter writes
  * real), keeps the instance's fields 0x7c-0x100 (everything those setters write) and puts them back, then runs the
  * original with its call sites (update_region, the four draw_self, draw_sprite_recolored, draw_sprite_ext) going
@@ -122,6 +123,7 @@ static const int *var_desc[NVARS]; // {name, id}: the runner fills the ids at ga
 #define NONE ((int)0x80000000)
 
 unsigned particle_native_calls, particle_native_fallbacks, particle_verified, particle_mismatch;
+int particle_ab, particle_ab_off; // exp_particleab (debug): the original in every other pair of report windows
 
 static uint32_t word(const void *p, size_t o) { uint32_t v; memcpy(&v, (const uint8_t *)p + o, 4); return v; }
 static float field(const void *p, size_t o) { float v; memcpy(&v, (const uint8_t *)p + o, 4); return v; }
@@ -412,7 +414,7 @@ static void retarget(uintptr_t site, const uint32_t *veneer) {
 #endif
 
 static void particle_event(void *self, void *other) {
-	if (enabled && checks(self)) {
+	if (enabled && !particle_ab_off && checks(self)) {
 		particle_native_calls++;
 #ifndef PARTICLE_NATIVE_TEST
 		if (verify) {
@@ -518,6 +520,7 @@ event_fn particle_native_install(event_fn orig) {
 	}
 	if (exp_flag("particlenative0"))
 		enabled = 0;
+	particle_ab = debugMode && exp_flag("particleab");
 	debugPrintf("particle native: obj_particle user event 15 %s%s\n", enabled ? "runs natively" : "off (exp_particlenative0)",
 		verify ? " (verify mode)" : "");
 #endif
