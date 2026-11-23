@@ -81,6 +81,9 @@ static uint32_t screenshot_check_us;
 void katana_prof_report(int frames);
 int katana_frame_skipped();
 void katana_after_swap(uint32_t swap_us, uint32_t work_us);
+void rt_free_delete_textures(GLsizei n, const GLuint *textures);
+void rt_free_framebuffer_texture(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level);
+void rt_free_swapped(void);
 void katana_clock_probe(void);
 void screenshot_check();
 void callprof_report(int frames);
@@ -1013,8 +1016,10 @@ void main_loop() {
 			} else {
 				uint64_t prof_t1 = sceKernelGetProcessTimeWide();
 				hang_set_stage(HANG_STAGE_SWAP);
-				if (!katana_frame_skipped())
+				if (!katana_frame_skipped()) {
 					vglSwapBuffers(GL_FALSE);
+					rt_free_swapped();
+				}
 				swap_only_us = (uint32_t)(sceKernelGetProcessTimeWide() - prof_t1);
 				hang_set_stage(HANG_STAGE_AFTER_SWAP);
 				katana_after_swap(swap_only_us, (uint32_t)(prof_t1 - prof_t0));
@@ -1862,6 +1867,10 @@ static so_default_dynlib gl_hook[] = {
 	{"glBindFramebuffer", (uintptr_t)&glBindFramebuffer},
 	{"glReadPixels", (uintptr_t)&glReadPixelsHook},
 	{"glShaderSource", (uintptr_t)&glShaderSourceHook},
+	// rt_free.c: surfaces (textures attached to a framebuffer) are deleted a few swaps later
+	{"glDeleteTextures", (uintptr_t)&rt_free_delete_textures},
+	{"glFramebufferTexture2D", (uintptr_t)&rt_free_framebuffer_texture},
+	{"glFramebufferTexture2DOES", (uintptr_t)&rt_free_framebuffer_texture},
 };
 static size_t gl_numhook = sizeof(gl_hook) / sizeof(*gl_hook);
 
@@ -2636,7 +2645,7 @@ static so_default_dynlib default_dynlib[] = {
 	{ "glColorPointer", (uintptr_t)&glColorPointer },
 	{ "glDeleteBuffers", (uintptr_t)&glDeleteBuffers },
 	{ "glDeleteFramebuffersOES", (uintptr_t)&glDeleteFramebuffers },
-	{ "glDeleteTextures", (uintptr_t)&glDeleteTextures },
+	{ "glDeleteTextures", (uintptr_t)&rt_free_delete_textures }, // rt_free.c: surfaces are deleted a few swaps later
 	{ "glDepthFunc", (uintptr_t)&glDepthFunc },
 	{ "glDepthMask", (uintptr_t)&glDepthMask },
 	{ "glDepthRangef", (uintptr_t)&glDepthRangef },
@@ -2648,7 +2657,7 @@ static so_default_dynlib default_dynlib[] = {
 	{ "glFlush", (uintptr_t)&glFlush },
 	{ "glFogf", (uintptr_t)&glFogf },
 	{ "glFogfv", (uintptr_t)&glFogfv },
-	{ "glFramebufferTexture2DOES", (uintptr_t)&glFramebufferTexture2D },
+	{ "glFramebufferTexture2DOES", (uintptr_t)&rt_free_framebuffer_texture },
 	{ "glFrontFace", (uintptr_t)&glFrontFace },
 	{ "glGenBuffers", (uintptr_t)&glGenBuffers },
 	{ "glGenFramebuffersOES", (uintptr_t)&glGenFramebuffers },
