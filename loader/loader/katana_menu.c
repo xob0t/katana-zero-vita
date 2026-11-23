@@ -194,6 +194,12 @@ static void fps_optionsmenu_step(void *self, void *other) {
 	}
 	if (zoom == 3.0 && (z = instance_var(self, var_var_zoom_mode)) && z->val == 0.0)
 		z->val = 1.0;
+	// From 0 ("not chosen", shown as the yyl.cfg mode) the game steps to 1 (NATIVE), which with fpsMode 0 looks like
+	// no change: step to the mode after the one shown instead (menu order NATIVE 1, 30 FPS 2, DYNAMIC 3)
+	else if (zoom == 0.0 && (z = instance_var(self, var_var_zoom_mode)) && z->val == 1.0) {
+		int shown = fps30_cfg == 0 ? 1 : fps30_cfg == 2 ? 2 : 3; // as fps_translate_option labels it
+		z->val = shown % 3 + 1;
+	}
 }
 
 // Once per frame (t30_update): the saved menu choices drive fps30 and enemy_half_rate
