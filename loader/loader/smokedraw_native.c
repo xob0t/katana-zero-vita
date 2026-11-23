@@ -731,8 +731,11 @@ static void ABI smokedraw_event(void *self, void *other) {
  * scratch fields) is not put back. The second pass can't depend on it: those scripts write each of these before
  * reading it, so the same calls with the same arguments (compared in 5) write the same values, and a script call the
  * native skips or adds shows up in the records.
- * Script calls are recorded through entry hooks installed at startup; a script whose entry is already hooked (the
- * heavy profiler's stage hooks, a native) isn't recorded and the report says so.
+ * Script calls and CSprite::Draw are recorded through entry hooks installed on the first verified event, after every
+ * native has installed its own. An entry another native already hooked (ldr pc,[pc,#-4]; target: visibility,
+ * light array) gets the recorder in front: the recorder calls that target, so the other native still runs. An unset or
+ * undefined value is recorded by kind only: its value bytes are leftovers (update_light_array returns undefined in a
+ * result slot whose high word the original never set).
  */
 #define MAX_RECORDS 16
 enum { R_SCRIPT = 1, R_SPRITE = 8 };
@@ -764,22 +767,26 @@ static Record *new_record(uint32_t kind) {
 	r->kind = kind;
 	return r;
 }
+// Value and kind of an argument or result; an unset (0xffffff) or undefined (5) value has no payload
+static void record_value(uint32_t *w, const RV *v) {
+	uint32_t kind = KIND(v);
+	if (kind != 0xffffff && kind != 5)
+		memcpy(w, &v->v, 8);
+	w[2] = v->kind;
+}
 static RV *ABI record_script(int k, void *self, void *other, RV *result, int argc, RV **args) {
 	Record *r = NULL;
 	if (capture >= 0 && (r = new_record(R_SCRIPT + k)) != NULL) {
 		r->w[0] = (uint32_t)(uintptr_t)self;
 		r->w[1] = (uint32_t)(uintptr_t)other;
 		r->w[2] = (uint32_t)argc;
-		for (int i = 0; i < argc && i < 8 && args; i++) { // value and kind (the flags word: see above)
-			memcpy(&r->w[3 + 4 * i], &args[i]->v, 8);
-			r->w[5 + 4 * i] = args[i]->kind;
-		}
+		for (int i = 0; i < argc && i < 8 && args; i++) // value and kind (the flags word: see above)
+			record_value(&r->w[3 + 4 * i], args[i]);
 	}
 	int which = capture;
 	RV *out = script_orig[k](self, other, result, argc, args);
 	if (r && which == capture) {
-		memcpy(&r->w[40], &out->v, 8);
-		r->w[42] = out->kind;
+		record_value(&r->w[40], out);
 		r->w[43] = 1;
 	}
 	return out;
@@ -837,8 +844,15 @@ static int snapshot_vars(void *self, Slot *out) {
 
 #define FIELDS_FROM 0x7c
 #define FIELDS_TO 0xc0
+static int verify_hooks(void);
+static int verify_hooked;
 static void verify_event(void *self, void *other) {
 	static Slot before[MAX_SLOTS], after_gml[MAX_SLOTS], after_native[MAX_SLOTS];
+	if (!verify_hooked && !(verify_hooked = verify_hooks())) {
+		smokedraw_verify = 0;
+		native_event(self, other);
+		return;
+	}
 	uint8_t fields_before[FIELDS_TO - FIELDS_FROM], fields_gml[FIELDS_TO - FIELDS_FROM];
 	uint32_t rng_before[17], rng_gml[17];
 	int nb = snapshot_vars(self, before);
@@ -907,24 +921,45 @@ static void verify_event(void *self, void *other) {
 	}
 }
 
-// exp_smokeverify setup: the recording hooks. 0 if CSprite::Draw can't be hooked or the RNG/draw instance is missing.
+// The function `replacement` should call to reach what entry did: a new trampoline, or the target of a hook already
+// at entry (ldr pc,[pc,#-4]; target), which is then redirected to replacement. NULL if entry can't be hooked.
+static void *hook_or_chain(uintptr_t entry, void *replacement) {
+	if (!entry || (entry & 3))
+		return NULL;
+	uint32_t *w = (uint32_t *)entry;
+	if (w[0] == 0xe51ff004) {
+		void *next = (void *)(uintptr_t)w[1];
+		uint32_t target = (uint32_t)(uintptr_t)replacement;
+		kuKernelCpuUnrestrictedMemcpy(&w[1], &target, 4);
+		kuKernelFlushCaches(w, 8);
+		return next;
+	}
+	return entry_hook(entry, replacement);
+}
+
+// exp_smokeverify at install: what the comparison needs. 0 if the RNG or the draw instance is missing.
 static int verify_install(void) {
 	rng_state = (uint32_t *)so_symbol(&yoyoloader_mod, "state");
 	rng_index = (uint32_t *)so_symbol(&yoyoloader_mod, "g_RndIndex");
 	draw_instance = (void **)so_symbol(&yoyoloader_mod, "_ZN15CSkeletonSprite15ms_drawInstanceE");
-	if (!rng_state || !rng_index || !draw_instance)
-		return 0;
-	orig_sprite_draw = (sprite_draw_fn)entry_hook(so_symbol(&yoyoloader_mod, "_ZN7CSprite4DrawEffffffjf"),
+	return rng_state && rng_index && draw_instance && so_symbol(&yoyoloader_mod, "_ZN7CSprite4DrawEffffffjf");
+}
+
+// On the first verified event: the recording hooks. 0 (verify off) if CSprite::Draw can't be hooked.
+static int verify_hooks(void) {
+	orig_sprite_draw = (sprite_draw_fn)hook_or_chain(so_symbol(&yoyoloader_mod, "_ZN7CSprite4DrawEffffffjf"),
 		(void *)record_sprite_draw);
-	if (!orig_sprite_draw)
+	if (!orig_sprite_draw) {
+		debugPrintf("smoke cloud Draw verify: CSprite::Draw can't be hooked, verify off\n");
 		return 0;
+	}
 	for (int k = 0; k < 4; k++) {
-		script_orig[k] = (script_fn)entry_hook(so_symbol(&yoyoloader_mod, script_names[k]), script_recorders[k]);
+		script_orig[k] = (script_fn)hook_or_chain(so_symbol(&yoyoloader_mod, script_names[k]), script_recorders[k]);
 		if (!script_orig[k])
 			smokedraw_verify_unrecorded |= 1u << k;
 	}
 	if (smokedraw_verify_unrecorded)
-		debugPrintf("smoke cloud Draw verify: script calls not recorded (entry already hooked), mask %x\n",
+		debugPrintf("smoke cloud Draw verify: script calls not recorded (entry can't be hooked), mask %x\n",
 			smokedraw_verify_unrecorded);
 	return 1;
 }
