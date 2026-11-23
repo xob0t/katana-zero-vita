@@ -446,12 +446,15 @@ static void eh_setting_check(void) {
 		debugPrintf("Half-rate enemies %s\n", enemy_half_rate ? "on" : "off");
 }
 
-// Once, at the first enemy Step (the object table and the function registry aren't loaded at install): the object
-// indices of the hurt sources and collision_rectangle's registry index. Without all of them half-rate stays off.
+// At the first enemy Step or when the GRAPHICS page is built (the object table and the function registry aren't
+// loaded at install): the object indices of the hurt sources and collision_rectangle's registry index. Without all
+// of them half-rate is off for the session; while the registry is still empty it is asked again later.
 static int eh_resolve_sources(void) {
 	if (eh_sources_found)
 		return 1;
-	for (int i = 0; *eh_functions && i < *eh_function_count && !eh_fn_collision_rectangle; i++)
+	if (!*eh_functions || *eh_function_count <= 0)
+		return 0;
+	for (int i = 0; i < *eh_function_count && !eh_fn_collision_rectangle; i++)
 		if ((*eh_functions)[i].name && !strcmp((*eh_functions)[i].name, "collision_rectangle")) {
 			eh_collision_rectangle_desc[1] = i;
 			eh_fn_collision_rectangle = eh_collision_rectangle_desc;
@@ -472,6 +475,11 @@ static int eh_resolve_sources(void) {
 		return 0;
 	}
 	return eh_sources_found = 1;
+}
+
+// The ENEMY AI row is offered only when half-rate enemies can run (katana_menu.c)
+int eh_available(void) {
+	return eh_installed && eh_resolve_sources();
 }
 
 static uint32_t eh_word(const void *p, size_t off) {
@@ -514,6 +522,10 @@ static double eh_num(void *self, int *var, double fallback) {
 //   slope_tolerance and the pixel loops (floor, slope, ceiling) a few px: 48 + 20 * fr * that factor + slope_tolerance
 //   on every side.
 // Existence of each source is checked first, for each enemy: attacks made earlier this tick count.
+// The Step covering two ticks needs no probe of the tick it skipped: anything that existed at the enemy's slot that
+// tick was probed then (and would have run the Step), and anything made after it was not seen by the full-rate Step
+// that tick either; both then test the same final position. Not covered: a move past the margin, e.g. ceiling_check
+// pushing an enemy embedded deep in a block (its loop is unbounded) or an AI script that teleports an enemy.
 unsigned enemyhalf_probes;
 static int eh_hurt_near(void *self) {
 	unsigned present = 0;

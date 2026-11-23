@@ -88,7 +88,8 @@ static void *fps_add_pausemenu_choice(void *self, void *other, void *result, int
 	const char *key = argc == 2 ? rv_string(args[0]) : NULL;
 	if (key && !strcmp(key, "BLOOD SPRAY")) { // the GRAPHICS page only (obj_options_main_menu Step)
 		static const char *const rows[2] = { "WINDOW ZOOM", "FULLSCREEN" };
-		const int shown[2] = { fps_row, enemy_row };
+		extern int eh_available(void);
+		const int shown[2] = { fps_row, enemy_row && eh_available() };
 		void *toggle = args[1]; // this call's "toggle"
 		for (int i = 0; i < 2; i++) {
 			if (!shown[i])

@@ -19,9 +19,13 @@
  * - Contacts stay at full rate. A settled cloud on screen (in_screen, set by its Draw) tests the original Step's three
  *   gates every tick: place_meeting(x, y, obj_enemy) (the touched enemy gets first_attack_timer >= 20 and
  *   whip_timer = 30, and a moving one dissolves and pushes the cloud), obj_player (the same push) and obj_slash
- *   (alpha -= 0.02 per tick of overlap, no fr). A skipped cloud with any of them true runs its Step on that tick,
- *   covering the ticks since its last run (smoke_last), so each of those writes happens on the tick and at the place
- *   it would have, and the fade counts every overlapping tick once.
+ *   (alpha -= 0.02 per tick of overlap, no fr). A skipped cloud with any of them true catches up the skipped ticks
+ *   (one Step covering them, its contact tests answering false, as they were tested) and then runs this tick's Step
+ *   at the real fr (smoke_last keeps each cloud's last run), so each of those writes happens on the tick and at the
+ *   place it would have, the push's speed decays per tick, dissolve starts on its first frame, and the fade counts
+ *   every overlapping tick once. A contact that starts on an update tick is handled by that update's Step (fr x N):
+ *   the enemy writes and the fade are exact, the cloud's own push decay and first dissolve frames are batched as in
+ *   any update.
  * - obj_corpsefire (burning-corpse embers) Step sets image_speed from fr, and the runner animates every tick (its
  *   Animation End destroys the ember): image_speed is divided by N. Its own motion (x += hsp * fr) would move in
  *   jumps every N ticks; the jump is spread over the N ticks with built-in hspeed/vspeed, which the runner applies
@@ -202,6 +206,39 @@ static uint32_t *smoke_last(void *self, uint32_t tick) {
 	return &smoke_table[free_slot].last;
 }
 
+// While a catch-up Step runs for ticks whose contacts were all tested false, the Step's own place_meeting calls
+// (they are only its three contact gates) answer false too: the registry entry is swapped around the call
+static void (*fx_place_meeting_real)(gml_rvalue *, void *, void *, int, gml_rvalue *);
+static void fx_place_meeting_false(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) {
+	result->val = 0;
+	result->flags = 0;
+	result->kind = 13; // false, as place_meeting returns
+}
+
+// The Step covering k ticks: fr x k, animation_code k times at the real fr, speed back to a per-tick drift
+static void smoke_run(void *self, void *other, int k, int no_contacts) {
+	runner_function *pm = no_contacts ? *fx_functions + fx_fn_place_meeting[1] : NULL;
+	if (pm) {
+		fx_place_meeting_real = pm->func;
+		pm->func = (void *)fx_place_meeting_false;
+	}
+	double fr = k > 1 ? fx_scale_fr(k) : -1;
+	if (fr >= 0) {
+		fx_anim_fr = fr;
+		fx_anim_repeat = k;
+	}
+	orig_smoke_step(self, other);
+	if (pm)
+		pm->func = (void *)fx_place_meeting_real;
+	if (fr < 0)
+		return;
+	fx_anim_repeat = 0;
+	fx_restore_fr(fr, k);
+	double speed = builtin_get(gv_speed, self);
+	if (speed != 0)
+		builtin_set(sv_speed, self, speed / k);
+}
+
 static void smoke_step(void *self, void *other) {
 	int n = fx_period();
 	uint32_t tick = *frame_count, *last = NULL;
@@ -222,28 +259,29 @@ static void smoke_step(void *self, void *other) {
 			fx_smoke_skip++;
 			return;
 		}
-		fx_smoke_contacts += contact > 0;
+		if (contact > 0) {
+			// The skipped ticks had no contact: they are caught up first with the Step's contact tests answering
+			// false, then this tick's Step runs at the real fr, so the push, its speed decay and the dissolve's first
+			// frame happen as on this tick at full rate
+			fx_smoke_contacts++;
+			*last = tick;
+			if (k > 1) {
+				fx_smoke_update++;
+				smoke_run(self, other, (int)k - 1, 1);
+				if (*(uint32_t *)((char *)self + 0x7c) & 3)
+					return; // destroyed (or deactivated) by the catch-up: the original would not Step it again
+			}
+			fx_smoke_full++;
+			orig_smoke_step(self, other);
+			return;
+		}
 	}
 	*last = tick;
-	if (k == 1) {
+	if (k == 1)
 		fx_smoke_full++;
-		orig_smoke_step(self, other);
-		return;
-	}
-	fx_smoke_update++;
-	double fr = fx_scale_fr((int)k);
-	if (fr < 0) {
-		orig_smoke_step(self, other);
-		return;
-	}
-	fx_anim_fr = fr;
-	fx_anim_repeat = (int)k;
-	orig_smoke_step(self, other);
-	fx_anim_repeat = 0;
-	fx_restore_fr(fr, (int)k);
-	double speed = builtin_get(gv_speed, self);
-	if (speed != 0)
-		builtin_set(sv_speed, self, speed / k);
+	else
+		fx_smoke_update++;
+	smoke_run(self, other, (int)k, 0);
 }
 
 static void corpsefire_step(void *self, void *other) {
