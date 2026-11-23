@@ -38,7 +38,7 @@ back the original.
   in one room and heavy rooms lose about 2 fps. `replays=1` leaves it to the game's own graphics option.
 - **No coloured light tint on clotheslines.** It cost about 7 fps near them. `ropeLights=1`.
 - **No rim glow on club dancers.** It's about 285 extra draws per frame, 44 fps with it and 52-56 without. The light
-  show stays. `dancerGlow=1`.
+  show stays. `dancerGlow=1` (on the first dance floor, club_0, also `roomLighting=1`).
 - **No dust in the cathedral's window light.** 41 fps with it, 59 without. `cathedralDust=1`.
 - **No lamp glow in haunted_cart2 and club_0.** The coloured glow that lamps and spotlights throw on walls and floors
   is off in those two rooms: 38 -> 40 fps in the minecart room, 55-57 -> 60 fps on the club's dance floor.

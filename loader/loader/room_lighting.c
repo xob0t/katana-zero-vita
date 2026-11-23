@@ -16,13 +16,15 @@
  *   helicopter; the dancers' glow is already skipped with dancerGlow=0). The six lamp user 0 events (obj_halogen
  *   etc.) test it around an empty body, and draw_rim_shading / pipeline_rim_shading (via pipeline_draw) have no
  *   callers.
- * - Writers only: obj_init Create, the reset_game_data scripts, the PC options menus. load_options and save_options
- *   never touch them.
+ * - Writers: obj_init Create, the reset_game_data scripts, the PC options menus (whose Draw also reads both to show
+ *   them; Android never opens those menus). load_options and save_options never touch them.
  * All readers only draw; no gameplay code reads either value.
  *
- * The globals themselves are never changed: in those two rooms each reader event runs with the value reading 0 and
- * gets the game's own value back as soon as it returns. Leaving the room, restarting it, death/rewind, the pause
- * menu, resetting game data and saving options all see the game's values, so there's nothing to restore.
+ * The override is temporary: in those two rooms the wrapper writes 0 into the global's live value just before a
+ * reader event runs and puts the saved value back when the event returns (GML `exit` returns normally too). A nested
+ * call of the same wrapper sees 0 and leaves the restore to the outer one. Nothing in the wrapped events escapes by
+ * exception or longjmp, so outside those events the globals always hold the game's values: leaving the room,
+ * restarting it, death/rewind, the pause menu, resetting game data and saving options see them unchanged.
  * debugMode: exp_roomlighting1 (read at every Room Start) keeps the glow like roomLighting=1, for A/B runs in one boot.
  */
 #include <vitasdk.h>
