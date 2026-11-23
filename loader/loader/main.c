@@ -3546,7 +3546,7 @@ void *pthread_main(void *arg) {
 		so_size = file_info.uncompressed_size;
 		so_buffer = (uint8_t *)malloc(so_size);
 		if (!so_buffer)
-			fatal_error("Error: not enough memory for libyoyo.so (%zu bytes).", so_size);
+			fatal_error("Error: not enough memory for libyoyo.so (%u bytes).", (unsigned)so_size);
 		int ok;
 		if (file_info.compression_method == 0) {
 			// Stored entry: read it straight from the apk in large blocks instead of

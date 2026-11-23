@@ -104,10 +104,18 @@ static int nfx_read_slot(const char *slot, char **data) {
 	int res = nfx_slot_path(&paths, slot);
 	if (!res) {
 		res = nfx_read_file(paths.save, data);
-		if (res == 1)
+		if (res == 1) {
+			// No .sav: a write stopped between its two renames. .sav only becomes .bak after the
+			// complete .new was written, synced and closed, so with a .bak present .new is the newer
+			// save. Without a .bak, .new may be incomplete and is never read.
 			res = nfx_read_file(paths.backup, data);
-		// Older loaders can leave only .tmp. New writes stage to .new, which
-		// may be incomplete and is never used as a recovery file.
+			char *staged = NULL;
+			if (res == 0 && nfx_read_file(paths.stage, &staged) == 0) {
+				free(*data);
+				*data = staged;
+			}
+		}
+		// Older loaders can leave only .tmp
 		if (res == 1)
 			res = nfx_read_file(paths.legacy, data);
 	}
@@ -201,7 +209,7 @@ void *netflix_call(void *ext) {
 		if (!arg0 || !arg1)
 			return nfx_return_double(0.0);
 		int err = nfx_write_slot(arg0, arg1);
-		debugPrintf("Nfxa: write slot %s (%zu bytes) = %d\n", arg0, strlen(arg1), err);
+		debugPrintf("Nfxa: write slot %s (%u bytes) = %d\n", arg0, (unsigned)strlen(arg1), err); // the Vita printf has no %zu
 		nfx_send_event("Nfx_cloudWrite", NULL, NULL, "error", (double)err);
 		return nfx_return_double(1.0);
 	} else if (!strcmp(m, "NfxaCloudDelete")) {
