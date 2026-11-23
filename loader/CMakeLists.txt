@@ -44,7 +44,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DSTANDALONE_MODE")
 endif(STANDALONE)
 
 # Native replacements must round exactly like the runner (no FMA contraction)
-set_source_files_properties(loader/collision_native.c loader/rope_fast.c loader/flash_mask.c loader/virtual_capture.c loader/input_native.c loader/laser_native.c loader/letter_native.c loader/minecart_native.c loader/clubber_native.c loader/dossier_native.c loader/wavy_native.c loader/trail_lights.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+set_source_files_properties(loader/collision_native.c loader/rope_fast.c loader/flash_mask.c loader/virtual_capture.c loader/input_native.c loader/laser_native.c loader/letter_native.c loader/minecart_native.c loader/clubber_native.c loader/dossier_native.c loader/wavy_native.c loader/trail_lights.c loader/recolor_lights.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 # Verified against the original ARM code with exactly these flags
 set_source_files_properties(loader/dustspawner_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-marm;-O2")
 # Kill-test natives (exp_lightfast, exp_lightfast_inline): Unicorn-verified with exactly these flags. The sibling
@@ -98,6 +98,7 @@ add_executable(YoYoLoader
   loader/light_fast.c
   loader/light_fast_inline.c
   loader/trail_lights.c
+  loader/recolor_lights.c
   loader/evprof.c
   loader/screenshot.c
 )

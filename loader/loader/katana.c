@@ -1138,6 +1138,13 @@ static void patch_performance() {
 		extern int trail_lights_install(void);
 		debugPrintf("trail light culling: %s\n", trail_lights_install() ? "installed" : "NOT installed");
 	}
+	// Lit sprites (particles, the roll's dust clouds, actors) recompute their tint from their nearby lights in
+	// draw_sprite_recolored's with loop whenever global.recolor_timer moves: the loop body runs natively (exact;
+	// recolor_lights.c)
+	if (!exp_flag("recolorlights0")) {
+		extern int recolor_lights_install(void *(*rx_alloc)(size_t));
+		debugPrintf("recolor light loop: %s\n", recolor_lights_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
 	// Club dancers' rim glow (obj_clubber user event 6): each dancer re-tints itself from every nearby club light
 	// with 2-4 outline sprites per light, each drawn twice: ~285 extra draws per frame in the club, 44 fps vs
 	// 52-56 without it. dancerGlow=0 (default) skips the event; the club light show itself stays. dancerGlow=1

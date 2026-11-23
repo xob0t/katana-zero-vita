@@ -540,6 +540,34 @@ void katana_prof_report(int frames) {
 		last_fallback = trail_lights_fallback;
 	}
 	{
+		// draw_sprite_recolored's light loop (recolor_lights.c): with loops entered, lights run natively (of them in
+		// batches past the first with) and by the original body; exp_recolorlightsab: off in every other window
+		extern unsigned recolor_lights_loops, recolor_lights_native, recolor_lights_fallback, recolor_lights_inside;
+		extern unsigned recolor_lights_batched, recolor_lights_verified, recolor_lights_ids_verified, recolor_lights_mismatch;
+		extern unsigned recolor_lights_reject_line[16], recolor_lights_reject_count[16];
+		extern int recolor_lights_ab, recolor_lights_ab_off;
+		static unsigned last_loops, last_native, last_fallback, last_batched, last_inside;
+		if (frames > 0 && (recolor_lights_loops != last_loops || recolor_lights_mismatch)) {
+			debugPrintf("[RECOLORLIGHTS] per frame: %.1f loops, lights %.1f native (%.1f batched, %.1f in radius), %.1f original | "
+				"verify ok %u ids %u mismatch %u%s\n",
+				(float)(recolor_lights_loops - last_loops) / frames, (float)(recolor_lights_native - last_native) / frames,
+				(float)(recolor_lights_batched - last_batched) / frames, (float)(recolor_lights_inside - last_inside) / frames,
+				(float)(recolor_lights_fallback - last_fallback) / frames,
+				recolor_lights_verified, recolor_lights_ids_verified, recolor_lights_mismatch,
+				recolor_lights_ab ? (recolor_lights_ab_off ? " | A/B: off" : " | A/B: on") : "");
+			for (int k = 0; k < 16 && recolor_lights_reject_line[k]; k++)
+				debugPrintf("[RECOLORLIGHTS] fell back at recolor_lights.c:%u x%u\n", recolor_lights_reject_line[k],
+					recolor_lights_reject_count[k]);
+		}
+		last_loops = recolor_lights_loops;
+		last_native = recolor_lights_native;
+		last_fallback = recolor_lights_fallback;
+		last_batched = recolor_lights_batched;
+		last_inside = recolor_lights_inside;
+		if (recolor_lights_ab)
+			recolor_lights_ab_off = !recolor_lights_ab_off;
+	}
+	{
 		extern unsigned input_native_calls, input_native_hits, input_native_fallbacks, input_native_rejection_used;
 		extern struct { uint32_t line, count; } input_native_rejections[512];
 		if (input_native_calls)
