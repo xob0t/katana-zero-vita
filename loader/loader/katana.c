@@ -1176,6 +1176,12 @@ static void patch_performance() {
 		light_fast_mode = light_fast_inline_install(katana_rx_alloc) ? 2 : 0;
 		debugPrintf("light fast: %s (inline)\n", light_fast_mode ? "installed" : "NOT installed");
 	}
+	// Exact native of the off-screen path of obj_lightback user event 0, the lighting pass's per-light event
+	// (lightback_native.c): visible lights run the original. exp_lightbacknative0: the original for every light.
+	if (!exp_flag("lightbacknative0")) {
+		extern int lightback_native_install(void *(*rx_alloc)(size_t));
+		debugPrintf("native off-screen lightback: %s\n", lightback_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
 	// Cathedral dust (obj_cathedral_dustspawner): every visible spawner redraws all ~208 particles through
 	// event_user(0), ~7.4 ms per frame: room_cathedral runs at 41 fps with it, 59 without. cathedralDust=0 (default)
 	// stubs the spawner's Step (creates the particles) and Draw; the window light itself stays. cathedralDust=1
