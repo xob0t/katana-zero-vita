@@ -1,17 +1,18 @@
 diff --git a/source/gxm.c b/source/gxm.c
-index 4cbb40b..b8fc011 100644
+index 4cbb40b..35296fb 100644
 --- a/source/gxm.c
 +++ b/source/gxm.c
-@@ -67,6 +67,8 @@ GLboolean dirty_query = GL_FALSE; // Flag whether occlusion queries needs result
+@@ -67,6 +67,9 @@ GLboolean dirty_query = GL_FALSE; // Flag whether occlusion queries needs result
  static GLboolean needs_end_scene = GL_FALSE; // Flag for gxm end scene requirement at scene reset
  static GLboolean needs_scene_reset = GL_TRUE; // Flag for when a scene reset is required
  static GLboolean scene_not_flushed = GL_FALSE; // Flag for when a scene had been forcibly flushed as last operation
 +GLboolean vgl_scene_open = GL_FALSE; // for the host: a sceGxm scene may be open (its commands not submitted yet)
 +GLboolean vgl_scene_used = GL_FALSE; // the open scene may hold recorded commands (every draw goes through scene_reset)
++GLboolean vgl_scene_depth_stencil = GL_FALSE; // the open scene may have written depth or stencil values
  
  SceGxmContext *gxm_context; // sceGxm context instance
  GLenum vgl_error = GL_NO_ERROR; // Error returned by glGetError
-@@ -111,6 +113,28 @@ int frame_elem_purge_idx = 0; // Index for currently populatable purge list elem
+@@ -111,6 +114,28 @@ int frame_elem_purge_idx = 0; // Index for currently populatable purge list elem
  int frame_rt_purge_idx = 0; // Index for currently populatable purge list rendertarget
  static int frame_purge_clean_idx = 1;
  SceUID gc_mutex[2];
@@ -40,7 +41,7 @@ index 4cbb40b..b8fc011 100644
  static int gc_thread_priority = 0x10000100;
  static int gc_thread_affinity = 0;
  static uint8_t gxm_display_rt_size = 1; // Number of scenes per frame to use for the display rendertarget
-@@ -166,6 +190,7 @@ static inline __attribute__((always_inline)) int setup_render_target(SceGxmRende
+@@ -166,6 +191,7 @@ static inline __attribute__((always_inline)) int setup_render_target(SceGxmRende
  #define MAX_RENDER_TARGETS_NUM 47 // Maximum amount of dedicated render targets usable for fbos
  #define MAX_SHARED_RT_SIZE 256 // Maximum  width value in pixels for shared rendertargets usage
  render_target rt_list[MAX_RENDER_TARGETS_NUM];
@@ -48,7 +49,7 @@ index 4cbb40b..b8fc011 100644
  
  render_target *get_free_render_target(int w, int h) {
  	int i;
-@@ -177,7 +202,7 @@ render_target *get_free_render_target(int w, int h) {
+@@ -177,7 +203,7 @@ render_target *get_free_render_target(int w, int h) {
  			}
  		} else {
  			rt_list[i].max_refs = w > MAX_SHARED_RT_SIZE ? 1 : MAX_SCENES_PER_FRAME;
@@ -57,7 +58,7 @@ index 4cbb40b..b8fc011 100644
  #ifdef LOG_ERRORS
  			if (r)
  				vgl_log("%s:%d Failed to create a shared rendertarget of size %dx%d (%s).\n", __FILE__, __LINE__, w, h, get_gxm_error_literal(r));
-@@ -201,7 +226,7 @@ render_target *get_free_render_target(int w, int h) {
+@@ -201,7 +227,7 @@ render_target *get_free_render_target(int w, int h) {
  	sceGxmFinish(gxm_context);
  	sceGxmDestroyRenderTarget(r->rt);
  	r->max_refs = w > MAX_SHARED_RT_SIZE ? 1 : MAX_SCENES_PER_FRAME;
@@ -66,7 +67,7 @@ index 4cbb40b..b8fc011 100644
  #ifdef LOG_ERRORS
  	if (res)
  		vgl_log("%s:%d Failed to create a shared rendertarget of size %dx%d (%s).\n", __FILE__, __LINE__, w, h, get_gxm_error_literal(res));
-@@ -293,9 +318,13 @@ int garbage_collector(unsigned int args, void *arg) {
+@@ -293,9 +319,13 @@ int garbage_collector(unsigned int args, void *arg) {
  				break;
  		}
  		frame_purge_clean_idx = (frame_purge_clean_idx + 1) % FRAME_PURGE_FREQ;
@@ -80,16 +81,21 @@ index 4cbb40b..b8fc011 100644
  #ifndef HAVE_SINGLE_THREADED_GC
  		sceKernelSignalSema(gc_mutex[1], 1);
  	}
-@@ -350,6 +379,8 @@ void init_gxm(void) {
+@@ -350,6 +380,13 @@ void init_gxm(void) {
  #endif
  	}
  
-+	sceKernelCreateLwMutex(&purge_lock, "vitaGL purge lists", 0, 0, NULL);
++	// Purge list appends race the collector's rotation without this lock: no silent fallback
++	int lock_res = sceKernelCreateLwMutex(&purge_lock, "vitaGL purge lists", 0, 0, NULL);
++	if (lock_res < 0) {
++		sceClibPrintf("vitaGL: purge list lock creation failed (0x%08X)\n", lock_res);
++		sceKernelExitProcess(0);
++	}
 +	purge_lock_ready = 1;
  #ifndef HAVE_SINGLE_THREADED_GC
  	// Initializing garbage collector
  	gc_mutex[0] = sceKernelCreateSema("vitaGL GC Sema Push", 0, 0, FRAME_PURGE_FREQ, NULL);
-@@ -567,10 +598,18 @@ void start_shader_patcher(void) {
+@@ -567,10 +604,19 @@ void start_shader_patcher(void) {
  #endif
  }
  
@@ -105,12 +111,21 @@ index 4cbb40b..b8fc011 100644
 +	if (sceGxmEndScene(gxm_context, NULL, &query_fence) == 0) {
 +		vgl_scene_open = GL_FALSE;
 +		vgl_scene_used = GL_FALSE;
++		vgl_scene_depth_stencil = GL_FALSE;
 +	}
 +	vgl_scene_end_us += sceKernelGetProcessTimeLow() - t0;
  	if (system_app_mode && vsync_interval)
  		sceDisplayWaitVblankStartMulti(vsync_interval);
  }
-@@ -611,6 +650,8 @@ void scene_reset(void) {
+@@ -578,6 +624,7 @@ static inline __attribute__((always_inline)) void scene_end(void) {
+ void scene_reset(void) {
+ 	if (in_use_framebuffer != active_write_fb || needs_scene_reset || dirty_framebuffer || dirty_query) {
+ 		scene_not_flushed = GL_TRUE;
++		vgl_scene_depth_stencil = GL_FALSE;
+ 		dirty_framebuffer = GL_FALSE;
+ 		dirty_query = GL_FALSE;
+ 		needs_scene_reset = GL_FALSE;
+@@ -611,6 +658,8 @@ void scene_reset(void) {
  #endif
  
  		// Starting drawing scene
@@ -119,7 +134,7 @@ index 4cbb40b..b8fc011 100644
  		is_rendering_display = !active_write_fb;
  		if (is_rendering_display) { // Default framebuffer is used
  			if (system_app_mode) {
-@@ -623,6 +664,7 @@ void scene_reset(void) {
+@@ -623,6 +672,7 @@ void scene_reset(void) {
  				gxm_sync_objects[gxm_back_buffer_index],
  				&gxm_color_surfaces[gxm_back_buffer_index],
  				&gxm_depth_stencil_surface);
@@ -127,7 +142,7 @@ index 4cbb40b..b8fc011 100644
  #ifdef LOG_ERRORS
  			if (r) {
  				vgl_log("%s:%d Scene reset failed due to sceGxmBeginScene erroring (%s) on display.\n", __FILE__, __LINE__, get_gxm_error_literal(r));
-@@ -675,12 +717,14 @@ void scene_reset(void) {
+@@ -675,12 +725,14 @@ void scene_reset(void) {
  					NULL, NULL, NULL,
  					&active_write_fb->colorbuffer,
  					active_write_fb->depthbuffer_ptr);
@@ -142,24 +157,26 @@ index 4cbb40b..b8fc011 100644
  		// Setting back current viewport if enabled cause sceGxm will reset it at sceGxmEndScene call
  		if (old_framebuffer != in_use_framebuffer) {
  			dirty_scissor_state = GL_TRUE;
-@@ -702,6 +746,37 @@ void scene_reset(void) {
+@@ -702,6 +754,39 @@ void scene_reset(void) {
  	if (dirty_scissor_state) {
  		update_scissor_test();
  	}
 +	vgl_scene_used = GL_TRUE;
++	if ((depth_test_state && depth_mask_state) || stencil_test_state)
++		vgl_scene_depth_stencil = GL_TRUE;
 +}
 +
 +// For the host: ends the open scene if nothing was recorded in it since it began (glFlush and glFinish begin a new
 +// scene right away, so a flush leaves an empty one open). The next draw begins a new scene and redraws the scissor
 +// mask; an empty scene has no depth/stencil contents to lose. Returns 0 if no scene is open, 1 if it ended an empty
 +// one, 2 if the open scene may hold commands (left open).
-+// vgl_end_scene_no_depth_stencil also ends a scene holding commands, when depth and stencil tests are both off: the
-+// next draw begins a new scene and redraws the scissor mask, and with no test enabled no later draw reads the depth or
-+// stencil contents the split would drop (DEPTH_STENCIL_HACK keeps no memory for them).
++// vgl_end_scene_no_depth_stencil also ends a scene holding commands, when no draw or clear in it wrote depth or stencil
++// values and both tests are off: the next draw begins a new scene and redraws the scissor mask, and there are no depth
++// or stencil contents for the split to drop (DEPTH_STENCIL_HACK keeps no memory for them).
 +static int end_scene_for_host(GLboolean even_if_used) {
 +	if (!vgl_scene_open)
 +		return 0;
-+	if (vgl_scene_used && (!even_if_used || depth_test_state || stencil_test_state))
++	if (vgl_scene_used && (!even_if_used || vgl_scene_depth_stencil || depth_test_state || stencil_test_state))
 +		return 2;
 +	GLboolean used = vgl_scene_used;
 +	scene_end();
@@ -180,22 +197,39 @@ index 4cbb40b..b8fc011 100644
  }
  
  /*
-@@ -979,6 +1054,7 @@ void glFinish(void) {
+@@ -979,6 +1064,8 @@ void glFinish(void) {
  	if (scene_not_flushed) {
  		dirty_framebuffer = GL_TRUE;
  		scene_reset();
 +		vgl_scene_used = GL_FALSE; // the scene just begun is empty
++		vgl_scene_depth_stencil = GL_FALSE;
  		sceGxmFinish(gxm_context);
  		scene_not_flushed = GL_FALSE;
  	}
-@@ -999,6 +1075,7 @@ void glFlush(void) {
+@@ -999,6 +1086,8 @@ void glFlush(void) {
  	if (scene_not_flushed) {
  		dirty_framebuffer = GL_TRUE;
  		scene_reset();
 +		vgl_scene_used = GL_FALSE; // the scene just begun is empty
++		vgl_scene_depth_stencil = GL_FALSE;
  		scene_not_flushed = GL_FALSE;
  	}
  }
+diff --git a/source/misc.c b/source/misc.c
+index 238f052..8cd267c 100644
+--- a/source/misc.c
++++ b/source/misc.c
+@@ -649,6 +649,10 @@ void glClear(GLbitfield mask) {
+ 	}
+ #endif
+ 	scene_reset();
++	// Clears write depth and stencil values with the tests off
++	extern GLboolean vgl_scene_depth_stencil;
++	if (mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT))
++		vgl_scene_depth_stencil = GL_TRUE;
+ 
+ 	// Invalidating viewport and culling
+ 	invalidate_viewport();
 diff --git a/source/utils/gpu_utils.c b/source/utils/gpu_utils.c
 index 4464db5..5a7a7c1 100644
 --- a/source/utils/gpu_utils.c

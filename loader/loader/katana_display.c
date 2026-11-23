@@ -60,10 +60,10 @@ static int app_game_w, app_game_h; // size the game set, before the override
  * before its Draw phase. On device soaks a drain at the start of Draw came too late for 17 of 21 game flushes (a new
  * page already in PHYCONT), and waiting for the swap was later still (the room switch and the first frame follow in
  * the same Process call). At the call a scene is usually open: the builtin first submits the runner's pending batch
- * (Graphics::Flush) into it. It is ended first (vgl_end_scene_no_depth_stencil) unless a depth or stencil test is on:
- * the next draw begins a new scene and redraws the scissor mask, and with both tests off nothing reads the depth or
- * stencil contents the split drops. Otherwise the drain retries at the start of Draw and after the next presented
- * frame.
+ * (Graphics::Flush) into it. It is ended first (vgl_end_scene_no_depth_stencil) when no draw or clear in it wrote
+ * depth or stencil values and both tests are off: the next draw begins a new scene and redraws the scissor mask, and
+ * the split drops no depth/stencil contents. Otherwise the drain retries at the start of Draw and after the next
+ * presented frame; each wait is logged with its reason.
  * The new room then loads its pages into free VRAM, and the forced collection stays a rare last resort, reported by
  * [FORCEDGC]. The loader's own page recovery after the swap (below) drains the same way. exp_texdrain0 disables.
  */
@@ -77,8 +77,13 @@ static void texdrain_run(const char *where) {
 		return;
 	extern int vgl_end_scene_no_depth_stencil(void);
 	int scene = vgl_end_scene_no_depth_stencil();
-	if (scene == 2)
+	if (scene == 2) {
+		extern GLboolean vgl_scene_depth_stencil, depth_test_state, stencil_test_state;
+		debugPrintf("[TEXDRAIN] waiting (%s): the open scene %s\n", where, vgl_scene_depth_stencil ?
+			"wrote depth or stencil values" : depth_test_state || stencil_test_state ? "has a depth or stencil test on" :
+			"could not be ended");
 		return;
+	}
 	const char *what = texdrain_pending;
 	texdrain_pending = NULL;
 	uint32_t t0 = sceKernelGetProcessTimeLow();
