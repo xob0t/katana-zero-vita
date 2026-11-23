@@ -22,7 +22,8 @@
  * ends in the builtin getter GV_X/GV_Y: (double) of the float at +0xb8/+0xbc.
  *
  * exp_visibilitynative0 keeps the original scripts. exp_visverify runs the original after each
- * native call and counts results that differ (report line [VIS]).
+ * native call and counts results that differ (report line [VIS]). exp_visab (measurement only) switches the
+ * natives off and on every report window, so one run gives an A/B.
  */
 #include <string.h>
 #include "main.h"
@@ -43,7 +44,7 @@ typedef RV *ABI (*GetVar)(void *, int);
 unsigned vis_point_native, vis_point_fallback, vis_screen_native, vis_screen_fallback;
 unsigned vis_verify_calls, vis_verify_mismatch;
 uint32_t vis_point_us, vis_screen_us;
-int vis_verify, vis_timing;
+int vis_verify, vis_timing, vis_ab, vis_ab_off;
 static unsigned vis_reject_line[8], vis_reject_count[8];
 
 static Script orig_point, orig_screen;
@@ -127,6 +128,8 @@ static void verify(Script orig, void *self, void *other, RV *result, int argc, R
 }
 
 static RV *ABI vis_point(void *self, void *other, RV *result, int argc, RV **argv) {
+	if (vis_ab_off)
+		return orig_point(self, other, result, argc, argv);
 	uint32_t t0 = vis_timing ? sceKernelGetProcessTimeLow() : 0;
 	int r = -1;
 	if (result && argc >= 3 && argv && argv[0] && argv[1] && argv[2])
@@ -149,6 +152,8 @@ static RV *ABI vis_point(void *self, void *other, RV *result, int argc, RV **arg
 }
 
 static RV *ABI vis_screen(void *self, void *other, RV *result, int argc, RV **argv) {
+	if (vis_ab_off)
+		return orig_screen(self, other, result, argc, argv);
 	uint32_t t0 = vis_timing ? sceKernelGetProcessTimeLow() : 0;
 	int r = -1;
 	if (result && self && *(uint32_t *)((char *)self + 0x50) == 1 && argc >= 1 && argv && argv[0])
@@ -174,9 +179,10 @@ void visibility_native_report(int frames) {
 	if (!orig_point && !orig_screen)
 		return;
 	if (frames > 0)
-		debugPrintf("[VIS] inside_screen_point native %.1f fallback %.1f | inside_screen native %.1f fallback %.1f per frame\n",
+		debugPrintf("[VIS] inside_screen_point native %.1f fallback %.1f | inside_screen native %.1f fallback %.1f per frame%s\n",
 			(float)vis_point_native / frames, (float)vis_point_fallback / frames,
-			(float)vis_screen_native / frames, (float)vis_screen_fallback / frames);
+			(float)vis_screen_native / frames, (float)vis_screen_fallback / frames,
+			vis_ab ? (vis_ab_off ? " | A/B: off" : " | A/B: on") : "");
 	if (vis_timing && frames > 0)
 		debugPrintf("[VIS] time: point %.3f ms, screen %.3f ms per frame\n", vis_point_us / 1000.0f / frames,
 			vis_screen_us / 1000.0f / frames);
@@ -185,6 +191,8 @@ void visibility_native_report(int frames) {
 	for (int i = 0; i < 8 && vis_reject_line[i]; i++)
 		debugPrintf("[VIS] fallback at visibility_native.c:%u x%u (session)\n", vis_reject_line[i], vis_reject_count[i]);
 	vis_point_native = vis_point_fallback = vis_screen_native = vis_screen_fallback = 0;
+	if (vis_ab)
+		vis_ab_off = !vis_ab_off;
 	vis_point_us = vis_screen_us = 0;
 }
 
@@ -218,6 +226,7 @@ int visibility_native_install(void *(*rx_alloc)(size_t)) {
 	if (!compare || !global || !epsilon || !var_xview || !var_yview || !var_wview || !var_hview || !point || !screen)
 		return 0;
 	vis_verify = exp_flag("visverify");
+	vis_ab = exp_flag("visab");
 	extern int heavy_profiling;
 	vis_timing = heavy_profiling;
 	orig_point = hook(point, vis_point, rx_alloc);
