@@ -75,7 +75,7 @@ add_executable(YoYoLoader
   loader/katana.c
   loader/katana_prof.c
   loader/katana_display.c
-  loader/katana_t30.c
+  loader/enemy_half_rate.c
   loader/fx_rate.c
   loader/glow_rest.c
   loader/wobble_rest.c
