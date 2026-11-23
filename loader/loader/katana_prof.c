@@ -559,6 +559,15 @@ void katana_prof_report(int frames) {
 				debugPrintf("[RECOLORLIGHTS] fell back at recolor_lights.c:%u x%u\n", recolor_lights_reject_line[k],
 					recolor_lights_reject_count[k]);
 		}
+		// exp_recolorlightsprof: draw_sprite_recolored's own time (all calls, the cheap cached ones too)
+		extern uint32_t recolor_lights_prof_us, recolor_lights_prof_calls;
+		if (frames > 0 && recolor_lights_prof_calls) {
+			debugPrintf("[RECOLORPROF] draw_sprite_recolored %.3f ms/frame in %.1f calls (%.1f us each)%s\n",
+				recolor_lights_prof_us / 1000.0f / frames, (float)recolor_lights_prof_calls / frames,
+				(float)recolor_lights_prof_us / recolor_lights_prof_calls,
+				recolor_lights_ab ? (recolor_lights_ab_off ? " | A/B: off" : " | A/B: on") : "");
+			recolor_lights_prof_us = recolor_lights_prof_calls = 0;
+		}
 		last_loops = recolor_lights_loops;
 		last_native = recolor_lights_native;
 		last_fallback = recolor_lights_fallback;

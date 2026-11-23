@@ -64,6 +64,7 @@
  *   light_r/g/b/alpha (all 16 bytes) with the native result. Every instance-id with target is also looked up the
  *   batch's way and compared with what NewWithIterator visited. Mismatches must stay 0.
  * - exp_recolorlightsab: the native body is off in every other report window (in-run A/B).
+ * - exp_recolorlightsprof: times every draw_sprite_recolored call (an entry hook on the script).
  */
 #include <stdint.h>
 #include <stddef.h>
@@ -71,6 +72,7 @@
 #include <math.h>
 #ifndef RECOLOR_LIGHTS_TEST
 #include <kubridge.h>
+#include <psp2/kernel/processmgr.h>
 #include "main.h"
 #include "so_util.h"
 extern int debugMode;
@@ -502,6 +504,20 @@ static int ABI recolor_next_with(void *iterator, void **self, void **other) {
 	return step(next_with(iterator, self, other), iterator, self, other);
 }
 
+#ifndef RECOLOR_LIGHTS_TEST
+// exp_recolorlightsprof: the script's own time
+typedef RV *ABI (*script_fn)(void *self, void *other, RV *result, int argc, RV **args);
+static script_fn timed_original;
+uint32_t recolor_lights_prof_us, recolor_lights_prof_calls;
+static RV *ABI timed_script(void *self, void *other, RV *result, int argc, RV **args) {
+	uint32_t start = sceKernelGetProcessTimeLow();
+	RV *r = timed_original(self, other, result, argc, args);
+	recolor_lights_prof_us += sceKernelGetProcessTimeLow() - start;
+	recolor_lights_prof_calls++;
+	return r;
+}
+#endif
+
 // The bl at site calls func directly (a PLT-patched runner) or through the 1.1.10 linker veneer to its PLT entry
 static int calls(uintptr_t site, uintptr_t veneer, uintptr_t plt, uintptr_t func) {
 	uint32_t ins = *(uint32_t *)site;
@@ -602,6 +618,13 @@ int recolor_lights_install(void *(*rx_alloc)(size_t)) {
 	}
 	retarget(AT(NEW_SITE), new_veneer);
 	retarget(AT(NEXT_SITE), next_veneer);
+#ifndef RECOLOR_LIGHTS_TEST
+	if (debugMode && exp_flag("recolorlightsprof")) {
+		extern void *entry_hook(uintptr_t entry, void *replacement);
+		timed_original = (script_fn)entry_hook(entry, (void *)&timed_script);
+		debugPrintf("recolor lights: timing draw_sprite_recolored %s\n", timed_original ? "on" : "FAILED");
+	}
+#endif
 #undef AT
 	debugPrintf("recolor lights: native light loop%s%s\n", verify ? " (verify mode)" : "",
 		recolor_lights_ab ? " (A/B per report window)" : "");
