@@ -76,7 +76,8 @@ static draw_ext_fn draw_sprite_ext;
 static exists_fn instance_exists;
 static void **global_obj;
 static uint32_t *frame_count;
-static int dustcloud = -1, fogspawner = -1, sample;
+static int (*object_find)(const char *name);
+static int dustcloud = -2, fogspawner = -2, sample; // -2: not looked up yet (the object table loads after install)
 
 enum { COLOR_ME, BLACKOUT, SPARK, SHADING, IMAGE_ALPHA, IMAGE_BLEND, IMAGE_INDEX, LIGHT_COL, LIGHT_ALPHA, NVARS };
 static const char *const var_names[NVARS] = {"g_VAR_color_me", "g_VAR_blackout", "g_VAR_spark", "g_VAR_shading",
@@ -162,7 +163,14 @@ static void sample_original(void *self) {
 }
 
 static void fog_trail_event(void *self, void *other) {
-	if ((int)word(self, 0x84) == dustcloud && word(self, 0x50) == 1 && in_fog_room(self)) {
+	if (dustcloud == -2) {
+		dustcloud = object_find("obj_dustcloud");
+		fogspawner = object_find("obj_fogspawner");
+		if (fogspawner < 0)
+			dustcloud = -1;
+		debugPrintf("fog trail: obj_dustcloud %d, obj_fogspawner %d\n", dustcloud, fogspawner);
+	}
+	if (dustcloud >= 0 && (int)word(self, 0x84) == dustcloud && word(self, 0x50) == 1 && in_fog_room(self)) {
 		if (!fog_trail_lights && !fog_trail_ab_off) {
 			unlit(self);
 			fog_trail_native++;
@@ -180,7 +188,7 @@ static void fog_trail_event(void *self, void *other) {
 // Wraps obj_particle's user event 15 (orig: what the caller would have called). Returns the wrapper, or orig.
 event_fn fog_trail_install(event_fn orig) {
 	extern int debugMode;
-	int (*object_find)(const char *) = (void *)so_symbol(&yoyoloader_mod, "_Z11Object_FindPKc");
+	object_find = (void *)so_symbol(&yoyoloader_mod, "_Z11Object_FindPKc");
 	bool_value = (bool_fn)so_symbol(&yoyoloader_mod, "_Z11BOOL_RValuePK6RValue");
 	variable_get = (getvalue_fn)so_symbol(&yoyoloader_mod, "_Z23YYGML_Variable_GetValueRK8YYRValueiiP6RValuebb");
 	variable_set = (setdirect_fn)so_symbol(&yoyoloader_mod, "_Z24Variable_SetValue_DirectP12YYObjectBaseiiP6RValue");
@@ -193,11 +201,6 @@ event_fn fog_trail_install(event_fn orig) {
 		instance_exists && global_obj && frame_count;
 	for (int n = 0; ok && n < NVARS; n++)
 		ok = (var_desc[n] = (const int *)so_symbol(&yoyoloader_mod, var_names[n])) != NULL;
-	if (ok) {
-		dustcloud = object_find("obj_dustcloud");
-		fogspawner = object_find("obj_fogspawner");
-		ok = dustcloud >= 0 && fogspawner >= 0;
-	}
 	if (!ok) {
 		debugPrintf("fog trail: NOT installed\n");
 		return orig;
