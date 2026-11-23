@@ -31,8 +31,9 @@
  * Anything else (move_contact_all, the managed-objects path, odd instances, a full candidate list) runs the original.
  *
  * Debug flags: exp_movecontact0 (original), exp_mcverify (no deferral; run the skipped work too and compare: the search
- * must find nothing, the tree must be byte-identical after the real remove + insert, and the insertion model must
- * predict the leaf every real insertion used), exp_mcab (native off in every other report window), exp_mcprof (time
+ * must find nothing, the tree must be byte-identical after the real remove + insert, the insertion model must
+ * predict the leaf every real insertion used, and the tree without the player's entry must stay byte-identical from
+ * step to step), exp_mcab (native off in every other report window), exp_mcprof (time
  * Command_MoveContact). Report line [MOVECONTACT].
  */
 #include <stdint.h>
@@ -307,6 +308,31 @@ static const void *model_pick(void *tree, const Rect *a, bool *fits) {
 	return node;
 }
 
+// exp_mcverify: T- as the model sees it, node by node (address, count, level, the live branches; the entry's leaf
+// without its last slot, the covers on the entry's path replaced by the model's)
+static uint32_t tminus_cur[4096], tminus_prev[4096];
+static int tminus_prev_n;
+static int tminus_serialize(uint32_t *out, const void *node, int n, int depth) {
+	int count = (int)word(node, 0), level = (int)word(node, 4);
+	if (n < 0 || n + 3 + 6 * 5 > 4096 || depth >= 16 || count < 0 || count > 6)
+		return -1;
+	bool on = depth < mp_n && mp_node[depth] == node;
+	int live = on && depth == mp_n - 1 ? count - 1 : count;
+	out[n++] = (uint32_t)(uintptr_t)node;
+	out[n++] = (uint32_t)live;
+	out[n++] = (uint32_t)level;
+	for (int i = 0; i < live; i++) {
+		Rect r = on && level > 0 && i == mp_idx[depth] ? mp_cover[depth + 1] : branch_rect(node, i);
+		memcpy(&out[n], &r, sizeof(r));
+		n += 4;
+		out[n++] = word(NODE_BRANCH(node, i), level > 0 ? 0x10 : 0x14);
+	}
+	if (level > 0)
+		for (int i = 0; i < live && n >= 0; i++)
+			n = tminus_serialize(out, (void *)(uintptr_t)word(NODE_BRANCH(node, i), 0x10), n, depth + 1);
+	return n;
+}
+
 static void flush(void) {
 	if (!deferred)
 		return;
@@ -391,12 +417,17 @@ static int is_free(void *inst, float tx, float ty) {
 			const void *pred = mp_n ? model_pick(tree, &q, &fits) : NULL;
 			bool had = mp_n > 0;
 			bool built = model_build(tree, &q);
+			// and T- (this tree without the entry, as the model sees it) must be byte-identical to the previous one
+			int n = built ? tminus_serialize(tminus_cur, (void *)(uintptr_t)word(tree, 0x14), 0, 0) : -1;
 			if (had) {
-				if (built && pred == mp_node[mp_n - 1] && fits)
+				if (built && pred == mp_node[mp_n - 1] && fits && n > 0 && n == tminus_prev_n &&
+					!memcmp(tminus_cur, tminus_prev, n * 4))
 					mc_model_ok++;
 				else
 					mc_model_bad++;
 			}
+			memcpy(tminus_prev, tminus_cur, n > 0 ? n * 4 : 0);
+			tminus_prev_n = n;
 		} else if (mc_verify)
 			mp_n = 0;
 	}
@@ -451,6 +482,7 @@ static void AAPCS move_contact(void *inst, float dir, float maxdist, bool all) {
 	prev_b_clean = false;
 	deferred = false;
 	mp_n = 0;
+	tminus_prev_n = -1;
 	sweep_dx = (float)steps * cs;
 	sweep_dy = -(float)steps * sn;
 	if (!(steps > 0 && steps <= 4096))
