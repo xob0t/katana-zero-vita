@@ -409,8 +409,25 @@ void *katana_rx_alloc(size_t size) {
 		opt.attr = 0x1;
 		opt.field_C = RX_ARENA_ADDRESS;
 		SceUID block = kuKernelAllocMemBlock("katana rx", 0x0C20D050 /* USER_RX */, RX_ARENA_SIZE, &opt);
+		// Only if the fixed address is taken, as in the Vita3K emulator, which puts a 9 MB block of uncached
+		// memory at 0x985C6000-0x98E8C000 (on the Vita the fixed address always succeeds): right under the
+		// runner's patch block, in bl range of the same code, else anywhere. Any address does for the
+		// trampolines (absolute jumps); the veneer users check their range.
+		if (block < 0) {
+			SceUID fixed = block;
+			opt.field_C = yoyoloader_mod.patch_base - RX_ARENA_SIZE;
+			block = kuKernelAllocMemBlock("katana rx", 0x0C20D050 /* USER_RX */, RX_ARENA_SIZE, &opt);
+			if (block < 0) {
+				opt.attr = 0;
+				opt.field_C = 0;
+				block = kuKernelAllocMemBlock("katana rx", 0x0C20D050 /* USER_RX */, RX_ARENA_SIZE, &opt);
+			}
+			if (block >= 0 && sceKernelGetMemBlockBase(block, (void **)&rx_arena) >= 0)
+				debugPrintf("rx arena: fixed address taken (0x%08X), at %p instead\n", fixed, rx_arena);
+		}
 		if (block < 0 || sceKernelGetMemBlockBase(block, (void **)&rx_arena) < 0) {
 			debugPrintf("rx arena: allocation failed (0x%08X)\n", block);
+			rx_arena = NULL;
 			return NULL;
 		}
 	}
