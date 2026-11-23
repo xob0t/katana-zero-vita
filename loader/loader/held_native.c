@@ -624,8 +624,20 @@ int held_native_install(void *(*rx_alloc)(size_t)) {
 		if (constants[i]->kind != 0 || constants[i]->v.d != expect[i])
 			return 0;
 	// The stack-trace literal from the entry's PC-relative ADD (ldr r0, [pc, #0xff0] at +0x30, add r0, pc at +0x38)
-	script_name = (const char *)(entry + 0x40 + (int32_t)word((void *)entry, 0x1028));
-	if (strcmp(script_name, "gml_Script_controller_check"))
+	// Check both instructions before trusting the literal, and that the whole name lies in a mapped runner segment
+	static const char want_name[] = "gml_Script_controller_check";
+	if (word((void *)entry, 0x30) != 0xe59f0ff0 || word((void *)entry, 0x38) != 0xe08f0000)
+		return 0;
+	uintptr_t name_addr = entry + 0x40 + (int32_t)word((void *)entry, 0x1028);
+	int mapped = name_addr >= yoyoloader_mod.text_base &&
+		name_addr + sizeof want_name <= yoyoloader_mod.text_base + yoyoloader_mod.text_size;
+	for (i = 0; !mapped && i < MAX_DATA_SEG; i++)
+		mapped = yoyoloader_mod.data_size[i] && name_addr >= yoyoloader_mod.data_base[i] &&
+			name_addr + sizeof want_name <= yoyoloader_mod.data_base[i] + yoyoloader_mod.data_size[i];
+	if (!mapped)
+		return 0;
+	script_name = (const char *)name_addr;
+	if (memcmp(script_name, want_name, sizeof want_name))
 		return 0;
 	rx = rx_alloc(16);
 	if (!rx || ((uintptr_t)rx & 3))
@@ -637,8 +649,10 @@ int held_native_install(void *(*rx_alloc)(size_t)) {
 	kuKernelCpuUnrestrictedMemcpy(rx, code, sizeof code);
 	kuKernelFlushCaches(rx, sizeof code);
 	original = (Script)rx;
-	held_verify = exp_flag("heldverify");
-	held_ab = exp_flag("heldab");
+	// Both need the debug report (it prints mismatches and flips the A/B): debugMode=1 only
+	extern int debugMode;
+	held_verify = debugMode && exp_flag("heldverify");
+	held_ab = debugMode && exp_flag("heldab");
 	extern int heavy_profiling;
 	held_timing = heavy_profiling;
 	hook_addr(entry, (uintptr_t)held_entry);
