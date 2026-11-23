@@ -439,6 +439,8 @@ void katana_prof_report(int frames) {
 		extern unsigned dossier_children_dropped, dossier_children_kept;
 		if (dossier_children_dropped || dossier_children_kept)
 			debugPrintf("[DOSSIER] decorative circles dropped %u kept %u (totals)\n", dossier_children_dropped, dossier_children_kept);
+		extern void dossier_report(int frames);
+		dossier_report(frames);
 		extern uint64_t letter_time[6];
 		extern unsigned letter_time_n[6];
 		if (letter_time_n[0]) {
