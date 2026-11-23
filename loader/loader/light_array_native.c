@@ -31,9 +31,9 @@
  * vtables and x/y getters; anything else leaves that light to the original body. An entry hook on the script records
  * its argument for the wrappers.
  *
- * exp_lightarray0 keeps the original. exp_lightarrayverify runs the native body without writing anything, lets the
- * original body run, and compares rdist (bit for bit), close_lights and the new array entry ([LIGHTARRAY] report;
- * mismatches must stay 0).
+ * exp_lightarray0 keeps the original. exp_lightarrayverify runs every call twice, the original and then the native
+ * body writing for real, and compares what the two passes left: visited lights, rdist, close_lights and the
+ * close_light_array entries (see compare_passes; [LIGHTARRAY] report, mismatches must stay 0).
  */
 #include <stdint.h>
 #include <stddef.h>
@@ -98,6 +98,10 @@ static const int *fn_desc[NFUNCS];
 static builtin_fn builtins[NFUNCS];
 
 unsigned light_array_calls, light_array_native, light_array_fallback, light_array_verified, light_array_mismatch;
+// Coverage of the region test: lights in another region, and of those the door rays that were blocked or clear;
+// rejected lights whose rdist the verifier checked
+unsigned light_array_cross_region, light_array_door_blocked, light_array_door_clear, light_array_rejected_checked;
+unsigned light_array_entries_checked;
 unsigned light_array_reject_line[16], light_array_reject_count[16];
 uint32_t light_array_us, light_array_max_us;
 unsigned light_array_lights;
@@ -182,7 +186,8 @@ static int call_ok(void) {
 
 typedef struct { int distance, close; RV rdist; } Outcome;
 
-// The loop body for one light (self) and the caller (other). dry: compute without writing (verify mode).
+// The loop body for one light (self) and the caller (other). dry: compute without writing (unused since the
+// two-pass verifier).
 // Returns 0, having called nothing, if the original body has to run it.
 static int body(void *light, void *caller, int dry, Outcome *o) {
 	Table tl, tc;
@@ -208,6 +213,7 @@ static int body(void *light, void *caller, int dry, Outcome *o) {
 	o->close = 0;
 	if (region && compare(region, caller_region, *epsilon, 0) != 0) {
 		o->distance = 0;
+		light_array_cross_region++;
 		if (bool_value(bypass)) {
 			// collision_line(x, y, other.x, other.y - 32, obj_door, false, false) == noone
 			RV args[7] = {real(lx), real(ly), real(cx), real((double)cy - 32.0), {0, 0, 15}, {0, 0, 13}, {0, 0, 13}};
@@ -216,6 +222,10 @@ static int body(void *light, void *caller, int dry, Outcome *o) {
 			RV hit, noone = real(-4.0);
 			builtin(COLLISION, &hit, light, caller, 7, args);
 			o->distance = compare(&hit, &noone, *epsilon, 0) == 0;
+			if (o->distance)
+				light_array_door_clear++;
+			else
+				light_array_door_blocked++;
 			if (refcounted(&hit))
 				release(&hit);
 		}
@@ -257,48 +267,131 @@ static int body(void *light, void *caller, int dry, Outcome *o) {
 	return 1;
 }
 
-// Verify mode: what the native body predicted for the light the original body is running now
-static struct { int pending; void *light; Outcome o; double count; } check;
+// Verify mode (exp_lightarrayverify): each call runs twice. Pass 1 is the original script alone; pass 2 runs it again
+// with the native body writing for real. For one caller the script is idempotent (close_lights restarts at 0; the
+// array entries 0..close_lights-1 and each visited light's rdist are rewritten with the same values), so after each
+// pass the verifier reads back through the runner the visited lights in order, every visited light's rdist (bits and
+// kind), close_lights, and every array entry 0..close_lights-1; pass 2 must leave exactly what pass 1 left. Pass 2
+// also checks that every light the native body rejected (another region, door ray blocked) kept its rdist. In verify
+// mode collision_line runs once per pass for a cross-region light; it only queries the room (the runner may refresh
+// its collision tree, which doesn't change the answer), so both passes see the same result.
+#define REC_MAX 256
+static int recording; // 1: pass 1, 2: pass 2
+static void *rec_light[2][REC_MAX];
+static int rec_n[2], rec_overflow;
 
-static void verify_finish(void) {
-	check.pending = 0;
-	Table tl, tc;
-	int ok = table(check.light, &tl) && table(cur.self, &tc);
-	RV *count = ok ? peek(&tc, CLOSE_LIGHTS) : NULL;
-	ok = ok && plain(count) && count->value == check.count + check.o.close;
-	if (ok && check.o.distance) {
-		RV *rdist = peek(&tl, RDIST);
-		ok = rdist && !memcmp(&rdist->value, &check.o.rdist.value, 8) && rdist->kind == check.o.rdist.kind;
+static void record(void *light) {
+	int p = recording - 1;
+	if (rec_n[p] < REC_MAX)
+		rec_light[p][rec_n[p]++] = light;
+	else
+		rec_overflow = 1;
+}
+
+typedef struct { int n, lights; RV rdist[REC_MAX], count, entry[REC_MAX]; } Snapshot;
+static Snapshot snap[2];
+
+static int same(const RV *a, const RV *b) {
+	return !memcmp(&a->value, &b->value, 8) && (a->kind & 0xffffff) == (b->kind & 0xffffff);
+}
+
+static void take(int p, void *caller) {
+	Snapshot *s = &snap[p];
+	Table tc;
+	s->lights = rec_n[p];
+	for (int i = 0; i < rec_n[p]; i++) {
+		Table tl;
+		RV *r = table(rec_light[p][i], &tl) ? peek(&tl, RDIST) : NULL;
+		if (r)
+			s->rdist[i] = *r;
+		else
+			memset(&s->rdist[i], 0xff, sizeof(RV));
 	}
-	if (ok)
+	RV *count = table(caller, &tc) ? peek(&tc, CLOSE_LIGHTS) : NULL;
+	memset(&s->count, 0xff, sizeof(RV));
+	s->n = 0;
+	if (count) {
+		s->count = *count;
+		int n = plain(count) && count->value > 0 ? (int)count->value : 0;
+		RV inst = {0, 0, 6};
+		memcpy(&inst.value, &caller, sizeof(caller));
+		for (int i = 0; i < n && i < REC_MAX; i++) {
+			RV e = {0, 0, 5};
+			variable_get(&inst, VAR_ID(CLOSE_LIGHT_ARRAY), i, &e, 0, 0);
+			if (refcounted(&e)) { // an instance id never is; a string or array would be a mismatch anyway
+				release(&e);
+				e.kind = 0xfffffe;
+			}
+			s->entry[i] = e;
+			s->n++;
+		}
+	}
+}
+
+static void compare_passes(void) {
+	Snapshot *a = &snap[0], *b = &snap[1];
+	const char *why = NULL;
+	if (rec_overflow)
+		why = "too many lights to record";
+	else if (rec_n[0] != rec_n[1] || memcmp(rec_light[0], rec_light[1], rec_n[0] * sizeof(void *)))
+		why = "visited lights differ";
+	else if (!same(&a->count, &b->count))
+		why = "close_lights differs";
+	else if (a->n != b->n)
+		why = "array length differs";
+	for (int i = 0; !why && i < a->lights; i++)
+		if (!same(&a->rdist[i], &b->rdist[i]))
+			why = "rdist differs";
+	for (int i = 0; !why && i < a->n; i++)
+		if (!same(&a->entry[i], &b->entry[i]))
+			why = "array entry differs";
+	if (!why) {
 		light_array_verified++;
-	else if (light_array_mismatch++ < 8)
-		debugPrintf("[LIGHTARRAY] mismatch: distance %d close %d rdist %.9g count %.0f -> %.0f\n", check.o.distance,
-			check.o.close, check.o.rdist.value, check.count, plain(count) ? count->value : -1.0);
+		light_array_entries_checked += a->n;
+	} else if (light_array_mismatch++ < 8)
+		debugPrintf("[LIGHTARRAY] mismatch: %s (lights %d/%d, close_lights %.0f/%.0f)\n", why, rec_n[0], rec_n[1],
+			a->count.value, b->count.value);
 }
 
 // r: the original iterator's result (> 0: *self is the next light, *other the caller)
 static int run(int r, void *iterator, void **self, void **other) {
+	if (recording == 1 || (recording == 2 && !cur.ok)) { // the original body runs: only record what it visits
+		if (r > 0)
+			record(*self);
+		return r;
+	}
 	if (!cur.ok)
 		return r;
 	while (r > 0) {
 		Outcome o;
-		if (verify) {
-			Table tc;
-			RV *count = table(*other, &tc) ? peek(&tc, CLOSE_LIGHTS) : NULL;
-			if (plain(count) && body(*self, *other, 1, &o)) {
-				check = (typeof(check)){1, *self, o, count->value};
-			} else
-				light_array_fallback++;
-			return r; // the original body runs; checked at the next step
-		}
+		RV before;
+		RV *rd = NULL;
+		Table tl;
+		if (recording == 2 && table(*self, &tl) && (rd = peek(&tl, RDIST)))
+			before = *rd;
 		if (!body(*self, *other, 0, &o))
 			break;
+		if (recording == 2) {
+			record(*self);
+			if (!o.distance) { // rejected: rdist must be untouched
+				RV *now = table(*self, &tl) ? peek(&tl, RDIST) : NULL;
+				light_array_rejected_checked++;
+				if ((now != NULL) != (rd != NULL) || (now && !same(now, &before))) {
+					if (light_array_mismatch++ < 8)
+						debugPrintf("[LIGHTARRAY] mismatch: a rejected light's rdist changed\n");
+				}
+			}
+		}
 		light_array_native++;
 		r = next_with(iterator, self, other);
 	}
-	if (r > 0)
+	if (r > 0) {
 		light_array_fallback++;
+		if (recording == 2) { // the rest of this call runs in the original body
+			cur.ok = 0;
+			record(*self);
+		}
+	}
 	return r;
 }
 
@@ -307,13 +400,12 @@ static int ABI update_new_with(void *iterator, void **self, void **other, const 
 }
 
 static int ABI update_next_with(void *iterator, void **self, void **other) {
-	if (check.pending)
-		verify_finish();
 	return run(next_with(iterator, self, other), iterator, self, other);
 }
 
 static RV *ABI update_entry(void *self, void *other, RV *result, int argc, RV **args) {
 	typeof(cur) saved = cur;
+	int saved_recording = recording;
 	uint32_t start = sceKernelGetProcessTimeLow();
 	cur.self = self;
 	cur.argc = argc;
@@ -321,14 +413,28 @@ static RV *ABI update_entry(void *self, void *other, RV *result, int argc, RV **
 	cur.ok = 0;
 	cur.ok = call_ok();
 	light_array_calls++;
-	RV *r = original_script(self, other, result, argc, args);
-	if (check.pending)
-		verify_finish();
+	RV *r;
+	if (verify && cur.ok) {
+		rec_n[0] = rec_n[1] = rec_overflow = 0;
+		recording = 1;
+		cur.ok = 0;
+		original_script(self, other, result, argc, args);
+		take(0, self);
+		recording = 2;
+		cur.ok = 1;
+		r = original_script(self, other, result, argc, args);
+		take(1, self);
+		compare_passes();
+	} else {
+		recording = 0;
+		r = original_script(self, other, result, argc, args);
+	}
 	uint32_t dt = sceKernelGetProcessTimeLow() - start;
 	light_array_us += dt;
 	if (dt > light_array_max_us)
 		light_array_max_us = dt;
 	cur = saved;
+	recording = saved_recording;
 	return r;
 }
 
@@ -340,7 +446,7 @@ static int check_call(uintptr_t site, uintptr_t plt, uintptr_t direct) {
 
 // A veneer for a bl at site (in the code cave, within bl range), or NULL
 static uint32_t *veneer_for(uintptr_t site) {
-	uint32_t *veneer = (uint32_t *)so_alloc_bl(&yoyoloader_mod, site, 8);
+	uint32_t *veneer = (uint32_t *)so_alloc_near(&yoyoloader_mod, site, 8);
 	int32_t off = (int32_t)((uintptr_t)veneer - (site + 8));
 	return veneer && off >= -(1 << 25) && off < (1 << 25) ? veneer : NULL;
 }

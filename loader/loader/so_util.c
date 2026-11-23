@@ -9,6 +9,8 @@
 #include <vitasdk.h>
 #include <kubridge.h>
 
+#include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,8 +64,6 @@ typedef struct ldst_enc {
 	};
 } ldst_enc;
 
-#define B_RANGE ((1 << 24) - 1)
-#define B_OFFSET(x) (x + 8) // branch jumps into addr - 8, so range is biased forward
 #define B(PC, DEST) ((b_enc){.bits = {.cond = 0b1110, .enc = 0b101, .l = 0, .imm24 = (((intptr_t)DEST-(intptr_t)PC) / 4) - 2}})
 #define LDR_OFFS(RT, RN, IMM) ((ldst_enc){.bits = {.cond = 0b1110, .enc = 0b010, .p = 1, .u = (IMM >= 0), .b = 0, .w = 0, .bit20_1 = 1, .rn = RN, .rt = RT, .imm12 = (IMM >= 0) ? IMM : -IMM}})
 
@@ -619,42 +619,26 @@ static int so_symbol_index(so_module *mod, const char *symbol)
 	return -1;
 }
 
-/*
- * alloc_arena: allocates space on either patch or cave arenas, 
- * range: maximum range from allocation to dst (ignored if NULL)
- * dst: destination address
-*/
-static uintptr_t so_alloc_arena(so_module *so, uintptr_t range, uintptr_t dst, size_t sz) {
-	// Is address in range?
-	#define inrange(lsr, gtr, range) \
-		(((uintptr_t)(range) == (uintptr_t)NULL) || ((uintptr_t)(range) >= ((uintptr_t)(gtr) - (uintptr_t)(lsr))))
-	// Space left on block
-	#define blkavail(type) (so->type##_size - (so->type##_head - so->type##_base))
-	
-	// keep allocations 4-byte aligned for simplicity
-	sz = ALIGN_MEM(sz, 4);
-
-	if (sz <= (blkavail(patch)) && inrange(so->patch_base, dst, range)) {
-		so->patch_head += sz;
-		return (so->patch_head - sz);
-	} else if (sz <= (blkavail(cave)) && inrange(dst, so->cave_base, range)) {
-		so->cave_head += sz;
-		return (so->cave_head - sz);
-	}
-
-	return (uintptr_t)NULL;
+static uintptr_t alloc_branch_space(uintptr_t site, uintptr_t base, size_t size, uintptr_t *head, size_t bytes) {
+	size_t used = *head - base;
+	int64_t delta = (int64_t)*head - site - 8; // A32 B/BL uses PC + 8
+	if (!base || used > size || bytes > size - used ||
+		(delta & 3) || delta < -(1 << 25) || delta >= (1 << 25))
+		return 0;
+	uintptr_t addr = *head;
+	*head += bytes;
+	return addr;
 }
 
-// Executable space within branch range (B_RANGE) of a call site: the patch arena or the code cave after .text.
-// Returns 0 if neither has room in range.
+// Executable space reachable by A32 B/BL from site.
 uintptr_t so_alloc_near(so_module *so, uintptr_t site, size_t sz) {
-	return so_alloc_arena(so, B_RANGE, B_OFFSET(site), sz);
-}
-
-// Space a bl at site can reach: a bl spans +-32 MB, twice B_RANGE (the code cave sits after .text, so this reaches it
-// from code below ~0x3500000 as well). Callers still check the offset.
-uintptr_t so_alloc_bl(so_module *so, uintptr_t site, size_t sz) {
-	return so_alloc_arena(so, (1 << 25) - 16, B_OFFSET(site), sz);
+	if (!sz || sz > SIZE_MAX - 3)
+		return 0;
+	sz = ALIGN_MEM(sz, 4);
+	uintptr_t addr = alloc_branch_space(site, so->patch_base, so->patch_size, &so->patch_head, sz);
+	if (!addr)
+		addr = alloc_branch_space(site, so->cave_base, so->cave_size, &so->cave_head, sz);
+	return addr;
 }
 
 static void trampoline_ldm(so_module *mod, uint32_t *dst) {
@@ -688,7 +672,7 @@ static void trampoline_ldm(so_module *mod, uint32_t *dst) {
 	*ptr++ = dst+1; // .dword <...>	; [dst+0x4]
 
 	size_t trampoline_sz =	((uintptr_t)ptr - (uintptr_t)&funct[0]);
-	uintptr_t patch_addr = so_alloc_arena(mod, B_RANGE, B_OFFSET(dst), trampoline_sz);
+	uintptr_t patch_addr = so_alloc_near(mod, (uintptr_t)dst, trampoline_sz);
 
 	if (!patch_addr) {
 		fatal_error("Failed to patch LDMIA at 0x%08X, unable to allocate space.\n", dst);

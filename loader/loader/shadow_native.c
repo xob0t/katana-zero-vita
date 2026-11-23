@@ -28,7 +28,9 @@
  * lengthdir_x/y are the runner's own, called with the same float arguments. Anything other than seven arguments (a
  * sprite and subimage without a reference count, then five reals) runs the original. exp_shadownative0 turns it off;
  * exp_shadowverify lets the original draw and compares each of its draw_sprite_part_ext calls with the native
- * record (value bits and kind of all 12 arguments; [SHADOW] report, mismatches must stay 0).
+ * record (value bits and kind of all 12 arguments), and the result slot with what the native path writes (low word 0,
+ * kind 5, as the compiled script does). [SHADOW] report: mismatches must stay 0; a call with more rows than the
+ * record holds is counted as an overflow and not compared.
  */
 #include <stdint.h>
 #include <stddef.h>
@@ -71,19 +73,27 @@ unsigned shadow_reject[9], shadow_reject_kind; // argc, constants, argument 0-6
 static int verify;
 #define VERIFY_MAX 512
 static rv verify_args[VERIFY_MAX][12];
-static int verify_n, verify_i;
+static int verify_n, verify_i, verify_overflow;
 static builtin_fn verify_real;
-unsigned shadow_verify_calls, shadow_verify_mismatch;
+unsigned shadow_verify_calls, shadow_verify_mismatch, shadow_verify_overflow, shadow_verify_results;
 
 static void verify_part_ext(rv *result, void *self, void *other, int argc, rv *args) {
-	int bad = argc != 12 || verify_i >= verify_n;
+	if (verify_overflow) { // the record is incomplete: this call's rows aren't compared (counted as an overflow)
+		verify_real(result, self, other, argc, args);
+		return;
+	}
+	int in_record = verify_i < verify_n, bad = argc != 12 || !in_record;
 	for (int k = 0; !bad && k < 12; k++)
 		bad = memcmp(&args[k].val, &verify_args[verify_i][k].val, 8) || (args[k].kind & 0xffffff) !=
 			(verify_args[verify_i][k].kind & 0xffffff);
-	if (bad && shadow_verify_mismatch < 8)
-		debugPrintf("[SHADOW] mismatch at row %d of %d: top %.17g/%.17g x %.17g/%.17g y %.17g/%.17g a %.17g/%.17g\n",
-			verify_i, verify_n, args[3].val, verify_args[verify_i][3].val, args[6].val, verify_args[verify_i][6].val,
-			args[7].val, verify_args[verify_i][7].val, args[11].val, verify_args[verify_i][11].val);
+	if (bad && shadow_verify_mismatch < 8) {
+		if (in_record && argc == 12)
+			debugPrintf("[SHADOW] mismatch at row %d of %d: top %.17g/%.17g x %.17g/%.17g y %.17g/%.17g a %.17g/%.17g\n",
+				verify_i, verify_n, args[3].val, verify_args[verify_i][3].val, args[6].val, verify_args[verify_i][6].val,
+				args[7].val, verify_args[verify_i][7].val, args[11].val, verify_args[verify_i][11].val);
+		else
+			debugPrintf("[SHADOW] mismatch: original row %d (argc %d), native recorded %d\n", verify_i, argc, verify_n);
+	}
 	shadow_verify_mismatch += bad;
 	shadow_verify_calls++;
 	verify_i++;
@@ -129,10 +139,14 @@ static rv *shadow(void *self, void *other, rv *result, int argc, rv **argv) {
 		return orig_shadow(self, other, result, argc, argv);
 	}
 	shadow_native_fast++;
-	// The compiled script stores 0 in the result's low word and marks it unset (kind 0xffffff)
+	// The compiled script stores 0 in the result's low word and makes it undefined (kind 5; 0x1957b7c, 0x1957c0c); the
+	// high word and the flags stay as they were
+	rv expected = *result;
 	uint32_t lo = 0;
-	memcpy(&result->val, &lo, 4);
-	result->kind = 0xffffff;
+	memcpy(&expected.val, &lo, 4);
+	expected.kind = 5;
+	if (!verify)
+		*result = expected;
 	const double x = argv[2]->val, y = argv[3]->val;
 	const float angle = (float)argv[4]->val;
 	double alpha = argv[5]->val;
@@ -162,6 +176,8 @@ static rv *shadow(void *self, void *other, rv *result, int argc, rv **argv) {
 			if (verify) {
 				if (verify_n < VERIFY_MAX)
 					memcpy(verify_args[verify_n++], args, sizeof(args));
+				else
+					verify_overflow = 1;
 			} else {
 				rv out;
 				call(F_PART_EXT, &out, self, other, 12, args);
@@ -178,12 +194,22 @@ static rv *shadow(void *self, void *other, rv *result, int argc, rv **argv) {
 		verify_i = 0;
 		orig_shadow(self, other, result, argc, argv);
 		fns[F_PART_EXT]->func = verify_real;
-		if (verify_i != verify_n) {
+		if (verify_overflow) {
+			shadow_verify_overflow++; // more rows than the record holds: this call isn't compared
+		} else if (verify_i != verify_n) {
 			if (shadow_verify_mismatch < 8)
 				debugPrintf("[SHADOW] mismatch: original drew %d rows, native %d\n", verify_i, verify_n);
 			shadow_verify_mismatch++;
 		}
+		if (memcmp(result, &expected, sizeof(rv))) {
+			if (shadow_verify_mismatch < 8)
+				debugPrintf("[SHADOW] result mismatch: kind %u/%u flags %u/%u\n", result->kind, expected.kind,
+					result->flags, expected.flags);
+			shadow_verify_mismatch++;
+		}
+		shadow_verify_results++;
 		verify_n = 0;
+		verify_overflow = 0;
 	}
 	return result;
 }

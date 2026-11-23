@@ -117,7 +117,7 @@ static int certainly_other(void *self, void *other) {
 	int differs;
 	if (pk == 0 && ik == 0) {
 		// instance ids are whole numbers: half a unit apart is far beyond the comparison's epsilon
-		differs = fabs(parent->value - id->value) > 0.5;
+		differs = *epsilon >= 0 && *epsilon < 0.5 && fabs(parent->value - id->value) > 0.5; // only while eps < 0.5
 	} else if (pk == 15 && ik == 15) {
 		uint32_t pw[2], iw[2];
 		memcpy(pw, &parent->value, 8);
@@ -297,11 +297,10 @@ static int ABI sort_next_with(void *iterator, void **self, void **other) {
 	return sort_run(next_with(iterator, self, other), iterator, self, other);
 }
 
-// An 8-byte veneer within bl range of site, or NULL
-static uint32_t *alloc_veneer(uintptr_t site) {
-	uint32_t *veneer = (uint32_t *)so_alloc_near(&yoyoloader_mod, site, 8);
-	int32_t off = veneer ? (int32_t)((uintptr_t)veneer - (site + 8)) : 0;
-	return veneer && off >= -(1 << 25) && off < (1 << 25) ? veneer : NULL;
+// bl from site can reach target (A32: PC + 8, +-32 MB)
+static int bl_reaches(uintptr_t site, uintptr_t target) {
+	int64_t delta = (int64_t)target - (int64_t)site - 8;
+	return !(delta & 3) && delta >= -(1 << 25) && delta < (1 << 25);
 }
 
 static int check_call(uintptr_t site, uintptr_t plt, uintptr_t direct) {
@@ -360,15 +359,21 @@ int bike_draw_install(void) {
 	uintptr_t wrappers[NSITES] = {(uintptr_t)&bike_new_with, (uintptr_t)&bike_next_with, (uintptr_t)&bike_new_with,
 		(uintptr_t)&bike_next_with, (uintptr_t)&sort_first_new_with, (uintptr_t)&sort_next_with,
 		(uintptr_t)&sort_new_with, (uintptr_t)&sort_next_with, (uintptr_t)&sort_new_with, (uintptr_t)&sort_next_with};
-	uint32_t *veneers[NSITES];
 	for (int k = 0; k < NSITES; k++) {
 		int is_new = !(k & 1);
-		if (!check_call(sites[k], is_new ? AT(PLT_NEW) : AT(PLT_NEXT), is_new ? (uintptr_t)new_with : (uintptr_t)next_with) ||
-				!(veneers[k] = alloc_veneer(sites[k])))
+		if (!check_call(sites[k], is_new ? AT(PLT_NEW) : AT(PLT_NEXT), is_new ? (uintptr_t)new_with : (uintptr_t)next_with))
 			return 0;
 	}
+	// One block for all ten veneers (the sites lie within 12 KB of each other), every displacement checked before any
+	// patch, so a failure leaves no site patched and costs the cave one allocation at most
+	uint32_t *block = (uint32_t *)so_alloc_near(&yoyoloader_mod, sites[0], 8 * NSITES), *veneers[NSITES];
+	if (!block)
+		return 0;
+	for (int k = 0; k < NSITES; k++)
+		if (!bl_reaches(sites[k], (uintptr_t)(veneers[k] = block + 2 * k)))
+			return 0;
 #undef AT
-	// Every site checked and every veneer allocated before the first patch: all of them or none
+	// All of them or none
 	for (int k = 0; k < NSITES; k++)
 		patch_call(sites[k], wrappers[k], veneers[k]);
 	verify = exp_flag("bikedrawverify");

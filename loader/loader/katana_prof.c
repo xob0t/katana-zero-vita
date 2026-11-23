@@ -472,6 +472,12 @@ void katana_prof_report(int frames) {
 					(float)(light_array_us - last_us) / calls, (unsigned)light_array_max_us,
 					(float)(light_array_native - last_native) / frames, (float)(light_array_fallback - last_fallback) / frames,
 					light_array_verified, light_array_mismatch);
+			extern unsigned light_array_cross_region, light_array_door_blocked, light_array_door_clear,
+				light_array_rejected_checked, light_array_entries_checked;
+			if (frames > 0 && calls && light_array_verified)
+				debugPrintf("[LIGHTARRAY] verify coverage (totals): %u array entries, %u rejected lights' rdist | other "
+					"region %u: door ray blocked %u, clear %u\n", light_array_entries_checked, light_array_rejected_checked,
+					light_array_cross_region, light_array_door_blocked, light_array_door_clear);
 			for (int k = 0; k < 16 && light_array_reject_line[k] && calls; k++)
 				debugPrintf("[LIGHTARRAY] native body fell back at light_array_native.c:%u x%u\n", light_array_reject_line[k],
 					light_array_reject_count[k]);
@@ -489,9 +495,10 @@ void katana_prof_report(int frames) {
 		for (int i = 0; i < 9; i++)
 			if (shadow_reject[i])
 				debugPrintf("[SHADOW] reject %d x%u (kind %u)\n", i, shadow_reject[i], shadow_reject_kind);
-		extern unsigned shadow_verify_calls, shadow_verify_mismatch;
-		if (shadow_verify_calls)
-			debugPrintf("[SHADOW] verify: %u rows compared, %u mismatches\n", shadow_verify_calls, shadow_verify_mismatch);
+		extern unsigned shadow_verify_calls, shadow_verify_mismatch, shadow_verify_overflow, shadow_verify_results;
+		if (shadow_verify_calls || shadow_verify_overflow)
+			debugPrintf("[SHADOW] verify: %u rows and %u result slots compared, %u mismatches, %u calls over the record "
+				"(not compared)\n", shadow_verify_calls, shadow_verify_results, shadow_verify_mismatch, shadow_verify_overflow);
 
 		extern unsigned dustspawner_loop_native_calls, dustspawner_loop_native_hits, dustspawner_loop_native_loops;
 		extern unsigned dustspawner_loop_native_passes, dustspawner_loop_native_draws, dustspawner_loop_native_paused;
