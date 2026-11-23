@@ -37,9 +37,10 @@
  * None of the skipped code draws a random number (update_region, draw_sprite_recolored and the event have no random
  * calls), so gameplay and the RNG stream are unchanged.
  *
- * fogTrailLights=1 in yyl.cfg keeps the original. Debug ([FOGTRAIL] report line): exp_fogtrailsample averages the
- * lit clouds' light colour and light_alpha / raised image_alpha; exp_fogtrailab lights them in every other pair of
- * report windows (in-run A/B, ~4 s per state).
+ * fogTrailLights=1 in yyl.cfg keeps the original. trailLights=0 (off by default) draws the clouds the same way in every
+ * room. Debug ([FOGTRAIL] report line, all rooms): exp_fogtrailsample averages the lit clouds' light colour and
+ * light_alpha / raised image_alpha; exp_fogtrailab lights them in every other pair of report windows (in-run A/B,
+ * ~4 s per state).
  */
 #include <stdint.h>
 #include <string.h>
@@ -65,7 +66,8 @@ typedef int ABI (*exists_fn)(void *self, void *other, int object);
 #define FOG_TRAIL_COLOUR 0xf9c5ca
 #define FOG_TRAIL_ALPHA 0.47f
 
-int fog_trail_lights = 0; // fogTrailLights in yyl.cfg: 1 keeps the clouds' original lighting
+int fog_trail_lights = 0; // fogTrailLights in yyl.cfg: 1 keeps the clouds' original lighting in the fog rooms
+int trail_lights = 1;     // trailLights in yyl.cfg: 0 draws them unlit in every room (visible option, off by default)
 unsigned fog_trail_native, fog_trail_original;
 int fog_trail_ab, fog_trail_ab_off; // exp_fogtrailab (debug): lit in every other pair of report windows
 static event_fn original;
@@ -171,8 +173,9 @@ static void fog_trail_event(void *self, void *other) {
 			dustcloud = -1;
 		debugPrintf("fog trail: obj_dustcloud %d, obj_fogspawner %d\n", dustcloud, fogspawner);
 	}
-	if (dustcloud >= 0 && (int)word(self, 0x84) == dustcloud && word(self, 0x50) == 1 && in_fog_room(self)) {
-		if (!fog_trail_lights && !fog_trail_ab_off) {
+	if (dustcloud >= 0 && (int)word(self, 0x84) == dustcloud && word(self, 0x50) == 1) {
+		// Unlit in the fog rooms (fogTrailLights=0, default) and, with trailLights=0, in every room
+		if ((in_fog_room(self) ? !fog_trail_lights : !trail_lights) && !fog_trail_ab_off) {
 			unlit(self);
 			fog_trail_native++;
 			return;
@@ -209,7 +212,7 @@ event_fn fog_trail_install(event_fn orig) {
 	original = orig;
 	sample = debugMode && exp_flag("fogtrailsample");
 	fog_trail_ab = debugMode && exp_flag("fogtrailab");
-	debugPrintf("fog trail: roll dust clouds in fog rooms drawn %s%s\n", fog_trail_lights ? "lit (fogTrailLights=1)" :
-		"without lighting", sample ? " (sampling their tint)" : "");
+	debugPrintf("fog trail: roll dust clouds drawn %s in fog rooms, %s elsewhere%s\n", fog_trail_lights ? "lit" : "unlit",
+		trail_lights ? "lit" : "unlit (trailLights=0)", sample ? " (sampling their tint)" : "");
 	return fog_trail_event;
 }
