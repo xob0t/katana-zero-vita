@@ -6,7 +6,7 @@ vendored in `loader/` from upstream commit `e32f68f`. No game files are included
 
 **To play, build the VPK from your APK with the [web builder](https://xob0t.github.io/katana-zero-vita/web/).**
 
-The game is playable at full speed. Light rooms run at 60 fps, heavy rooms at 30. The CPU is the limit: the game
+Most rooms run at 60 fps. Heavy rooms dip below it, to about 40 in the busiest fights. The CPU is the limit: the game
 logic runs on one core and can't be split across more. A 500 MHz profile in PSVshell adds a few fps in heavy rooms
 (the loader runs at 444 MHz).
 
@@ -15,19 +15,19 @@ logic runs on one core and can't be split across more. A 500 MHz profile in PSVs
 Most items below are a setting in `ux0:data/gms/katanazero/yyl.cfg`, and the value at the end of the item brings
 back the original.
 
-- **30 fps in heavy rooms.** In GameMaker the game's speed follows the frame rate, so a room that can't hold 60 fps
-  plays in slow motion. The port can run such rooms at 30 fps with the game's clock doubled. They play at full speed,
-  but less smoothly, and input is read 30 times a second. Pick the mode in the game's settings, under
+- **Optional 30 fps in heavy rooms.** In GameMaker the game's speed follows the frame rate, so a room that can't
+  hold 60 fps plays in slow motion. The port can run such rooms at 30 fps with the game's clock doubled. They play at
+  full speed, but less smoothly, and input is read 30 times a second. Pick the mode in the game's settings, under
   **GRAPHICS → FPS MODE**.
-  - **DYNAMIC** (default). A room drops to 30 after about two seconds under 50 fps and goes back to 60 when it can
-    hold it again. The heaviest rooms start at 30 as soon as their opening cutscene ends. You get full speed
-    everywhere and 60 wherever the Vita can manage it.
+  - **NATIVE** (default). Never switches to 30, like the original game. Most rooms hold 60, and heavy ones slow down
+    instead: 45 fps plays at three-quarters speed. A few of the heaviest scenes, like the dossier burning, play at
+    about half speed. This mode has the smoothest picture and the game's exact timing. The slowdown is easy to live
+    with, and in busy fights it gives you extra time.
+  - **DYNAMIC**. A room drops to 30 after about two seconds under 50 fps and goes back to 60 when it can hold it
+    again. The heaviest rooms start at 30 as soon as their opening cutscene ends. You get full speed everywhere and
+    60 wherever the Vita can manage it. `fpsMode=1`.
   - **30 FPS**. Every room runs at 30. Pick it if the switching bothers you or you want the same feel and timing in
-    every room.
-  - **NATIVE**. Never switches to 30, like the original game. Most rooms hold 60, and heavy ones slow down instead:
-    45 fps plays at three-quarters speed. A few of the heaviest scenes, like the dossier burning, play at about half
-    speed. This mode has the smoothest picture and the game's exact timing. The slowdown is easy to live with, and
-    in busy fights it gives you extra time.
+    every room. `fpsMode=2`.
 - **Enemy AI at half rate.** At 60 fps each enemy thinks and moves every other frame, half of them on even frames
   and half on odd ones. Hits still land on the frame they would have. It saves 2-3 ms per frame in fights; in
   testing nobody noticed a difference. **GRAPHICS → ENEMY AI**, or `enemyHalfRate=0`.

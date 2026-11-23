@@ -21,7 +21,7 @@
 #include "katana_internal.h"
 
 /*
- * 30 fps mode (fpsMode in yyl.cfg, old name fps30: 0 off, 1 in rooms that can't hold 60 fps (default), 2 everywhere). GameMaker games run one
+ * 30 fps mode (fpsMode in yyl.cfg, old name fps30: 0 off (default), 1 in rooms that can't hold 60 fps, 2 everywhere). GameMaker games run one
  * logic tick per frame, so a CPU-bound room at 31 fps plays at half speed. In this mode such a room runs 30 ticks a
  * second (paced by the display: two vblanks per frame) and each tick advances the game twice as far, so it plays at
  * full speed at 30 fps. Not exact: input is read 30 times a second, movement takes steps twice as long, and anything
@@ -56,7 +56,7 @@
  * The hooks are installed whatever fps30 says, since the game's GRAPHICS menu can choose the mode at runtime (see
  * fps_menu_install); with fps30 0 every hook is gated on t30_active and changes nothing.
  */
-int fps30 = 1;
+int fps30 = 0; // NATIVE by default
 #define T30_SETTLE_FRAMES 45
 #define T30_WINDOW 90           // ~2.6 s while slow at 60, 3 s at 30
 #define T30_SLOW_FRAMES 80      // frames over T30_SLOW_US (under 50 fps) to drop to 30
