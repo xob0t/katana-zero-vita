@@ -412,11 +412,16 @@ static int sort_body(void *self, void *other) {
 	return 1;
 }
 
+unsigned bike_sort_us; // time in the native sort (heavy profiling only)
+
 static int sort_run(int r, void *iterator, void **self, void **other) {
+	uint32_t t0 = heavy_profiling ? sceKernelGetProcessTimeLow() : 0;
 	while (r > 0 && sort_body(*self, *other))
 		r = next_with(iterator, self, other);
 	if (r > 0 && !verify)
 		bike_sort_fallback++;
+	if (heavy_profiling)
+		bike_sort_us += sceKernelGetProcessTimeLow() - t0;
 	return r;
 }
 

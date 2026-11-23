@@ -613,6 +613,15 @@ void katana_prof_report(int frames) {
 		last_fallback = trail_lights_fallback;
 	}
 	{
+		extern unsigned cone_shadows_skipped, cone_shadows_drawn;
+		static unsigned last_s, last_d;
+		if (frames > 0 && (cone_shadows_skipped != last_s || cone_shadows_drawn != last_d))
+			debugPrintf("[CONESHADOW] per frame: %.1f cone shadows skipped, %.1f other obstacle shadows drawn%c",
+				(float)(cone_shadows_skipped - last_s) / frames, (float)(cone_shadows_drawn - last_d) / frames, 10);
+		last_s = cone_shadows_skipped;
+		last_d = cone_shadows_drawn;
+	}
+	{
 		extern unsigned region_native_calls, region_native_fallback, region_verify_ok, region_verify_mismatch,
 			region_verify_skipped, region_fallback_reason[8];
 		static unsigned last_c, last_f;
@@ -677,7 +686,10 @@ void katana_prof_report(int frames) {
 				bike_pcache_mismatch, bike_pcache_conservative);
 		last_hits = bike_pcache_hits;
 		last_reads = bike_pcache_reads;
-		extern unsigned bike_draw_skip_us, bike_draw_newwith_us;
+		extern unsigned bike_draw_skip_us, bike_draw_newwith_us, bike_sort_us;
+		if (frames > 0 && bike_sort_us)
+			debugPrintf("[BIKEDRAW] actor sort %.2f ms per frame%c", bike_sort_us / 1000.0f / frames, 10);
+		bike_sort_us = 0;
 		if (frames > 0 && bike_draw_newwith_us)
 			debugPrintf("[BIKEDRAW] particle loop NewWithIterator %.2f ms per frame%c", bike_draw_newwith_us / 1000.0f / frames, 10);
 		bike_draw_newwith_us = 0;
