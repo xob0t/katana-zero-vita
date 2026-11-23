@@ -76,6 +76,7 @@ add_executable(YoYoLoader
   loader/fx_rate.c
   loader/glow_rest.c
   loader/wobble_rest.c
+  loader/blood_drops.c
   loader/katana_menu.c
   loader/sound_limit.c
   loader/stdio_mt.c
