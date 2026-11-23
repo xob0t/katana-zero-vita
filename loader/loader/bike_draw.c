@@ -273,8 +273,7 @@ static int part_cut(void *iterator, void **self, void **other, int *r) {
 	return 1;
 }
 
-extern int debugMode;
-static int no_cut; // exp_bikepcache0 (debug): step as in the first version
+static int no_cut; // exp_bikepcache0: step as in the first version
 unsigned bike_draw_newwith_us; // the runner's NewWithIterator for the particle loop (heavy profiling only)
 
 static int ABI part_new_with(void *iterator, void **self, void **other, const void *target) {
@@ -527,7 +526,7 @@ int bike_draw_install(void) {
 	for (int k = 0; k < NSITES; k++)
 		patch_call(sites[k], wrappers[k], veneers[k]);
 	verify = exp_flag("bikedrawverify");
-	no_cut = debugMode && exp_flag("bikepcache0");
+	no_cut = exp_flag("bikepcache0");
 	debugPrintf("bike draw: native actor sort, particle/trail loops step over other actors' instances%s\n",
 		verify ? " (verify mode)" : "");
 	return 1;

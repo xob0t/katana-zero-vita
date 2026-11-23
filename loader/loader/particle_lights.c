@@ -31,6 +31,8 @@
 #include "main.h"
 #include "so_util.h"
 
+extern int debugMode;
+
 #define ABI __attribute__((pcs("aapcs")))
 typedef struct { double value; uint32_t flags, kind; } RV;
 typedef void ABI (*script_fn)(void *self, void *other, RV *result, int argc, RV **args);
@@ -106,6 +108,13 @@ int particle_lights_install(void *(*hook)(uintptr_t entry, void *replacement)) {
 	verify = exp_flag("particlelightsverify");
 	if (verify)
 		for (int k = 0; k < NREADERS; k++) {
+			// exp_recolorlightsprof (recolor_lights.c) times draw_sprite_recolored with its own entry hook, which can't
+			// stack on this one: with both flags that reader isn't counted here (logged)
+			if (k == 0 && debugMode && exp_flag("recolorlightsprof")) {
+				debugPrintf("particle lights: verify doesn't count draw_sprite_recolored (exp_recolorlightsprof times it)%c", 10);
+				reader_orig[k] = NULL;
+				continue;
+			}
 			uintptr_t r = so_symbol(&yoyoloader_mod, reader_names[k]);
 			reader_orig[k] = r ? (script_fn)hook(r, reader_wrappers[k]) : NULL;
 			if (!reader_orig[k]) {

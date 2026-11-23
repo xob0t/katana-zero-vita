@@ -24,7 +24,7 @@
  *   and each light's rdist, which every reader (update_light_array(_ext), draw_sprite/surface_recolored and their old
  *   versions) assigns before reading it.
  * - draw_rim_shading_surface writes the rocket's own batch arrays, shading, and puts back x, y, width = 2,
- *   height = 2, image_alpha = 1, image_blend = c_white and gpu_set_blendmode(bm_normal). The stubs only run while all
+ *   height = 2, image_alpha = 1, image_blend = c_white and gpu_set_blendmode(bm_normal) (factors and equations). The stubs only run while all
  *   of those already hold (else the event runs the original calls for that rocket).
  * - The shared rim-shading surface is cleared by every user before it draws into it.
  * farRocketLights=1 keeps the original. exp_farrocketverify (debug) counts the rockets the stubs would have handled
@@ -50,6 +50,8 @@ unsigned far_rocket_skipped, far_rocket_original, far_rocket_would_skip; // ligh
 static script_fn orig_light_array, orig_recolored, orig_rim;
 static getvalue_fn variable_get;
 static builtin_fn get_blendmode;
+static int ABI (*get_render_state)(void *states, int state);
+static void *render_states;
 static const int *var_width, *var_height, *var_image_alpha, *var_image_blend;
 static int verify;
 
@@ -78,6 +80,10 @@ static int can_skip(void *self) {
 		return 0;
 	RV mode = {0, 0, 0xffffff};
 	get_blendmode(&mode, self, NULL, 0, NULL);
+	// gpu_get_blendmode only looks at the blend factors; rim shading's gpu_set_blendmode(bm_normal) also puts back the
+	// colour and alpha blend equations (render states 0x24/0x25, 0 = add), so those must already be the defaults too
+	if (get_render_state(render_states, 0x24) != 0 || get_render_state(render_states, 0x25) != 0)
+		return 0;
 	return KIND(&mode) == 0 && mode.value == 0 && real_is(self, var_width, 2, 0) && real_is(self, var_height, 2, 0) &&
 		real_is(self, var_image_alpha, 1, 1) && real_is(self, var_image_blend, 16777215, 1);
 }
@@ -157,11 +163,13 @@ int far_rocket_install(void) {
 	orig_rim = (script_fn)so_symbol(&yoyoloader_mod, "_Z35gml_Script_draw_rim_shading_surfaceP9CInstanceS0_R8YYRValueiPPS1_");
 	variable_get = (getvalue_fn)so_symbol(&yoyoloader_mod, "_Z23YYGML_Variable_GetValueRK8YYRValueiiP6RValuebb");
 	get_blendmode = (builtin_fn)so_symbol(&yoyoloader_mod, "_Z17F_GPUGetBlendModeR6RValueP9CInstanceS2_iPS_");
+	get_render_state = (int ABI (*)(void *, int))so_symbol(&yoyoloader_mod, "_ZN18RenderStateManager14GetRenderStateE12eRenderState");
+	render_states = (void *)so_symbol(&yoyoloader_mod, "g_States");
 	var_width = (const int *)so_symbol(&yoyoloader_mod, "g_VAR_width");
 	var_height = (const int *)so_symbol(&yoyoloader_mod, "g_VAR_height");
 	var_image_alpha = (const int *)so_symbol(&yoyoloader_mod, "g_VAR_image_alpha");
 	var_image_blend = (const int *)so_symbol(&yoyoloader_mod, "g_VAR_image_blend");
-	if (!entry || !orig_light_array || !orig_recolored || !orig_rim || !variable_get || !get_blendmode || !var_width ||
+	if (!entry || !orig_light_array || !orig_recolored || !orig_rim || !variable_get || !get_blendmode || !get_render_state || !render_states || !var_width ||
 			!var_height || !var_image_alpha || !var_image_blend)
 		return 0;
 #define AT(a) (entry + (a) - EVENT)

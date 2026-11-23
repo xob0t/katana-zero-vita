@@ -166,7 +166,11 @@ static int probe(void *seed, double qx, double qy, RV *r) {
 	double mx = cx > 0.0 ? cx : 0.0, my = cy > 0.0 ? cy : 0.0; // YYGML_max(0, v): v only if v > 0
 	*r = (RV){0, 0, 0xffffff};
 	grid_get(r, grid, (int)(int64_t)mx, (int)(int64_t)my);
-	return KIND(r) == 0 ? 1 : fail(6);
+	if (KIND(r) == 0)
+		return 1;
+	if (NEEDS_FREE(r)) // a string or array cell: release our copy before the original runs
+		free_rvalue(r);
+	return fail(6);
 }
 
 // 1: done (writes made or recorded), 0: the original must run (nothing written that it wouldn't write again first)
