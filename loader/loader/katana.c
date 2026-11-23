@@ -1341,6 +1341,8 @@ static void patch_performance() {
 	wobble_rest_install(table);
 	extern void blood_drops_install(gml_func_entry *table);
 	blood_drops_install(table);
+	extern void room_lighting_install(gml_func_entry *table);
+	room_lighting_install(table); // after blood_drops_install: chains its opto_master Room Start
 
 	// Frame skipping (and its guard stubs) only when opted in with frameSkip=1
 	uintptr_t *draw_slot = frame_skip ? so_got_slot(&yoyoloader_mod, "_Z12DoAStep_Drawv") : NULL;
