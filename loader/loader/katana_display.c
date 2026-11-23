@@ -121,6 +121,21 @@ static void forced_gc_report(void) {
 	seen_open = vgl_forced_gc_open_scene;
 }
 
+// Surfaces freed while the GPU may still write them (vitagl.patch: render-target use counts as GPU use) are retired
+// through vitaGL's purge lists; totals in debug mode when they change, at most every 2 s
+static void rt_free_report(void) {
+	extern uint32_t vgl_rt_freed_at_once, vgl_rt_freed_deferred;
+	static uint32_t seen_once, seen_deferred, frames;
+	frames++;
+	if (!debugMode || frames < 120 || (vgl_rt_freed_at_once == seen_once && vgl_rt_freed_deferred == seen_deferred))
+		return;
+	frames = 0;
+	seen_once = vgl_rt_freed_at_once;
+	seen_deferred = vgl_rt_freed_deferred;
+	debugPrintf("[RTFREE] render-target textures freed: %u through the purge lists, %u at once (unused for 4+ frames)\n",
+		seen_deferred, seen_once);
+}
+
 // DoAStep_Draw hook: application surface size, then lighting at 30 Hz
 static void (*katana_orig_draw)(void);
 
@@ -251,6 +266,7 @@ void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
 	dynamic_res_update(swap_us, work_us);
 	after_swap_step_us[0] = s1 - s0;
 	after_swap_step_us[1] = sceKernelGetProcessTimeLow() - s1;
+	rt_free_report();
 	// A frame that skipped its swap (frameSkip) may leave scenes open: no collection until a presented frame
 	if (vgl_scene_open)
 		return;
