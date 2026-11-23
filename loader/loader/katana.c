@@ -774,6 +774,8 @@ void katana_late_install(void) {
 	}
 	extern void sound_limit_install(void);
 	sound_limit_install();
+	extern void gcalloc_install(void);
+	gcalloc_install();
 	dissolve_install();
 	fog_install();
 	if (!exp_flag("dossiernative0")) {

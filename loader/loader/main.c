@@ -1132,6 +1132,8 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 	glprof_frame();
 	extern void katana_goto_check(void);
 	katana_goto_check();
+	extern void gcalloc_frame(void);
+	gcalloc_frame();
 	// Report GPU memory allocation failures (vitaGL returns NULL, the texture/surface stays empty)
 	extern int vgl_failed_allocs;
 	extern size_t vgl_failed_alloc_size;
