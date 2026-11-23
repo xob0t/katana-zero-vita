@@ -156,7 +156,7 @@ static void DoAStep_Draw_katana(void) {
 		*app_height = *app_new_height = app_set_h = app_surf_h;
 		*app_new_size = 1;
 	}
-	if (lighting30 && !t30_active) {
+	if (lighting30) {
 		gml_rvalue *(*vwrite)(void *, int) = (*(void ***)*global_obj_ptr)[3];
 		gml_rvalue *timer = vwrite(*global_obj_ptr, var_recolor_timer[1]);
 		if (timer && timer->kind == 0) {
@@ -242,8 +242,7 @@ static void dynamic_res_update(uint32_t swap_us, uint32_t work_us) {
 		}
 		return;
 	}
-	// In 30 fps mode the swap also waits for the second vblank of each frame: not GPU load
-	if (dropped || t30_active || ++frames <= DYNRES_SETTLE_FRAMES)
+	if (dropped || ++frames <= DYNRES_SETTLE_FRAMES)
 		return;
 	bound += (period > DYNRES_MISS_US && work_us < DYNRES_CPU_US && swap_us > DYNRES_SWAP_US) || dynres_test;
 	if (++window < DYNRES_WINDOW)
@@ -262,14 +261,13 @@ static void dynamic_res_update(uint32_t swap_us, uint32_t work_us) {
 // Runs right after vglSwapBuffers, between frames: every scene of the frame has been submitted, so the GPU finish
 // and garbage collection below cannot free memory that commands still being recorded refer to
 
-uint32_t after_swap_step_us[2]; // debug: t30_update, dynamic_res_update of the last frame
+uint32_t after_swap_dynres_us; // debug: dynamic_res_update of the last frame
 void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
+	options_menu_sync();
+	enemy_half_rate_update();
 	uint32_t s0 = sceKernelGetProcessTimeLow();
-	t30_update(work_us);
-	uint32_t s1 = sceKernelGetProcessTimeLow();
 	dynamic_res_update(swap_us, work_us);
-	after_swap_step_us[0] = s1 - s0;
-	after_swap_step_us[1] = sceKernelGetProcessTimeLow() - s1;
+	after_swap_dynres_us = sceKernelGetProcessTimeLow() - s0;
 	rt_free_report();
 	// A frame that skipped its swap (frameSkip) may leave scenes open: no collection until a presented frame
 	if (vgl_scene_open)
