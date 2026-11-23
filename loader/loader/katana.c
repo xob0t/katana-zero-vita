@@ -783,6 +783,10 @@ void katana_late_install(void) {
 		extern int wavy_native_install(void *(*hook)(uintptr_t entry, void *replacement));
 		debugPrintf("native draw_sprite_wavy: %s\n", wavy_native_install(entry_hook) ? "installed" : "NOT installed");
 	}
+	if (!exp_flag("shadownative0")) {
+		extern int shadow_native_install(void *(*hook)(uintptr_t entry, void *replacement));
+		debugPrintf("native draw_shadow: %s\n", shadow_native_install(entry_hook) ? "installed" : "NOT installed");
+	}
 	appsurf_copy_install();
 	if (orig_lighting_user0) {
 		runner_function **functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
@@ -1131,6 +1135,16 @@ static void patch_performance() {
 	if (!exp_flag("flashmask0")) {
 		extern int flash_mask_install(void *(*rx_alloc)(size_t));
 		debugPrintf("flashlight mask culling: %s\n", flash_mask_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
+	// Bike chase: each actor's particle and trail with-loops step over other actors' instances (exact; bike_draw.c)
+	if (!exp_flag("bikedraw0")) {
+		extern int bike_draw_install(void);
+		debugPrintf("bike draw loops: %s\n", bike_draw_install() ? "installed" : "NOT installed");
+	}
+	// update_light_array's loop body runs natively per light (exact; light_array_native.c): particles' Create events
+	if (!exp_flag("lightarray0")) {
+		extern int light_array_install(void *(*rx_alloc)(size_t));
+		debugPrintf("native update_light_array: %s\n", light_array_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
 	// The player's afterimage trails tint themselves from nearby lights: far lights skipped, the tint drawn natively
 	// (exact; trail_lights.c). club_7 while running: 1.9 -> 0.8 ms per frame.

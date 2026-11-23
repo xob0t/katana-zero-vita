@@ -64,6 +64,7 @@ void so_symbol_fix_ldmia(so_module *mod, const char *symbol);
 void so_initialize(so_module *mod);
 uintptr_t so_symbol(so_module *mod, const char *symbol);
 uintptr_t so_alloc_near(so_module *so, uintptr_t site, size_t sz);
+uintptr_t so_alloc_bl(so_module *so, uintptr_t site, size_t sz);
 uintptr_t *so_got_slot(so_module *mod, const char *symbol);
 int exp_flag(const char *name);
 extern int text_phycont_result;

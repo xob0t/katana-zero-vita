@@ -651,6 +651,12 @@ uintptr_t so_alloc_near(so_module *so, uintptr_t site, size_t sz) {
 	return so_alloc_arena(so, B_RANGE, B_OFFSET(site), sz);
 }
 
+// Space a bl at site can reach: a bl spans +-32 MB, twice B_RANGE (the code cave sits after .text, so this reaches it
+// from code below ~0x3500000 as well). Callers still check the offset.
+uintptr_t so_alloc_bl(so_module *so, uintptr_t site, size_t sz) {
+	return so_alloc_arena(so, (1 << 25) - 16, B_OFFSET(site), sz);
+}
+
 static void trampoline_ldm(so_module *mod, uint32_t *dst) {
 	uint32_t trampoline[1];
 	uint32_t funct[20] = {0xFAFAFAFA};
