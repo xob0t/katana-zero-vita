@@ -4,9 +4,9 @@
  * No lamp glow in room_haunted_cart2 and room_club_0 (roomLighting=1 in yyl.cfg keeps it).
  *
  * The game has two lighting switches that no Android menu shows and KatanaOptions.zero doesn't save (obj_init sets
- * both to 1): global.platform_lighting and global.character_lighting. Measured on the Vita with both off, unprofiled:
- * haunted_cart2 27.3 -> 25.3 ms per frame (36 -> 39 fps), club_0 17.2 -> 16.1 ms (57 -> 60 fps). Other heavy rooms
- * gained 0.6 ms or less, so only these two rooms change.
+ * both to 1): global.platform_lighting and global.character_lighting. Hiding both from their readers, unprofiled on
+ * the Vita: haunted_cart2 26.1 -> 25.0 ms per frame (38 -> 40 fps), club_0 17.3-17.9 -> 16.4 ms (55-57 -> 60 fps).
+ * Other heavy rooms gained 0.6 ms or less with the switches off, so only these two rooms change.
  *
  * Readers in live code (every reference to the two globals in libyoyo.so, by GOT slot):
  * - platform_lighting: obj_new_platform_lighting Draw (`if (platform_lighting && lights_on)`: additive glow of

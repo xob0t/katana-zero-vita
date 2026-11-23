@@ -40,8 +40,9 @@ back the original.
 - **No rim glow on club dancers.** It's about 285 extra draws per frame, 44 fps with it and 52-56 without. The light
   show stays. `dancerGlow=1`.
 - **No dust in the cathedral's window light.** 41 fps with it, 59 without. `cathedralDust=1`.
-- **No lamp glow in haunted_cart2 and club_0.** The coloured glow lamps and spotlights throw on walls and floors is
-  off in those two rooms: 36 -> 39 fps in the minecart room, and the club's dance floor holds 60. `roomLighting=1`.
+- **No lamp glow in haunted_cart2 and club_0.** The coloured glow that lamps and spotlights throw on walls and floors
+  is off in those two rooms: 38 -> 40 fps in the minecart room, 55-57 -> 60 fps on the club's dance floor.
+  `roomLighting=1`.
 - **Lower resolution in GPU-heavy rooms.** A room where the GPU can't keep up at 960x540, so frames miss the screen
   refresh while the CPU has time to spare, drops to 640x360 until the next room. `dynamicRes=0`.
 - **Coarser laser deaths.** The body is cut into 4 times fewer, 4 times thicker slices. `dissolveChunkScale=1`.
