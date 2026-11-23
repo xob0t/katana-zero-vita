@@ -70,6 +70,13 @@ extern size_t newlib_heap_used(void);
 extern int debugMode;
 extern int debug_try_append(const char *text, int len);
 
+// vitaGL's forced collection entry/exit events (patches/vitagl.patch since PR #55): a freeze inside a forced collection
+// shows as begun > finished. Weak, so the locator builds and skips the line with a vitaGL that doesn't have them.
+extern volatile int vgl_forced_gc_runs __attribute__((weak));
+extern volatile int vgl_forced_gc_done __attribute__((weak));
+extern volatile int vgl_forced_gc_open_scene __attribute__((weak));
+extern volatile size_t vgl_forced_gc_size __attribute__((weak));
+
 void hang_io_begin(void) {
 	if (hang_watch_on)
 		__atomic_add_fetch(&hang_io_depth, 1, __ATOMIC_ACQ_REL);
@@ -323,6 +330,12 @@ static int hang_watch_thread(SceSize args, void *argp) {
 					"save I/O %d | newlib heap %u of %u KB used | kernel free user %u KB\n", vgl_forced_gc_allocs,
 					vgl_failed_allocs, push, pull, hang_texture_decode, hang_io_depth,
 					(unsigned)(newlib_heap_used() / 1024), _newlib_heap_size / 1024, kfree.size_user / 1024);
+				if (&vgl_forced_gc_runs && &vgl_forced_gc_done && &vgl_forced_gc_open_scene && &vgl_forced_gc_size) {
+					int runs = vgl_forced_gc_runs, done = vgl_forced_gc_done;
+					say("vitaGL forced collections: %d begun, %d finished%s, %d begun with a scene open, last for %u KB\n",
+						runs, done, runs != done ? " (STUCK INSIDE ONE)" : "", vgl_forced_gc_open_scene,
+						(unsigned)(vgl_forced_gc_size / 1024));
+				}
 				report_send();
 			}
 		}
