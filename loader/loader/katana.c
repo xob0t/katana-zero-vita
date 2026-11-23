@@ -1177,7 +1177,8 @@ static void patch_performance() {
 		debugPrintf("light fast: %s (inline)\n", light_fast_mode ? "installed" : "NOT installed");
 	}
 	// Exact native of the off-screen path of obj_lightback user event 0, the lighting pass's per-light event
-	// (lightback_native.c): visible lights run the original. exp_lightbacknative0: the original for every light.
+	// (lightback_native.c): visible lights run the original. In-run A/B (exp_lbab): haunted_cart2 (111 of 129
+	// lights off-screen) -0.44 ms process per frame. exp_lightbacknative0: the original for every light.
 	if (!exp_flag("lightbacknative0")) {
 		extern int lightback_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native off-screen lightback: %s\n", lightback_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
