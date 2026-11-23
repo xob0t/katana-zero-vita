@@ -156,8 +156,11 @@ static int reject(unsigned line) {
 
 static void ABI draw_capture(void *self, int sprite, float subimg, float x, float y, float xs, float ys, float rot,
 		int colour, float alpha) {
-	if (capturing && gml_count < MAX_DRAWS)
-		gml_draws[gml_count++] = (Draw){sprite, colour, subimg, x, y, xs, ys, rot, alpha};
+	if (capturing) { // counted past MAX_DRAWS too: verify_finish treats an overflow as a mismatch
+		if (gml_count < MAX_DRAWS)
+			gml_draws[gml_count] = (Draw){sprite, colour, subimg, x, y, xs, ys, rot, alpha};
+		gml_count++;
+	}
 	draw_sprite_ext(self, sprite, subimg, x, y, xs, ys, rot, colour, alpha);
 }
 
@@ -230,8 +233,9 @@ static int native_body(void *self, void *other, int dry) {
 		a = a / l100;
 		if (dry) {
 			if (nat_count < MAX_DRAWS)
-				nat_draws[nat_count++] = (Draw){sprite, col, (float)anim->value, (float)x, (float)y, (float)xs, 2.0f,
+				nat_draws[nat_count] = (Draw){sprite, col, (float)anim->value, (float)x, (float)y, (float)xs, 2.0f,
 					0.0f, (float)a};
+			nat_count++;
 		} else {
 			draw_sprite_ext(self, sprite, (float)anim->value, (float)x, (float)y, (float)xs, 2.0f, 0.0f, col, (float)a);
 		}
@@ -250,7 +254,7 @@ static void verify_finish(void) {
 	pending = 0;
 	capturing = 0;
 	RV *i_slot = get(pending_trail, I);
-	int ok = gml_count == nat_count && !memcmp(gml_draws, nat_draws, sizeof(Draw) * (nat_count < MAX_DRAWS ? nat_count : MAX_DRAWS)) &&
+	int ok = gml_count == nat_count && nat_count <= MAX_DRAWS && !memcmp(gml_draws, nat_draws, sizeof(Draw) * nat_count) &&
 		real(i_slot) && !memcmp(&i_slot->value, &nat_i, 8) &&
 		!memcmp(rng_state, nat_rng, 64) && *rng_index == nat_rng[16];
 	if (ok) {
@@ -258,7 +262,7 @@ static void verify_finish(void) {
 	} else if (trail_lights_mismatch++ < 8) {
 		debugPrintf("[TRAILLIGHTS] mismatch: draws %d/%d i %.9g/%.9g rng %s\n", gml_count, nat_count,
 			real(i_slot) ? i_slot->value : -1.0, nat_i, !memcmp(rng_state, nat_rng, 64) && *rng_index == nat_rng[16] ? "same" : "differs");
-		for (int k = 0; k < gml_count && k < nat_count && k < 4; k++)
+		for (int k = 0; k < gml_count && k < nat_count && k < MAX_DRAWS && k < 4; k++)
 			if (memcmp(&gml_draws[k], &nat_draws[k], sizeof(Draw)))
 				debugPrintf("[TRAILLIGHTS]   draw %d: gml spr %d col %d %.9g %.9g %.9g %.9g %.9g | native spr %d col %d %.9g %.9g %.9g %.9g %.9g\n", k,
 					gml_draws[k].sprite, gml_draws[k].colour, gml_draws[k].subimg, gml_draws[k].x, gml_draws[k].y,
@@ -305,17 +309,19 @@ static int ABI trail_next_with(void *iterator, void **self, void **other) {
 	return skip_far(next_with(iterator, self, other), iterator, self, other);
 }
 
-static int patch_call(uintptr_t site, uintptr_t plt, uintptr_t direct, uintptr_t wrapper) {
+// An 8-byte veneer within bl range of site, or NULL
+static uint32_t *alloc_veneer(uintptr_t site) {
+	uint32_t *veneer = (uint32_t *)so_alloc_near(&yoyoloader_mod, site, 8);
+	int32_t off = veneer ? (int32_t)((uintptr_t)veneer - (site + 8)) : 0;
+	return veneer && off >= -(1 << 25) && off < (1 << 25) ? veneer : NULL;
+}
+
+static int patch_call_with(uintptr_t site, uintptr_t plt, uintptr_t direct, uintptr_t wrapper, uint32_t *veneer) {
 	uint32_t ins = *(uint32_t *)site;
 	uintptr_t target = site + 8 + (uintptr_t)((int32_t)(ins << 8) >> 6);
-	if ((ins >> 24) != 0xeb || (target != plt && target != direct))
-		return 0;
-	uint32_t *veneer = (uint32_t *)so_alloc_near(&yoyoloader_mod, site, 8);
-	if (!veneer)
+	if (!veneer || (ins >> 24) != 0xeb || (target != plt && target != direct))
 		return 0;
 	int32_t off = (int32_t)((uintptr_t)veneer - (site + 8));
-	if (off < -(1 << 25) || off >= (1 << 25))
-		return 0;
 	uint32_t code[2] = {0xe51ff004, wrapper}; // ldr pc, [pc, #-4]; .word wrapper
 	kuKernelCpuUnrestrictedMemcpy(veneer, code, sizeof(code));
 	kuKernelFlushCaches(veneer, sizeof(code));
@@ -323,6 +329,10 @@ static int patch_call(uintptr_t site, uintptr_t plt, uintptr_t direct, uintptr_t
 	kuKernelCpuUnrestrictedMemcpy((void *)site, &bl, 4);
 	kuKernelFlushCaches((void *)site, 4);
 	return 1;
+}
+
+static int patch_call(uintptr_t site, uintptr_t plt, uintptr_t direct, uintptr_t wrapper) {
+	return patch_call_with(site, plt, direct, wrapper, alloc_veneer(site));
 }
 
 static int check_call(uintptr_t site, uintptr_t plt, uintptr_t direct) {
@@ -368,9 +378,12 @@ int trail_lights_install(void) {
 	native = !exp_flag("traillightsnative0") && vars_ok && point_distance && lengthdir_x && lengthdir_y && random_fn_ &&
 		draw_sprite_ext && variable_get && real_value && global_obj && check_call(AT(INNER_NEW_SITE), AT(PLT_NEW), (uintptr_t)new_with);
 	verify = native && rng_state && rng_index && exp_flag("traillightsverify") && check_call(AT(DRAW_SITE), AT(PLT_DRAW), (uintptr_t)draw_sprite_ext);
-	if (!patch_call(AT(NEW_SITE), AT(PLT_NEW), (uintptr_t)new_with, (uintptr_t)&trail_new_with) ||
-			!patch_call(AT(NEXT_SITE), AT(PLT_NEXT), (uintptr_t)next_with, (uintptr_t)&trail_next_with))
-		return 0; // the first patch can't fail alone: both sites were checked and the cave has room for 2 veneers
+	// Both veneers first, so a failed allocation leaves neither site patched (both sites were checked above)
+	uint32_t *new_veneer = alloc_veneer(AT(NEW_SITE)), *next_veneer = alloc_veneer(AT(NEXT_SITE));
+	if (!new_veneer || !next_veneer ||
+			!patch_call_with(AT(NEW_SITE), AT(PLT_NEW), (uintptr_t)new_with, (uintptr_t)&trail_new_with, new_veneer) ||
+			!patch_call_with(AT(NEXT_SITE), AT(PLT_NEXT), (uintptr_t)next_with, (uintptr_t)&trail_next_with, next_veneer))
+		return 0;
 	if (native && !patch_call(AT(INNER_NEW_SITE), AT(PLT_NEW), (uintptr_t)new_with, (uintptr_t)&trail_inner_new_with))
 		native = verify = 0;
 	if (verify && !patch_call(AT(DRAW_SITE), AT(PLT_DRAW), (uintptr_t)draw_sprite_ext, (uintptr_t)&draw_capture))

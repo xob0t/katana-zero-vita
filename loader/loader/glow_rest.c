@@ -87,15 +87,17 @@ static int player_lookup(void *self, void *other, double *x, double *y) {
 			if (fresh != cache_exists || (fresh == 1 && (fx != cache_x || fy != cache_y)))
 				cache_mismatches++;
 		}
-		*x = cache_x;
-		*y = cache_y;
+		if (cache_exists == 1) { // x and y are only set for a live player
+			*x = cache_x;
+			*y = cache_y;
+		}
 		return cache_exists;
 	}
 	int exists = player_lookup_fresh(self, other, x, y);
 	if (cache_valid == 2) { // first call inside the static objects' Draw
 		cache_exists = exists;
-		cache_x = *x;
-		cache_y = *y;
+		cache_x = exists == 1 ? *x : 0.0;
+		cache_y = exists == 1 ? *y : 0.0;
 		cache_valid = 1;
 	}
 	return exists;
