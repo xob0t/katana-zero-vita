@@ -467,11 +467,14 @@ static int lz4_page_decompress(char *dest, unsigned *dest_len, char *src, unsign
 		fatal_error("game.apk has bzip2 texture pages. Rebuild it with scripts/prepare_apk.py.");
 	uint32_t block_len;
 	memcpy(&block_len, src + 4, 4);
+	extern volatile int hang_texture_decode;
+	hang_texture_decode = 1;
 	// The runner passes the QOI size from the page header, which prepare_apk.py sets to the exact decoded size: a
 	// shorter result means a damaged page, and the rest of the buffer would be uninitialised
 	int n = block_len <= src_len - 8 ? LZ4_decompress_safe(src + 8, dest, block_len, *dest_len) : -1;
 	if (n < 0 || (unsigned)n != *dest_len)
 		fatal_error("LZ4 texture page failed to decode (%u of %u bytes -> %u): %d", block_len, src_len, *dest_len, n);
+	hang_texture_decode = 0;
 	return 0; // BZ_OK
 }
 

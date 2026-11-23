@@ -860,7 +860,13 @@ void main_loop() {
 	
 	setup_ended = 1;
 	glReleaseShaderCompiler();
+	extern volatile uint32_t hang_frames;
+	extern volatile int hang_stage;
+	extern void hang_watch_start(int cpu_mask);
+	hang_watch_start(WORKER_THREAD_CPU_MASK);
 	for (;;) {
+		hang_frames++;
+		hang_stage = 0;
 		if (post_active) {
 			SceKernelThreadInfo info;
 			info.size = sizeof(SceKernelThreadInfo);
@@ -923,6 +929,7 @@ void main_loop() {
 		}
 
 		uint64_t prof_t0 = sceKernelGetProcessTimeWide();
+		hang_stage = 1;
 		Java_com_yoyogames_runner_RunnerJNILib_Process(fake_env, 0, SCREEN_W, SCREEN_H, sensor.accelerometer.x, sensor.accelerometer.y, sensor.accelerometer.z, 0, 0, 60.0f);
 		if (!Java_com_yoyogames_runner_RunnerJNILib_canFlip || Java_com_yoyogames_runner_RunnerJNILib_canFlip()) {
 			if (ime_active) {
@@ -940,11 +947,14 @@ void main_loop() {
 				vglSwapBuffers(GL_TRUE);
 			} else {
 				uint64_t prof_t1 = sceKernelGetProcessTimeWide();
+				hang_stage = 2;
 				if (!katana_frame_skipped())
 					vglSwapBuffers(GL_FALSE);
 				swap_only_us = (uint32_t)(sceKernelGetProcessTimeWide() - prof_t1);
+				hang_stage = 3;
 				katana_after_swap(swap_only_us, (uint32_t)(prof_t1 - prof_t0));
 				uint32_t shot_t0 = sceKernelGetProcessTimeLow();
+				hang_stage = 6;
 				screenshot_check();
 				screenshot_check_us = sceKernelGetProcessTimeLow() - shot_t0;
 				// Keep the system from auto-suspending during play without input
@@ -954,6 +964,7 @@ void main_loop() {
 					power_tick_frames = 0;
 					sceKernelPowerTick(SCE_KERNEL_POWER_TICK_DEFAULT); // also keeps the display on
 				}
+				hang_stage = 7;
 				frame_profile(prof_t0, prof_t1, sceKernelGetProcessTimeWide());
 			}
 		}
@@ -1096,9 +1107,14 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 		// GPU memory at each room change: textures and surfaces that miss VRAM land in slower RAM pools
 		extern size_t vgl_gpu_fallback_bytes;
 		extern unsigned vgl_gpu_fallback_allocs;
-		debugPrintf("[VRAM] room %d: free vram %uKB (largest %uKB) ram %uKB phycont %uKB | GPU allocations outside VRAM %u (%uKB)\n",
+		// Newlib heap: sbrk'd so far and free inside that (a long-session leak shows as "sbrk'd" growing room after room)
+		extern size_t newlib_heap_used(void);
+		struct mallinfo mi = mallinfo();
+		debugPrintf("[VRAM] room %d: free vram %uKB (largest %uKB) ram %uKB phycont %uKB | GPU allocations outside VRAM %u (%uKB) | "
+			"newlib heap %uKB sbrk'd of %uKB, %uKB of it free\n",
 			win_room, vglMemFree(VGL_MEM_VRAM) / 1024, gpu_pool_largest(VGL_MEM_VRAM) / 1024, vglMemFree(VGL_MEM_RAM) / 1024,
-			vglMemFree(VGL_MEM_PHYCONT) / 1024, vgl_gpu_fallback_allocs, (unsigned)(vgl_gpu_fallback_bytes / 1024));
+			vglMemFree(VGL_MEM_PHYCONT) / 1024, vgl_gpu_fallback_allocs, (unsigned)(vgl_gpu_fallback_bytes / 1024),
+			(unsigned)(newlib_heap_used() / 1024), _newlib_heap_size / 1024, (unsigned)(mi.fordblks / 1024));
 	}
 	win_frames++;
 	static uint64_t last_swap;
