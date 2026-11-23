@@ -79,9 +79,11 @@ static void texdrain_run(const char *where) {
 	int scene = vgl_end_scene_no_depth_stencil();
 	if (scene == 2) {
 		extern GLboolean vgl_scene_depth_stencil, depth_test_state, stencil_test_state;
-		debugPrintf("[TEXDRAIN] waiting (%s): the open scene %s\n", where, vgl_scene_depth_stencil ?
-			"wrote depth or stencil values" : depth_test_state || stencil_test_state ? "has a depth or stencil test on" :
-			"could not be ended");
+		static const char *const causes[] = { "", "a draw with depth writes", "a draw with the stencil test",
+			"a depth clear", "a stencil clear" };
+		debugPrintf("[TEXDRAIN] waiting (%s): the open scene %s%s\n", where, vgl_scene_depth_stencil ?
+			"wrote depth or stencil values: " : depth_test_state || stencil_test_state ? "has a depth or stencil test on" :
+			"could not be ended", vgl_scene_depth_stencil <= 4 ? causes[vgl_scene_depth_stencil] : "");
 		return;
 	}
 	const char *what = texdrain_pending;
