@@ -425,6 +425,7 @@ static struct { uint32_t key, last; } eh_table[EH_SLOTS]; // key = id + 1, 0 = e
 static int eh_room = -2;
 static runner_function **eh_functions, **eh_current_function;
 static const int *eh_fn_collision_rectangle, *eh_fn_instance_exists;
+static int eh_collision_rectangle_desc[2]; // no GML calls collision_rectangle (no g_FUNC_): {0, its registry index}
 typedef int (*builtin_var_get)(void *inst, int index, gml_rvalue *value);
 static builtin_var_get eh_bbox[4]; // GV_Bbl, GV_Bbt, GV_Bbr, GV_Bbb
 static int *eh_var_timestep, *eh_var_slope_slowdown, *eh_var_slope_tolerance;
@@ -793,7 +794,12 @@ void t30_install(gml_func_entry *table) {
 	eh_functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
 	eh_current_function = (runner_function **)so_symbol(&yoyoloader_mod, "g_pFunction");
 	eh_fn_instance_exists = (const int *)so_symbol(&yoyoloader_mod, "g_FUNC_instance_exists");
-	eh_fn_collision_rectangle = (const int *)so_symbol(&yoyoloader_mod, "g_FUNC_collision_rectangle");
+	int *function_count = (int *)so_symbol(&yoyoloader_mod, "the_numb");
+	for (int i = 0; eh_functions && *eh_functions && function_count && i < *function_count && !eh_fn_collision_rectangle; i++)
+		if ((*eh_functions)[i].name && !strcmp((*eh_functions)[i].name, "collision_rectangle")) {
+			eh_collision_rectangle_desc[1] = i;
+			eh_fn_collision_rectangle = eh_collision_rectangle_desc;
+		}
 	eh_var_timestep = (int *)so_symbol(&yoyoloader_mod, "g_VAR_timestep");
 	eh_var_slope_slowdown = (int *)so_symbol(&yoyoloader_mod, "g_VAR_slope_slowdown");
 	eh_var_slope_tolerance = (int *)so_symbol(&yoyoloader_mod, "g_VAR_slope_tolerance");
