@@ -162,7 +162,8 @@ static void dynamic_res_update(uint32_t swap_us, uint32_t work_us) {
 }
 
 // Runs right after vglSwapBuffers, between frames: every scene of the frame has been submitted, so the GPU finish
-// and garbage collection below cannot free memory that commands still being recorded refer to
+// and garbage collection below cannot free memory that commands still being recorded refer to. It also runs on frames
+// that skip the swap (katana_frame_skipped); vitaGL's vgl_collect_garbage_now then keeps what an open scene released.
 
 uint32_t after_swap_step_us[2]; // debug: t30_update, dynamic_res_update of the last frame
 void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
@@ -215,11 +216,14 @@ void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
 		// Free the flushed pages now: otherwise vitaGL releases them a few frames later and the reloads,
 		// still not fitting, land in RAM again
 		extern void vgl_collect_garbage_now(void);
+		extern int vgl_gc_open_scene_drains;
+		int open_drains = vgl_gc_open_scene_drains;
 		vgl_collect_garbage_now();
 		texflush_last_us = sceKernelGetProcessTimeLow();
 		texflush_count++;
-		debugPrintf("[TEXFLUSH] texture pages flushed after %s (%.1f ms); free vram now %uKB\n", reason,
-			(texflush_last_us - now) / 1000.0f, vglMemFree(VGL_MEM_VRAM) / 1024);
+		debugPrintf("[TEXFLUSH] texture pages flushed after %s (%.1f ms); free vram now %uKB%s\n", reason,
+			(texflush_last_us - now) / 1000.0f, vglMemFree(VGL_MEM_VRAM) / 1024,
+			vgl_gc_open_scene_drains != open_drains ? " (a scene was open: its releases kept)" : "");
 	}
 }
 

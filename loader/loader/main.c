@@ -1054,13 +1054,13 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 	extern void evprof_frame(int log);
 	evprof_frame(spike);
 	// Forced garbage collections (vitaGL allocations that missed every pool) during this frame, and how many of them
-	// found a scene open and ended it first (vitaGL gxm.c vgl_end_scene_for_gc)
-	extern int vgl_forced_gc_allocs, vgl_gc_scene_ends;
+	// found a scene open (its entries kept for later: vitaGL gxm.c vgl_gc_keep_open_scene)
+	extern int vgl_forced_gc_allocs, vgl_gc_open_scene_allocs;
 	static int forced_gc_seen, gc_scene_ends_seen;
 	int forced_gc = vgl_forced_gc_allocs - forced_gc_seen;
 	forced_gc_seen = vgl_forced_gc_allocs;
-	int gc_scene_ends = vgl_gc_scene_ends - gc_scene_ends_seen;
-	gc_scene_ends_seen = vgl_gc_scene_ends;
+	int gc_scene_ends = vgl_gc_open_scene_allocs - gc_scene_ends_seen;
+	gc_scene_ends_seen = vgl_gc_open_scene_allocs;
 	if (processed - start > 100000 || swapped - processed > 50000) {
 		debugPrintf("[HITCH] process %.1fms swap %.1fms\n", (processed - start) / 1000.0f, (swapped - processed) / 1000.0f);
 		// Where the "swap" time went (it also covers the work after vglSwapBuffers), and memory at that moment
