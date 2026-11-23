@@ -591,7 +591,8 @@ static void circle_verify(void *self, void *other) {
 	for (int n = 0; n < NVARS; n++)
 		if (c.written[n]) {
 			rv *v = vget(self, n);
-			if (!v || !same_rv(v, &c.shadow[n]) || v->flags != c.shadow[n].flags) {
+			// The flags word too, except on bools: the original copies a reused temporary's leftover flags with them
+			if (!v || !same_rv(v, &c.shadow[n]) || (v->kind != KIND_BOOL && v->flags != c.shadow[n].flags)) {
 				if (!(c.mismatch & 64) && dossier_verify_mismatch < 12)
 					debugPrintf("[DOSSIER] verify: self var %d: original %.17g kind %u flags %x, native %.17g kind %u\n", n,
 						v ? v->val : -1.0, v ? v->kind : 99u, v ? v->flags : 0u, c.shadow[n].val, c.shadow[n].kind);
@@ -613,6 +614,9 @@ static void circle_verify(void *self, void *other) {
 					got = *v;
 			}
 		}
+		// direction and speed are float fields: the instance holds (float)value, which reads back as a double
+		if ((w->var == V_DIRECTION || w->var == V_SPEED) && w->value.kind == KIND_REAL)
+			w->value.val = (double)(float)w->value.val;
 		if (!child || !same_rv(&got, &w->value)) {
 			if (!(c.mismatch & 128) && dossier_verify_mismatch < 12)
 				debugPrintf("[DOSSIER] verify: child %d var %d: original %.17g kind %u, native %.17g kind %u\n", w->create,
