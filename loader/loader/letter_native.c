@@ -573,7 +573,7 @@ static int draw_admit(void *self,State *s,Table *fonts) {
  REQUIRE(numeric(peek(&p,STATE)));
  REQUIRE(numeric(peek(&p,GOTO_ID)));
  REQUIRE(numeric(peek(&p,HAS_CHOICE)));
- REQUIRE(isfinite(coordinate(self,0xdc)));
+ REQUIRE(isfinite(coordinate(self,0xe8))); /* vspeed (GV_Vspeed); 0xdc is gravity_direction */
  REQUIRE(isfinite(coordinate(self,0xd4)));
  REQUIRE(isfinite(coordinate(self,0xd0)));
  REQUIRE(numeric(peek(&p,TXT_GLOW_ALPHA)));
@@ -643,7 +643,7 @@ static void letter_native_draw_impl(void *self,void *other) {
   if(cmp(number(s.v[DIE]),1)==0) {
    tr.line=94; set_valign(1); tr.line=95; set_halign(1);
    tr.line=96; set_direct(self,(int)vars[SPEED][1],(int)0x80000000,s.v[SPD]);
-   tr.line=97; set_builtin(self,VSPEED,coordinate(self,0xdc)+.3*value(*global,FR));
+   tr.line=97; set_builtin(self,VSPEED,coordinate(self,0xe8)+.3*value(*global,FR));
    tr.line=98; RV speed=real(coordinate(self,0xd4)); owned_write(self,s.v[SPD],&speed);
    tr.line=99; set_builtin(self,SPEED,number(s.v[SPD])*value(*global,FR));
    tr.line=100; if(cmp(coordinate(self,0xbc),height(self))>0) { tr.line=102; destroy(self,other,0,NULL); }

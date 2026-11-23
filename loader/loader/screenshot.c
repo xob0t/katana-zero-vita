@@ -17,11 +17,13 @@
 #include <vitasdk.h>
 #include <stdlib.h>
 
+#include "file_replace.h"
 #include "main.h"
 
 #define SCREENSHOT_REQ "ux0:data/gms/shared/screenshot.req"
 #define SCREENSHOT_OUT "ux0:data/gms/shared/screenshot.raw"
 #define SCREENSHOT_TMP "ux0:data/gms/shared/screenshot.tmp"
+#define SCREENSHOT_BAK "ux0:data/gms/shared/screenshot.bak"
 #define DEBUG_REQUEST_POLL_US 500000
 #define DEBUG_REQUEST_SLOW_US 50000
 
@@ -44,11 +46,15 @@ static void screenshot_write(void) {
 	// Written under a temporary name so the PC never downloads a partial file
 	SceUID fd = sceIoOpen(SCREENSHOT_TMP, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
 	if (fd >= 0) {
-		sceIoWrite(fd, shot_header, sizeof(shot_header));
-		sceIoWrite(fd, shot_pixels, shot_header[2] * shot_header[1] * 4);
-		sceIoClose(fd);
-		sceIoRemove(SCREENSHOT_OUT);
-		sceIoRename(SCREENSHOT_TMP, SCREENSHOT_OUT);
+		int size = shot_header[2] * shot_header[1] * 4;
+		int ok = sceIoWrite(fd, shot_header, sizeof(shot_header)) == sizeof(shot_header) &&
+			sceIoWrite(fd, shot_pixels, size) == size;
+		if (sceIoClose(fd) < 0)
+			ok = 0;
+		if (!ok || replace_file(SCREENSHOT_TMP, SCREENSHOT_OUT, SCREENSHOT_BAK) < 0) {
+			remove_if_present(SCREENSHOT_TMP);
+			debugPrintf("Could not replace %s\n", SCREENSHOT_OUT);
+		}
 	}
 	free(shot_pixels);
 	__sync_synchronize();

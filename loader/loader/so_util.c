@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #include "main.h"
 #include "dialog.h"
@@ -62,12 +63,14 @@ typedef struct ldst_enc {
 	};
 } ldst_enc;
 
-#define B_RANGE ((1 << 24) - 1)
-#define B_OFFSET(x) (x + 8) // branch jumps into addr - 8, so range is biased forward
-#define B(PC, DEST) ((b_enc){.bits = {.cond = 0b1110, .enc = 0b101, .l = 0, .imm24 = (((intptr_t)DEST-(intptr_t)PC) / 4) - 2}})
+#define B(PC, DEST) ((b_enc){.bits = {.cond = 0b1110, .enc = 0b101, .l = 0, .imm24 = ((int64_t)(DEST) - (uintptr_t)(PC) - 8) / 4}})
 #define LDR_OFFS(RT, RN, IMM) ((ldst_enc){.bits = {.cond = 0b1110, .enc = 0b010, .p = 1, .u = (IMM >= 0), .b = 0, .w = 0, .bit20_1 = 1, .rn = RN, .rt = RT, .imm12 = (IMM >= 0) ? IMM : -IMM}})
 
 #define PATCH_SZ 0x10000 //64 KB-ish arenas
+
+// Bumped by every code hook and every GOT slot lookup (the loader looks a slot up to rewrite it), so natives that
+// check once for hooked runner functions know when to look again (smokedraw_native.c)
+volatile unsigned so_hook_generation;
 static so_module *head = NULL, *tail = NULL;
 
 so_hook hook_thumb(uintptr_t addr, uintptr_t dst) {
@@ -75,6 +78,7 @@ so_hook hook_thumb(uintptr_t addr, uintptr_t dst) {
 	//printf("THUMB HOOK\n");
 	if (addr == 0)
 		return;
+	so_hook_generation++;
 	h.thumb_addr = addr;
 	addr &= ~1;
 	if (addr & 2) {
@@ -98,6 +102,7 @@ so_hook hook_arm(uintptr_t addr, uintptr_t dst) {
 	if (addr == 0)
 		return;
 	so_hook h;
+	so_hook_generation++;
 	h.thumb_addr = 0;
 	h.addr = addr;
 	h.patch_instr[0] = 0xe51ff004; // LDR PC, [PC, #-0x4]
@@ -121,30 +126,26 @@ void so_flush_caches(so_module *mod) {
 	kuKernelFlushCaches((void *)mod->text_base, mod->text_size);
 }
 
-int _so_load(so_module *mod, SceUID so_blockid, void *so_data, uintptr_t load_addr) {
-	int res = 0;
+static int _so_load(so_module *mod, SceUID so_blockid, const void *so_data, size_t so_size, uintptr_t load_addr) {
+	int res = -1;
 	uintptr_t data_addr = 0;
-	
-	if (memcmp(so_data, ELFMAG, SELFMAG) != 0) {
-		res = -1;
+	so_elf elf;
+	mod->patch_blockid = mod->text_blockid = -1;
+	if (!so_elf_validate(so_data, so_size, load_addr, &elf))
 		goto err_free_so;
-	}
 
-	mod->ehdr = (Elf32_Ehdr *)so_data;
-	mod->phdr = (Elf32_Phdr *)((uintptr_t)so_data + mod->ehdr->e_phoff);
-	mod->shdr = (Elf32_Shdr *)((uintptr_t)so_data + mod->ehdr->e_shoff);
-
-	mod->shstr = (char *)((uintptr_t)so_data + mod->shdr[mod->ehdr->e_shstrndx].sh_offset);
-
-	for (int i = 0; i < mod->ehdr->e_phnum; i++) {
-		if (mod->phdr[i].p_type == PT_LOAD) {
+	for (int i = 0; i < elf.header->e_phnum; i++) {
+		const Elf32_Phdr *p = &elf.segments[i];
+		if (p->p_type == PT_LOAD) {
 			void *prog_data;
 			size_t prog_size;
 
-			if ((mod->phdr[i].p_flags & PF_X) == PF_X) {
+			if ((p->p_flags & PF_X) == PF_X) {
 				// Allocate arena for code patches, trampolines, etc
 				// Sits exactly under the desired allocation space
-				mod->patch_size = ALIGN_MEM(PATCH_SZ, mod->phdr[i].p_align);
+				mod->patch_size = ALIGN_MEM(PATCH_SZ, p->p_align);
+				if (load_addr < mod->patch_size)
+					goto err_free_so;
 				SceKernelAllocMemBlockKernelOpt opt;
 				memset(&opt, 0, sizeof(SceKernelAllocMemBlockKernelOpt));
 				opt.size = sizeof(SceKernelAllocMemBlockKernelOpt);
@@ -158,10 +159,12 @@ int _so_load(so_module *mod, SceUID so_blockid, void *so_data, uintptr_t load_ad
 					debugPrintf("Patch Block: Addr: 0x%08X Size: %d\n", opt.field_C, mod->patch_size);
 				}
 
-				sceKernelGetMemBlockBase(mod->patch_blockid, &mod->patch_base);
+				res = sceKernelGetMemBlockBase(mod->patch_blockid, &mod->patch_base);
+				if (res < 0)
+					goto err_free_blocks;
 				mod->patch_head = mod->patch_base;
 				
-				prog_size = ALIGN_MEM(mod->phdr[i].p_memsz, mod->phdr[i].p_align);
+				prog_size = ALIGN_MEM(p->p_memsz, p->p_align);
 				// Prefer physically contiguous, 1MB aligned code so the kernel can map it with
 				// 1MB sections: large YYC runners thrash the TLB with 4KB pages
 				memset(&opt, 0, sizeof(SceKernelAllocMemBlockKernelOpt));
@@ -182,35 +185,26 @@ int _so_load(so_module *mod, SceUID so_blockid, void *so_data, uintptr_t load_ad
 				}
 				if (res < 0) {
 					debugPrintf("Failed at allocating a prog block of %d bytes on address 0x%08X\n", prog_size, opt.field_C);
-					goto err_free_so;
+					goto err_free_blocks;
 				} else {
 					debugPrintf("Prog Block: Addr: 0x%08X Size: %d\n", opt.field_C, prog_size);
 				}
 
-				sceKernelGetMemBlockBase(mod->text_blockid, &prog_data);
-
-				mod->phdr[i].p_vaddr += (Elf32_Addr)prog_data;
-
-				mod->text_base = mod->phdr[i].p_vaddr;
-				mod->text_size = mod->phdr[i].p_memsz;
+				res = sceKernelGetMemBlockBase(mod->text_blockid, &prog_data);
+				if (res < 0)
+					goto err_free_blocks;
+				mod->text_base = (uintptr_t)prog_data;
+				mod->text_size = p->p_memsz;
 		
 				// Use the .text segment padding as a code cave
 				// Word-align it to make it simpler for instruction arena allocation
-				mod->cave_size = ALIGN_MEM(prog_size - mod->phdr[i].p_memsz, 0x4);
-				mod->cave_base = mod->cave_head = prog_data + mod->phdr[i].p_memsz;
-				mod->cave_base = ALIGN_MEM(mod->cave_base, 0x4);
-				mod->cave_head = mod->cave_base;
+				mod->cave_base = mod->cave_head = mod->text_base + ALIGN_MEM(p->p_memsz, 4);
+				mod->cave_size = prog_size > ALIGN_MEM(p->p_memsz, 4) ? prog_size - ALIGN_MEM(p->p_memsz, 4) : 0;
 				debugPrintf("code cave: %d bytes (@0x%08X).\n", mod->cave_size, mod->cave_base);
 
 				data_addr = (uintptr_t)prog_data + prog_size;
 			} else {
-				if (data_addr == 0)
-					goto err_free_so;
-
-				if (mod->n_data >= MAX_DATA_SEG)
-					goto err_free_data;
-
-				prog_size = ALIGN_MEM(mod->phdr[i].p_memsz + mod->phdr[i].p_vaddr - (data_addr - mod->text_base), mod->phdr[i].p_align);
+				prog_size = ALIGN_MEM(p->p_memsz + p->p_vaddr - (data_addr - mod->text_base), p->p_align);
 
 				SceKernelAllocMemBlockKernelOpt opt;
 				memset(&opt, 0, sizeof(SceKernelAllocMemBlockKernelOpt));
@@ -220,66 +214,59 @@ int _so_load(so_module *mod, SceUID so_blockid, void *so_data, uintptr_t load_ad
 				res = mod->data_blockid[mod->n_data] = kuKernelAllocMemBlock("rw_block", SCE_KERNEL_MEMBLOCK_TYPE_USER_RW, prog_size, &opt);
 				if (res < 0) {
 					debugPrintf("Failed at allocating a rw block of %d bytes on address 0x%08X\n", prog_size, opt.field_C);
-					goto err_free_text;
+					goto err_free_blocks;
 				} else {
 					debugPrintf("RW Block: Addr: 0x%08X Size: %d\n", opt.field_C, prog_size);
 				}
 
-				sceKernelGetMemBlockBase(mod->data_blockid[mod->n_data], &prog_data);
+				res = sceKernelGetMemBlockBase(mod->data_blockid[mod->n_data++], &prog_data);
+				if (res < 0)
+					goto err_free_blocks;
+				if ((uintptr_t)prog_data != data_addr) {
+					res = -1;
+					goto err_free_blocks;
+				}
 				data_addr = (uintptr_t)prog_data + prog_size;
 
-				mod->phdr[i].p_vaddr += (Elf32_Addr)mod->text_base;
-
-				mod->data_base[mod->n_data] = mod->phdr[i].p_vaddr;
-				mod->data_size[mod->n_data] = mod->phdr[i].p_memsz;
-				mod->n_data++;
+				mod->data_base[mod->n_data - 1] = mod->text_base + p->p_vaddr;
+				mod->data_size[mod->n_data - 1] = p->p_memsz;
 			}
 
-			char *zero = malloc(prog_size - mod->phdr[i].p_filesz);
-			memset(zero, 0, prog_size - mod->phdr[i].p_filesz);
-			kuKernelCpuUnrestrictedMemcpy(prog_data + mod->phdr[i].p_filesz, zero, prog_size - mod->phdr[i].p_filesz);
-			free(zero);
-
-			kuKernelCpuUnrestrictedMemcpy((void *)mod->phdr[i].p_vaddr, (void *)((uintptr_t)so_data + mod->phdr[i].p_offset), mod->phdr[i].p_filesz);
+			if (prog_size > p->p_filesz) {
+				size_t padding = prog_size - p->p_filesz;
+				char *zero = calloc(1, padding);
+				if (!zero) {
+					res = -1;
+					goto err_free_blocks;
+				}
+				kuKernelCpuUnrestrictedMemcpy(prog_data + p->p_filesz, zero, padding);
+				free(zero);
+			}
+			if (p->p_filesz)
+				kuKernelCpuUnrestrictedMemcpy((void *)(mod->text_base + p->p_vaddr), so_data + p->p_offset, p->p_filesz);
 		}
 	}
 
-	for (int i = 0; i < mod->ehdr->e_shnum; i++) {
-		char *sh_name = mod->shstr + mod->shdr[i].sh_name;
-		uintptr_t sh_addr = mod->text_base + mod->shdr[i].sh_addr;
-		size_t sh_size = mod->shdr[i].sh_size;
-		if (strcmp(sh_name, ".dynamic") == 0) {
-			mod->dynamic = (Elf32_Dyn *)sh_addr;
-			mod->num_dynamic = sh_size / sizeof(Elf32_Dyn);
-		} else if (strcmp(sh_name, ".dynstr") == 0) {
-			mod->dynstr = (char *)sh_addr;
-		} else if (strcmp(sh_name, ".dynsym") == 0) {
-			mod->dynsym = (Elf32_Sym *)sh_addr;
-			mod->num_dynsym = sh_size / sizeof(Elf32_Sym);
-		} else if (strcmp(sh_name, ".rel.dyn") == 0) {
-			mod->reldyn = (Elf32_Rel *)sh_addr;
-			mod->num_reldyn = sh_size / sizeof(Elf32_Rel);
-		} else if (strcmp(sh_name, ".rel.plt") == 0) {
-			mod->relplt = (Elf32_Rel *)sh_addr;
-			mod->num_relplt = sh_size / sizeof(Elf32_Rel);
-		} else if (strcmp(sh_name, ".init_array") == 0) {
-			mod->init_array = (void *)sh_addr;
-			mod->num_init_array = sh_size / sizeof(void *);
-		} else if (strcmp(sh_name, ".hash") == 0) {
-			mod->hash = (void *)sh_addr;
-		} else if (strcmp(sh_name, ".gnu.hash") == 0) {
-			mod->gnu_hash = (void *)sh_addr;
-		}
-	}
-
-	if (mod->dynamic == NULL ||
-		mod->dynstr == NULL ||
-		mod->dynsym == NULL ||
-		mod->reldyn == NULL ||
-		mod->relplt == NULL) {
-		res = -2;
-		goto err_free_data;
-	}
+	const Elf32_Shdr *const *t = elf.tables;
+	#define TABLE_ADDRESS(index) (t[index] ? (void *)(mod->text_base + t[index]->sh_addr) : NULL)
+	#define TABLE_COUNT(index, type) (t[index] ? t[index]->sh_size / sizeof(type) : 0)
+	mod->dynamic = TABLE_ADDRESS(SO_DYNAMIC);
+	mod->num_dynamic = elf.dynamic_count;
+	mod->dynstr = TABLE_ADDRESS(SO_DYNSTR);
+	mod->dynsym = TABLE_ADDRESS(SO_DYNSYM);
+	mod->num_dynsym = TABLE_COUNT(SO_DYNSYM, Elf32_Sym);
+	mod->reldyn = TABLE_ADDRESS(SO_RELDYN);
+	mod->num_reldyn = TABLE_COUNT(SO_RELDYN, Elf32_Rel);
+	mod->relplt = TABLE_ADDRESS(SO_RELPLT);
+	mod->num_relplt = TABLE_COUNT(SO_RELPLT, Elf32_Rel);
+	mod->init_array = TABLE_ADDRESS(SO_INIT_ARRAY);
+	mod->num_init_array = TABLE_COUNT(SO_INIT_ARRAY, Elf32_Addr);
+	mod->hash = TABLE_ADDRESS(SO_HASH);
+	mod->hash_words = TABLE_COUNT(SO_HASH, uint32_t);
+	mod->gnu_hash = TABLE_ADDRESS(SO_GNU_HASH);
+	mod->gnu_hash_words = TABLE_COUNT(SO_GNU_HASH, uint32_t);
+	#undef TABLE_ADDRESS
+	#undef TABLE_COUNT
 
 	for (int i = 0; i < mod->num_dynamic; i++) {
 		switch (mod->dynamic[i].d_tag) {
@@ -304,11 +291,13 @@ int _so_load(so_module *mod, SceUID so_blockid, void *so_data, uintptr_t load_ad
 
 	return 0;
 
-err_free_data:
+err_free_blocks:
 	for (int i = 0; i < mod->n_data; i++)
 		sceKernelFreeMemBlock(mod->data_blockid[i]);
-err_free_text:
-	sceKernelFreeMemBlock(mod->text_blockid);
+	if (mod->text_blockid >= 0)
+		sceKernelFreeMemBlock(mod->text_blockid);
+	if (mod->patch_blockid >= 0)
+		sceKernelFreeMemBlock(mod->patch_blockid);
 err_free_so:
 	if (so_blockid >= 0)
 		sceKernelFreeMemBlock(so_blockid);
@@ -321,7 +310,7 @@ int so_mem_load(so_module *mod, void *buffer, size_t so_size, uintptr_t load_add
 
 	// Parse straight from the caller's buffer: copying it into a second memblock
 	// doubles peak usage, which large YYC runners (80MB+) can't afford.
-	return _so_load(mod, -1, buffer, load_addr);
+	return _so_load(mod, -1, buffer, so_size, load_addr);
 }
 
 int so_file_load(so_module *mod, const char *filename, uintptr_t load_addr) {
@@ -334,19 +323,33 @@ int so_file_load(so_module *mod, const char *filename, uintptr_t load_addr) {
 	if (fd < 0)
 		return fd;
 
-	size_t so_size = sceIoLseek(fd, 0, SCE_SEEK_END);
-	sceIoLseek(fd, 0, SCE_SEEK_SET);
+	SceOff length = sceIoLseek(fd, 0, SCE_SEEK_END);
+	if (length <= 0 || length > INT_MAX || sceIoLseek(fd, 0, SCE_SEEK_SET) != 0) {
+		sceIoClose(fd);
+		return -1;
+	}
+	size_t so_size = length;
 
 	so_blockid = sceKernelAllocMemBlock("so block", SCE_KERNEL_MEMBLOCK_TYPE_USER_RW, (so_size + 0xfff) & ~0xfff, NULL);
-	if (so_blockid < 0)
+	if (so_blockid < 0) {
+		sceIoClose(fd);
 		return so_blockid;
+	}
 
-	sceKernelGetMemBlockBase(so_blockid, &so_data);
+	int res = sceKernelGetMemBlockBase(so_blockid, &so_data);
+	size_t done = 0;
+	while (res >= 0 && done < so_size) {
+		int got = sceIoRead(fd, so_data + done, so_size - done);
+		if (got <= 0)
+			break;
+		done += got;
+	}
+	if (sceIoClose(fd) < 0 || done != so_size) {
+		sceKernelFreeMemBlock(so_blockid);
+		return -1;
+	}
 
-	sceIoRead(fd, so_data, so_size);
-	sceIoClose(fd);
-
-	return _so_load(mod, so_blockid, so_data, load_addr);
+	return _so_load(mod, so_blockid, so_data, so_size, load_addr);
 }
 
 int so_relocate(so_module *mod) {
@@ -387,7 +390,7 @@ uintptr_t so_resolve_link(so_module *mod, const char *symbol) {
 		{
 			so_module *curr = head;
 			while (curr) {
-				if (curr != mod && strcmp(curr->soname, mod->dynstr + mod->dynamic[i].d_un.d_ptr) == 0) {
+				if (curr != mod && curr->soname && strcmp(curr->soname, mod->dynstr + mod->dynamic[i].d_un.d_ptr) == 0) {
 					uintptr_t link = so_symbol(curr, symbol);
 					if (link)
 						return link;
@@ -567,18 +570,22 @@ uint32_t so_hash(const uint8_t *name) {
 // dynamic symbols with strcmp (~18 ms for a symbol near the end, e.g. once per debug-mode report). -1 when not found.
 static int so_gnu_symbol_index(so_module *mod, const char *symbol) {
 	uint32_t *table = mod->gnu_hash;
+	if (mod->gnu_hash_words < 4)
+		return -1;
 	uint32_t nbuckets = table[0], symoffset = table[1], bloom_size = table[2];
-	if (!nbuckets)
+	size_t words = mod->gnu_hash_words - 4;
+	if (!nbuckets || bloom_size > words || nbuckets > words - bloom_size)
 		return -1;
 	uint32_t *buckets = &table[4 + bloom_size];
 	uint32_t *chain = &buckets[nbuckets];
+	size_t chain_words = words - bloom_size - nbuckets;
 	uint32_t h = 5381;
 	for (const uint8_t *c = (const uint8_t *)symbol; *c; c++)
 		h = h * 33 + *c;
 	uint32_t i = buckets[h % nbuckets];
-	if (i < symoffset)
+	if (!i || i < symoffset)
 		return -1;
-	for (; i < (uint32_t)mod->num_dynsym; i++) {
+	for (; i < (uint32_t)mod->num_dynsym && i - symoffset < chain_words; i++) {
 		uint32_t h2 = chain[i - symoffset];
 		if ((h | 1) == (h2 | 1) && mod->dynsym[i].st_shndx != SHN_UNDEF && mod->dynsym[i].st_info != SHN_UNDEF &&
 			strcmp(mod->dynstr + mod->dynsym[i].st_name, symbol) == 0)
@@ -596,16 +603,20 @@ static int so_symbol_index(so_module *mod, const char *symbol)
 		if (i >= 0)
 			return i;
 	}
-	if (mod->hash) {
+	if (mod->hash && mod->hash_words >= 2) {
 		uint32_t hash = so_hash((const uint8_t *)symbol);
 		uint32_t nbucket = mod->hash[0];
-		uint32_t *bucket = &mod->hash[2];
-		uint32_t *chain = &bucket[nbucket];
-		for (int i = bucket[hash % nbucket]; i; i = chain[i]) {
-			if (mod->dynsym[i].st_shndx == SHN_UNDEF)
-				continue;
-			if (mod->dynsym[i].st_info != SHN_UNDEF && strcmp(mod->dynstr + mod->dynsym[i].st_name, symbol) == 0)
-				return i;
+		size_t words = mod->hash_words - 2;
+		if (nbucket && nbucket <= words) {
+			uint32_t *bucket = &mod->hash[2];
+			uint32_t *chain = &bucket[nbucket];
+			size_t count = words - nbucket;
+			uint32_t i = bucket[hash % nbucket];
+			for (size_t visited = 0; i && i < count && i < (uint32_t)mod->num_dynsym && visited < count; visited++, i = chain[i]) {
+				if (mod->dynsym[i].st_shndx != SHN_UNDEF && mod->dynsym[i].st_info != SHN_UNDEF &&
+					strcmp(mod->dynstr + mod->dynsym[i].st_name, symbol) == 0)
+					return i;
+			}
 		}
 	}
 
@@ -619,36 +630,26 @@ static int so_symbol_index(so_module *mod, const char *symbol)
 	return -1;
 }
 
-/*
- * alloc_arena: allocates space on either patch or cave arenas, 
- * range: maximum range from allocation to dst (ignored if NULL)
- * dst: destination address
-*/
-static uintptr_t so_alloc_arena(so_module *so, uintptr_t range, uintptr_t dst, size_t sz) {
-	// Is address in range?
-	#define inrange(lsr, gtr, range) \
-		(((uintptr_t)(range) == (uintptr_t)NULL) || ((uintptr_t)(range) >= ((uintptr_t)(gtr) - (uintptr_t)(lsr))))
-	// Space left on block
-	#define blkavail(type) (so->type##_size - (so->type##_head - so->type##_base))
-	
-	// keep allocations 4-byte aligned for simplicity
-	sz = ALIGN_MEM(sz, 4);
-
-	if (sz <= (blkavail(patch)) && inrange(so->patch_base, dst, range)) {
-		so->patch_head += sz;
-		return (so->patch_head - sz);
-	} else if (sz <= (blkavail(cave)) && inrange(dst, so->cave_base, range)) {
-		so->cave_head += sz;
-		return (so->cave_head - sz);
-	}
-
-	return (uintptr_t)NULL;
+static uintptr_t alloc_branch_space(uintptr_t site, uintptr_t base, size_t size, uintptr_t *head, size_t bytes) {
+	size_t used = *head - base;
+	int64_t delta = (int64_t)*head - site - 8; // A32 B/BL uses PC + 8
+	if (!base || used > size || bytes > size - used ||
+		(delta & 3) || delta < -(1 << 25) || delta >= (1 << 25))
+		return 0;
+	uintptr_t addr = *head;
+	*head += bytes;
+	return addr;
 }
 
-// Executable space within branch range (B_RANGE) of a call site: the patch arena or the code cave after .text.
-// Returns 0 if neither has room in range.
+// Executable space reachable by A32 B/BL from site.
 uintptr_t so_alloc_near(so_module *so, uintptr_t site, size_t sz) {
-	return so_alloc_arena(so, B_RANGE, B_OFFSET(site), sz);
+	if (!sz || sz > SIZE_MAX - 3)
+		return 0;
+	sz = ALIGN_MEM(sz, 4);
+	uintptr_t addr = alloc_branch_space(site, so->patch_base, so->patch_size, &so->patch_head, sz);
+	if (!addr)
+		addr = alloc_branch_space(site, so->cave_base, so->cave_size, &so->cave_head, sz);
+	return addr;
 }
 
 static void trampoline_ldm(so_module *mod, uint32_t *dst) {
@@ -682,7 +683,7 @@ static void trampoline_ldm(so_module *mod, uint32_t *dst) {
 	*ptr++ = dst+1; // .dword <...>	; [dst+0x4]
 
 	size_t trampoline_sz =	((uintptr_t)ptr - (uintptr_t)&funct[0]);
-	uintptr_t patch_addr = so_alloc_arena(mod, B_RANGE, B_OFFSET(dst), trampoline_sz);
+	uintptr_t patch_addr = so_alloc_near(mod, (uintptr_t)dst, trampoline_sz);
 
 	if (!patch_addr) {
 		fatal_error("Failed to patch LDMIA at 0x%08X, unable to allocate space.\n", dst);
@@ -697,6 +698,7 @@ static void trampoline_ldm(so_module *mod, uint32_t *dst) {
 
 // Returns the resolved PLT GOT slot for symbol, so calls made through the PLT can be redirected
 uintptr_t *so_got_slot(so_module *mod, const char *symbol) {
+	so_hook_generation++;
 	for (int i = 0; i < mod->num_relplt; i++) {
 		Elf32_Sym *sym = &mod->dynsym[ELF32_R_SYM(mod->relplt[i].r_info)];
 		if (strcmp(mod->dynstr + sym->st_name, symbol) == 0)
