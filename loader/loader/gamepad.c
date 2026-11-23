@@ -145,6 +145,8 @@ Gamepad yoyo_gamepads[4];
 double stick_deadzone = 0.2;
 
 static void radial_deadzone(double *x, double *y) {
+	if (stick_deadzone == 0.0)
+		return;
 	double m = sqrt(*x * *x + *y * *y);
 	if (m <= stick_deadzone || m == 0.0) {
 		*x = *y = 0.0;

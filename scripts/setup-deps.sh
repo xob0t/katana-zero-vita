@@ -18,6 +18,15 @@ fetch() { # fetch <url> <dir> [branch]
   fi
 }
 
+apply_patch() {
+  if git -C "$1" apply --check "$2" 2>/dev/null; then
+    git -C "$1" apply "$2"
+  elif ! git -C "$1" apply --reverse --check "$2"; then
+    echo "Patch does not apply and is not already applied: $2" >&2
+    return 1
+  fi
+}
+
 VITA_CMAKE=(-DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake" -DCMAKE_BUILD_TYPE=Release)
 
 fetch https://github.com/Rinnegatamante/openal-soft.git openal-soft vgl
@@ -38,16 +47,12 @@ if [ "$(git -C "$BUILD/vitaGL" rev-parse HEAD)" != "$VITAGL_COMMIT" ]; then
   git -C "$BUILD/vitaGL" fetch -q --depth 1 origin "$VITAGL_COMMIT"
   git -C "$BUILD/vitaGL" checkout -q "$VITAGL_COMMIT"
 fi
-if git -C "$BUILD/vitaGL" apply --check "$ROOT/patches/vitagl.patch" 2>/dev/null; then
-  git -C "$BUILD/vitaGL" apply "$ROOT/patches/vitagl.patch"
-fi
+apply_patch "$BUILD/vitaGL" "$ROOT/patches/vitagl.patch"
 make -C "$BUILD/vitaGL" DEPTH_STENCIL_HACK=1 SOFTFP_ABI=1 NO_DEBUG=1 SHARED_RENDERTARGETS=1 NO_SPLASHSCREEN=1 ENABLE_LEGACY_PIPELINE=1 HAVE_SHADER_CACHE=1 -j "$JOBS" install
 
 fetch https://github.com/frangarcj/opensles.git opensles
 # Larger output grain and a high-priority playback thread: the stock 128-frame port crackles under load
-if git -C "$BUILD/opensles" apply --check "$ROOT/patches/opensles.patch" 2>/dev/null; then
-  git -C "$BUILD/opensles" apply "$ROOT/patches/opensles.patch"
-fi
+apply_patch "$BUILD/opensles" "$ROOT/patches/opensles.patch"
 make -C "$BUILD/opensles/libopensles" -j "$JOBS" install
 
 echo "deps OK"

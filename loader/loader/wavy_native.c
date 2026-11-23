@@ -67,19 +67,26 @@ unsigned wavy_reject[16], wavy_reject_kind; // argc, const, yview, hview, argume
 static int verify;
 #define VERIFY_MAX 2048
 static rv verify_args[VERIFY_MAX][12];
-static int verify_n, verify_i;
+static int verify_n, verify_i, verify_drawn; // recorded (at most VERIFY_MAX), compared, strips the native drew
 static builtin_fn verify_real;
 unsigned wavy_verify_calls, wavy_verify_mismatch;
 
 static void verify_part_ext(rv *result, void *self, void *other, int argc, rv *args) {
-	int bad = argc != 12 || verify_i >= verify_n;
+	// Out of bounds (an unexpected argc, more strips than the native recorded or than the record holds): counts only
+	int in_bounds = argc == 12 && verify_i < verify_n && verify_i < VERIFY_MAX;
+	int bad = !in_bounds;
 	for (int k = 0; !bad && k < 12; k++)
 		bad = memcmp(&args[k].val, &verify_args[verify_i][k].val, 8) || (args[k].kind & 0xffffff) !=
 			(verify_args[verify_i][k].kind & 0xffffff);
-	if (bad && wavy_verify_mismatch < 8)
-		debugPrintf("[WAVY] mismatch at strip %d of %d: top %.17g/%.17g x %.17g/%.17g y %.17g/%.17g h %.17g/%.17g\n",
-			verify_i, verify_n, args[3].val, verify_args[verify_i][3].val, args[6].val, verify_args[verify_i][6].val,
-			args[7].val, verify_args[verify_i][7].val, args[5].val, verify_args[verify_i][5].val);
+	if (bad && wavy_verify_mismatch < 8) {
+		if (in_bounds)
+			debugPrintf("[WAVY] mismatch at strip %d of %d: top %.17g/%.17g x %.17g/%.17g y %.17g/%.17g h %.17g/%.17g\n",
+				verify_i, verify_n, args[3].val, verify_args[verify_i][3].val, args[6].val, verify_args[verify_i][6].val,
+				args[7].val, verify_args[verify_i][7].val, args[5].val, verify_args[verify_i][5].val);
+		else
+			debugPrintf("[WAVY] mismatch at strip %d: argc %d, native recorded %d (of %d drawn)\n", verify_i, argc,
+				verify_n, verify_drawn);
+	}
 	wavy_verify_mismatch += bad;
 	wavy_verify_calls++;
 	verify_i++;
@@ -163,6 +170,7 @@ static rv *wavy(void *self, void *other, rv *result, int argc, rv **argv) {
 			args[11] = alpha;
 			wavy_native_strips++;
 			if (verify) {
+				verify_drawn++;
 				if (verify_n < VERIFY_MAX)
 					memcpy(verify_args[verify_n++], args, sizeof(args));
 			} else {
@@ -181,12 +189,12 @@ static rv *wavy(void *self, void *other, rv *result, int argc, rv **argv) {
 		verify_i = 0;
 		orig_wavy(self, other, result, argc, argv);
 		fns[F_PART_EXT]->func = verify_real;
-		if (verify_i != verify_n) {
+		if (verify_i != verify_drawn) {
 			if (wavy_verify_mismatch < 8)
-				debugPrintf("[WAVY] mismatch: original drew %d strips, native %d\n", verify_i, verify_n);
+				debugPrintf("[WAVY] mismatch: original drew %d strips, native %d\n", verify_i, verify_drawn);
 			wavy_verify_mismatch++;
 		}
-		verify_n = 0;
+		verify_n = verify_drawn = 0;
 	}
 	return result;
 }
