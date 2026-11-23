@@ -135,5 +135,7 @@ int mt_fclose(FILE *f) {
 	mt_forget(f);
 	int ret = fclose(f);
 	pthread_mutex_unlock(&mt_lock);
+	extern void hang_io_file_close(void *file);
+	hang_io_file_close(f);
 	return ret;
 }

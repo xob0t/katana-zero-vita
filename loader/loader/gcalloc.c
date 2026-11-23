@@ -35,14 +35,14 @@ static void *(*orig_object_alloc)(unsigned, int, int, int);
 static void count(uintptr_t caller, int kind) {
 	total[kind]++;
 	int obj = cur_object ? *cur_object : -1, type = ev_type ? *ev_type : -1, num = ev_number ? *ev_number : -1;
-	unsigned h = (caller >> 2) * 2654435761u + (unsigned)obj * 40503u;
+	unsigned h = (caller >> 2) * 2654435761u + (unsigned)obj * 40503u + (unsigned)type * 97u + (unsigned)num * 7919u;
 	for (int n = 0; n < SITES; n++) {
 		site_t *s = &sites[(h + n) % SITES];
 		if (!s->count) {
 			*s = (site_t){caller, obj, type, num, kind, 1};
 			return;
 		}
-		if (s->caller == caller && s->object == obj && s->kind == kind) {
+		if (s->caller == caller && s->object == obj && s->type == type && s->number == num && s->kind == kind) {
 			s->count++;
 			return;
 		}
