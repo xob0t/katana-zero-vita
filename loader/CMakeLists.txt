@@ -81,6 +81,7 @@ add_executable(YoYoLoader
   loader/katana_menu.c
   loader/sound_limit.c
   loader/stdio_mt.c
+  loader/asyncsave.c
   loader/glprof.c
   loader/callprof.c
   loader/lz4/lz4.c

@@ -47,6 +47,9 @@ back the original.
 - **Sound limits.** At most 3 copies of one sound and 32 voices at once. Laser deaths start dozens of identical
   sounds and stalled the game mixing them. `sameSoundLimit=0` and `maxVoices=0`.
 - **Lighting updates 30 times a second** in rooms that run at 60. No setting.
+- **Checkpoints are saved in the background.** The game no longer waits for the memory card, which stuttered it for
+  20-90 ms at every checkpoint. If the Vita crashes or loses power right after a checkpoint, that checkpoint can be
+  lost and you continue from the one before; a save is never left half-written. `asyncSave=0`.
 - **Pauses at some room loads.** The game never unloads its texture pages, so over a session it runs out of video
   memory. The loader then clears them all, which costs 1-1.5 s at the next room load. No setting.
 
