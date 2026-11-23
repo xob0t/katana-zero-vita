@@ -18,6 +18,15 @@ fetch() { # fetch <url> <dir> [branch]
   fi
 }
 
+apply_patch() {
+  if git -C "$1" apply --check "$2" 2>/dev/null; then
+    git -C "$1" apply "$2"
+  elif ! git -C "$1" apply --reverse --check "$2"; then
+    echo "Patch does not apply and is not already applied: $2" >&2
+    return 1
+  fi
+}
+
 VITA_CMAKE=(-DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake" -DCMAKE_BUILD_TYPE=Release)
 
 fetch https://github.com/Rinnegatamante/openal-soft.git openal-soft vgl
@@ -42,7 +51,7 @@ if git -C "$BUILD/vitaGL" apply --check "$ROOT/patches/vitagl.patch" 2>/dev/null
   git -C "$BUILD/vitaGL" apply "$ROOT/patches/vitagl.patch"
   # The Makefile doesn't track headers: objects built before the patch would keep the old header code
   make -C "$BUILD/vitaGL" clean
-elif ! git -C "$BUILD/vitaGL" apply --check -R "$ROOT/patches/vitagl.patch" 2>/dev/null; then
+elif ! git -C "$BUILD/vitaGL" apply --reverse --check "$ROOT/patches/vitagl.patch" 2>/dev/null; then
   # The tree carries changes other than the current patch (usually an older version of it): building on would
   # silently leave out the patch's newer changes
   echo "error: $BUILD/vitaGL differs from patches/vitagl.patch; reset it with" >&2
@@ -53,9 +62,7 @@ make -C "$BUILD/vitaGL" DEPTH_STENCIL_HACK=1 SOFTFP_ABI=1 NO_DEBUG=1 SHARED_REND
 
 fetch https://github.com/frangarcj/opensles.git opensles
 # Larger output grain and a high-priority playback thread: the stock 128-frame port crackles under load
-if git -C "$BUILD/opensles" apply --check "$ROOT/patches/opensles.patch" 2>/dev/null; then
-  git -C "$BUILD/opensles" apply "$ROOT/patches/opensles.patch"
-fi
+apply_patch "$BUILD/opensles" "$ROOT/patches/opensles.patch"
 make -C "$BUILD/opensles/libopensles" -j "$JOBS" install
 
 echo "deps OK"

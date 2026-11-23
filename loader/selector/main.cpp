@@ -9,6 +9,7 @@
 #include <sndfile.h>
 #include "../loader/zip.h"
 #include "../loader/unzip.h"
+#include "../loader/yyl_config.h"
 #include "strings.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -60,6 +61,7 @@ extern void video_close();
 
 extern "C" {
 	int debugPrintf(const char *fmt, ...) {return 0;}
+	void debug_flush(void) {}
 	void fatal_error(const char *fmt, ...);
 	extern int runner_loaded;
 };
@@ -337,18 +339,18 @@ int old_sort_idx = -1;
 
 void loadConfig(GameSelection *g) {
 	char configFile[512];
-	char buffer[30];
+	char buffer[YYL_KEY_SIZE];
 	int value;
 	
 	sprintf(configFile, "%s/%s/yyl.cfg", DATA_PATH, g->name);
 	FILE *config = fopen(configFile, "r");
 
 	if (config) {
-		while (EOF != fscanf(config, "%[^=]=%d\n", buffer, &value)) {
+		while (yyl_read_setting(config, buffer, &value)) {
 			if (strcmp("forceGLES1", buffer) == 0) g->gles1 = (bool)value;
 			else if (strcmp("forceBilinear", buffer) == 0) g->bilinear = (bool)value;
 			else if (strcmp("winMode", buffer) == 0) g->plat_target = 1; // Retro compatibility
-			else if (strcmp("platTarget", buffer) == 0) g->plat_target = value;
+			else if (strcmp("platTarget", buffer) == 0 && value >= 0 && value < YYL_PLATFORM_COUNT) g->plat_target = value;
 			else if (strcmp("debugShaders", buffer) == 0) g->debug_shaders = (bool)value;
 			else if (strcmp("debugMode", buffer) == 0) g->debug_mode = (bool)value;
 			else if (strcmp("noSplash", buffer) == 0) g->skip_splash = (bool)value;
@@ -1491,8 +1493,7 @@ void setImguiTheme() {
 	ImGui::GetIO().MouseDrawCursor = false;
 }
 
-#define PLATFORM_NUM 3
-const char *PlatformName[PLATFORM_NUM] = {
+const char *PlatformName[YYL_PLATFORM_COUNT] = {
 	"Android",
 	"Windows",
 	"PS4"
@@ -1889,7 +1890,7 @@ int main(int argc, char *argv[]) {
 				desc = lang_strings[STR_GLES1_DESC];
 			ImGui::PushItemWidth(100.0f);
 			if (ImGui::BeginCombo(lang_strings[STR_PLAT_TARGET], PlatformName[hovered->plat_target])) {
-				for (int n = 0; n < PLATFORM_NUM; n++) {
+				for (int n = 0; n < YYL_PLATFORM_COUNT; n++) {
 					bool is_selected = hovered->plat_target == n;
 					if (ImGui::Selectable(PlatformName[n], is_selected))
 						hovered->plat_target = n;

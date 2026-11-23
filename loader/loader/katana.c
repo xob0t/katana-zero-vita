@@ -410,8 +410,25 @@ void *katana_rx_alloc(size_t size) {
 		opt.attr = 0x1;
 		opt.field_C = RX_ARENA_ADDRESS;
 		SceUID block = kuKernelAllocMemBlock("katana rx", 0x0C20D050 /* USER_RX */, RX_ARENA_SIZE, &opt);
+		// Only if the fixed address is taken, as in the Vita3K emulator, which puts a 9 MB block of uncached
+		// memory at 0x985C6000-0x98E8C000 (on the Vita the fixed address always succeeds): right under the
+		// runner's patch block, in bl range of the same code, else anywhere. Any address does for the
+		// trampolines (absolute jumps); the veneer users check their range.
+		if (block < 0) {
+			SceUID fixed = block;
+			opt.field_C = yoyoloader_mod.patch_base - RX_ARENA_SIZE;
+			block = kuKernelAllocMemBlock("katana rx", 0x0C20D050 /* USER_RX */, RX_ARENA_SIZE, &opt);
+			if (block < 0) {
+				opt.attr = 0;
+				opt.field_C = 0;
+				block = kuKernelAllocMemBlock("katana rx", 0x0C20D050 /* USER_RX */, RX_ARENA_SIZE, &opt);
+			}
+			if (block >= 0 && sceKernelGetMemBlockBase(block, (void **)&rx_arena) >= 0)
+				debugPrintf("rx arena: fixed address taken (0x%08X), at %p instead\n", fixed, rx_arena);
+		}
 		if (block < 0 || sceKernelGetMemBlockBase(block, (void **)&rx_arena) < 0) {
 			debugPrintf("rx arena: allocation failed (0x%08X)\n", block);
+			rx_arena = NULL;
 			return NULL;
 		}
 	}
@@ -468,11 +485,14 @@ static int lz4_page_decompress(char *dest, unsigned *dest_len, char *src, unsign
 		fatal_error("game.apk has bzip2 texture pages. Rebuild it with scripts/prepare_apk.py.");
 	uint32_t block_len;
 	memcpy(&block_len, src + 4, 4);
+	extern volatile int hang_texture_decode;
+	hang_texture_decode = 1;
 	// The runner passes the QOI size from the page header, which prepare_apk.py sets to the exact decoded size: a
 	// shorter result means a damaged page, and the rest of the buffer would be uninitialised
 	int n = block_len <= src_len - 8 ? LZ4_decompress_safe(src + 8, dest, block_len, *dest_len) : -1;
 	if (n < 0 || (unsigned)n != *dest_len)
 		fatal_error("LZ4 texture page failed to decode (%u of %u bytes -> %u): %d", block_len, src_len, *dest_len, n);
+	hang_texture_decode = 0;
 	return 0; // BZ_OK
 }
 
@@ -693,8 +713,15 @@ static int fog_take(void *p) {
 	return 1;
 }
 
+// Discarded puffs that exist now (created, first Step not run yet)
+unsigned fog_doomed_alive(void) {
+	return doomed_fog_count;
+}
+
+// Puffs created, plus those fog_skip.c didn't create: puff n is kept when n % fog_scale == 0
+unsigned fog_created;
+
 static void fog_create(void *self, void *other) {
-	static unsigned created;
 	orig_fog_create(self, other);
 	int room = current_room ? *current_room : -1;
 	if (room != doomed_fog_room) {
@@ -703,12 +730,16 @@ static void fog_create(void *self, void *other) {
 		memset(doomed_fog, 0, sizeof(doomed_fog));
 	}
 	fog_take(self); // a new instance can reuse the memory of a puff destroyed before its first Step
-	if (created++ % fog_scale)
+	if (fog_created++ % fog_scale)
 		fog_mark(self);
 }
 
 static void fog_step(void *self, void *other) {
+	extern void fog_skip_puff_step(void);
+	fog_skip_puff_step();
 	if (fog_take(self)) {
+		extern void fog_skip_doomed_step(void *self);
+		fog_skip_doomed_step(self);
 		fog_instance_destroy(self, other, 0, NULL);
 		fog_puffs_removed++;
 		return;
@@ -731,6 +762,10 @@ static void fog_install(void) {
 	if (fog_instance_destroy && var_draw_alpha && create && step && (orig_fog_step = entry_hook(step, fog_step)))
 		orig_fog_create = entry_hook(create, fog_create);
 	debugPrintf("fog scale %d: %s\n", fog_scale, orig_fog_create && orig_fog_step ? "installed" : "NOT installed");
+	if (orig_fog_create && orig_fog_step) {
+		extern void fog_skip_install(void);
+		fog_skip_install(); // don't create the puffs this would discard (fog_skip.c)
+	}
 }
 
 // The runner's frame limiter (Timing_Wait -> Timing_Sleep(us, spin)) sets a deadline now + us, usleep()s most of
@@ -772,6 +807,8 @@ void katana_late_install(void) {
 	}
 	extern void sound_limit_install(void);
 	sound_limit_install();
+	extern void gcalloc_install(void);
+	gcalloc_install();
 	dissolve_install();
 	fog_install();
 	if (!exp_flag("dossiernative0")) {
@@ -783,6 +820,10 @@ void katana_late_install(void) {
 	if (!exp_flag("wavynative0")) {
 		extern int wavy_native_install(void *(*hook)(uintptr_t entry, void *replacement));
 		debugPrintf("native draw_sprite_wavy: %s\n", wavy_native_install(entry_hook) ? "installed" : "NOT installed");
+	}
+	if (!exp_flag("shadownative0")) {
+		extern int shadow_native_install(void *(*hook)(uintptr_t entry, void *replacement));
+		debugPrintf("native draw_shadow: %s\n", shadow_native_install(entry_hook) ? "installed" : "NOT installed");
 	}
 	appsurf_copy_install();
 	if (orig_lighting_user0) {
@@ -800,6 +841,12 @@ void katana_late_install(void) {
 	if (!exp_flag("inputnative0")) {
 		extern int input_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native controller_check_pressed_ext: %s\n", input_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
+	// Exact native controller_check (held input, held_native.c): 2-4 calls per frame in every gameplay room at
+	// ~145 us each (getters over the on-screen keyboard's key list). exp_heldnative0: the original script.
+	if (!exp_flag("heldnative0")) {
+		extern int held_native_install(void *(*rx_alloc)(size_t));
+		debugPrintf("native controller_check: %s\n", held_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
 	if (!exp_flag("vcapture0")) {
 		extern int virtual_capture_install(void *(*rx_alloc)(size_t));
@@ -828,16 +875,26 @@ void katana_late_install(void) {
 // is drawn.
 void katana_texture_selftest(void) {
 	uintptr_t read_qoif = so_symbol(&yoyoloader_mod, "_Z12ReadQOIFFilePviPiS0_b");
-	uint32_t insn = read_qoif ? *(uint32_t *)(read_qoif + 0xdc) : 0;
+	uintptr_t text = yoyoloader_mod.text_base;
+	size_t size = yoyoloader_mod.text_size;
+	uint32_t insn = 0;
+	if (!(read_qoif & 3) && read_qoif >= text && size >= 0xe0 && read_qoif - text <= size - 0xe0)
+		insn = *(uint32_t *)(read_qoif + 0xdc);
 	if ((insn & 0xff000000) != 0xeb000000) {
 		fatal_error("Texture decoder self-test: unexpected ReadQOIFFile layout (0x%08X); not starting to avoid a GPU crash.", insn);
 	}
 	int32_t imm = (int32_t)(insn << 8) >> 6;
-	int (*decompress)(char *, unsigned *, char *, unsigned, int, int) = (void *)(read_qoif + 0xdc + 8 + imm);
+	uintptr_t target = read_qoif + 0xdc + 8 + imm;
+	if (target < text || target - text > size - 4)
+		fatal_error("Texture decoder self-test: call target outside runner text; refusing to start.");
+	int (*decompress)(char *, unsigned *, char *, unsigned, int, int) = (void *)target;
 
 	static const char plain[] = "Katana ZERO texture self-test payload, Katana ZERO texture self-test payload";
-	char packed[8 + LZ4_COMPRESSBOUND(sizeof(plain))], out[sizeof(plain)];
-	int block = LZ4_compress_default(plain, packed + 8, sizeof(plain), sizeof(packed) - 8);
+	// ReadQOIFFile includes the 12-byte page header in the decoder's input length.
+	char packed[8 + LZ4_COMPRESSBOUND(sizeof(plain)) + 12] = {0}, out[sizeof(plain)];
+	int block = LZ4_compress_default(plain, packed + 8, sizeof(plain), LZ4_COMPRESSBOUND(sizeof(plain)));
+	if (block <= 0)
+		fatal_error("Texture decoder self-test: could not prepare LZ4 payload.");
 	memcpy(packed, "LZ4H", 4);
 	memcpy(packed + 4, &block, 4);
 	unsigned out_len = sizeof(out);
@@ -1053,8 +1110,11 @@ static void patch_performance() {
 		orig_softbody_node_step = orig;
 	if ((orig = gml_replace(table, "gml_Object_obj_rain_Draw_0", rain_draw)))
 		orig_rain_draw = orig;
-	if ((orig = gml_replace(table, "gml_Object_obj_particle_Other_25", particle_draw)))
-		orig_particle_draw = orig;
+	if ((orig = gml_replace(table, "gml_Object_obj_particle_Other_25", particle_draw))) {
+		// In the fog rooms the roll's dust clouds skip their light tint (fogTrailLights=1 keeps it; fog_trail.c)
+		extern event_func fog_trail_install(event_func orig);
+		orig_particle_draw = fog_trail_install(orig);
+	}
 
 	instance_destroy_fn = (void *)so_symbol(&yoyoloader_mod, "_Z22YYGML_instance_destroyP9CInstanceS0_iPP8YYRValue");
 	// rain in yyl.cfg: 0 removes rain entirely (default: first level 39 -> 47 fps), 1 keeps every
@@ -1125,6 +1185,16 @@ static void patch_performance() {
 		extern int letter_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native dialogue letters: %s\n", letter_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
+	// Exact natives of the view tests inside_screen_point / inside_screen (visibility_native.c): the runner's own
+	// global getters and comparisons without the GML temporaries. In-run A/B (exp_visab), process per frame:
+	// haunted_cart2 -0.68 ms (450 + 57 calls), club_4 with smoke -0.43 ms, bunker2_3 -0.23 ms.
+	// exp_visibilitynative0: the original scripts.
+	if (!exp_flag("visibilitynative0")) {
+		extern int visibility_native_install(void *(*rx_alloc)(size_t));
+		int r = visibility_native_install(katana_rx_alloc);
+		debugPrintf("native inside_screen_point %s, inside_screen %s\n", r & 1 ? "installed" : "NOT installed",
+			r & 2 ? "installed" : "NOT installed");
+	}
 	if (!exp_flag("minecartnative0")) { // minecart master and its rail helpers
 		extern int minecart_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native minecart master: %s\n", minecart_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
@@ -1133,11 +1203,28 @@ static void patch_performance() {
 		extern int flash_mask_install(void *(*rx_alloc)(size_t));
 		debugPrintf("flashlight mask culling: %s\n", flash_mask_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
+	// Bike chase: each actor's particle and trail with-loops step over other actors' instances (exact; bike_draw.c)
+	if (!exp_flag("bikedraw0")) {
+		extern int bike_draw_install(void);
+		debugPrintf("bike draw loops: %s\n", bike_draw_install() ? "installed" : "NOT installed");
+	}
+	// update_light_array's loop body runs natively per light (exact; light_array_native.c): particles' Create events
+	if (!exp_flag("lightarray0")) {
+		extern int light_array_install(void *(*rx_alloc)(size_t));
+		debugPrintf("native update_light_array: %s\n", light_array_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
 	// The player's afterimage trails tint themselves from nearby lights: far lights skipped, the tint drawn natively
 	// (exact; trail_lights.c). club_7 while running: 1.9 -> 0.8 ms per frame.
 	if (!exp_flag("traillights0")) {
 		extern int trail_lights_install(void);
 		debugPrintf("trail light culling: %s\n", trail_lights_install() ? "installed" : "NOT installed");
+	}
+	// Lit sprites (particles, the roll's dust clouds, actors) recompute their tint from their nearby lights in
+	// draw_sprite_recolored's with loop whenever global.recolor_timer moves: the loop body runs natively (exact;
+	// recolor_lights.c)
+	if (!exp_flag("recolorlights0")) {
+		extern int recolor_lights_install(void *(*rx_alloc)(size_t));
+		debugPrintf("recolor light loop: %s\n", recolor_lights_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
 	// Club dancers' rim glow (obj_clubber user event 6): each dancer re-tints itself from every nearby club light
 	// with 2-4 outline sprites per light, each drawn twice: ~285 extra draws per frame in the club, 44 fps vs
@@ -1163,6 +1250,12 @@ static void patch_performance() {
 		extern int laser_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native lasers: %s\n", laser_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
+	// Native smoke cloud Draw (smokedraw_native.c): the event with its variable plumbing inlined, every helper, setter
+	// and draw call kept in order (ARM differential fixture work/smokedraw/). exp_smokedraw0 keeps the original GML.
+	if (!exp_flag("smokedraw0")) {
+		extern int smokedraw_native_install(void *(*rx_alloc)(size_t));
+		debugPrintf("native smoke cloud Draw: %s\n", smokedraw_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
 	// Exact natives of obj_orangelight Step and obj_lightback Step, from the static recompiler kill test
 	// (work/cpu_research/kill_test/REPORT.md): the events with the runner's compare/truth/variable helpers inlined
 	// (light_fast_inline.c). room_haunted_cart2 (129 lights): orangelight 2.13 -> 1.53 ms, lightback 0.51 -> 0.42 ms.
@@ -1176,6 +1269,13 @@ static void patch_performance() {
 		extern int light_fast_inline_install(void *(*rx_alloc)(size_t));
 		light_fast_mode = light_fast_inline_install(katana_rx_alloc) ? 2 : 0;
 		debugPrintf("light fast: %s (inline)\n", light_fast_mode ? "installed" : "NOT installed");
+	}
+	// Exact native of the off-screen path of obj_lightback user event 0, the lighting pass's per-light event
+	// (lightback_native.c): visible lights run the original. In-run A/B (exp_lbab): haunted_cart2 (111 of 129
+	// lights off-screen) -0.44 ms process per frame. exp_lightbacknative0: the original for every light.
+	if (!exp_flag("lightbacknative0")) {
+		extern int lightback_native_install(void *(*rx_alloc)(size_t));
+		debugPrintf("native off-screen lightback: %s\n", lightback_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
 	// Cathedral dust (obj_cathedral_dustspawner): every visible spawner redraws all ~208 particles through
 	// event_user(0), ~7.4 ms per frame: room_cathedral runs at 41 fps with it, 59 without. cathedralDust=0 (default)

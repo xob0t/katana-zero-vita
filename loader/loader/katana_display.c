@@ -19,6 +19,7 @@
 #include "dialog.h"
 
 #include "katana_internal.h"
+#include "hang_watch.h"
 
 /*
  * Lighting at 30 Hz: global.recolor_timer is a frame counter, and every lit sprite
@@ -294,12 +295,15 @@ void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
 	if (reason) {
 		failure_pending = 0; // the flush reloads every page, including the one that failed
 		gml_rvalue result = {0};
+		hang_set_stage(HANG_STAGE_TEXFLUSH);
 		texture_flush(&result, NULL, NULL, 0, NULL);
 		// Free the flushed pages now: otherwise vitaGL releases them a few frames later and the reloads,
 		// still not fitting, land in RAM again. Only with no scene open: the flush call itself can open one
 		// (texdrain above); then the drain runs at the start of Draw or after the next swap
 		texdrain_pending = "the page recovery flush";
+		hang_set_stage(HANG_STAGE_GPU_GC);
 		texdrain_run("after the swap");
+		hang_set_stage(HANG_STAGE_AFTER_SWAP);
 		texflush_last_us = sceKernelGetProcessTimeLow();
 		texflush_count++;
 		debugPrintf("[TEXFLUSH] texture pages flushed after %s (%.1f ms); free vram now %uKB\n", reason,

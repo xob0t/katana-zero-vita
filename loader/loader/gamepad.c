@@ -145,6 +145,8 @@ Gamepad yoyo_gamepads[4];
 double stick_deadzone = 0.2;
 
 static void radial_deadzone(double *x, double *y) {
+	if (stick_deadzone == 0.0)
+		return;
 	double m = sqrt(*x * *x + *y * *y);
 	if (m <= stick_deadzone || m == 0.0) {
 		*x = *y = 0.0;
@@ -426,8 +428,11 @@ void GamePadUpdate() {
 		};
 		
 #if !defined(STANDALONE_MODE) && !defined(APP_GAME_NAME)
-		if (new_states[SELECT_BTN] && new_states[START_BTN] && new_states[L1_BTN] && new_states[R1_BTN])
+		if (new_states[SELECT_BTN] && new_states[START_BTN] && new_states[L1_BTN] && new_states[R1_BTN]) {
+			extern int asyncsave_flush(int timeout_ms, const char *why);
+			asyncsave_flush(3000, "back to the selector");
 			sceAppMgrLoadExec("app0:eboot.bin", NULL, NULL);
+		}
 #endif
 
 #ifdef APP_GAME_NAME

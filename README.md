@@ -44,9 +44,14 @@ back the original.
   refresh while the CPU has time to spare, drops to 640x360 until the next room. `dynamicRes=0`.
 - **Coarser laser deaths.** The body is cut into 4 times fewer, 4 times thicker slices. `dissolveChunkScale=1`.
 - **Thinner prison fog.** One puff in 4 is kept and drawn denser. `fogScale=1`.
+- **Unlit roll dust in fog.** In the foggy rooms (the prison, the neighbour's party) the dust clouds a roll kicks up
+  get one fixed pale tint instead of being lit by the lights around them. Rolling there: 57 -> 59 fps. `fogTrailLights=1`.
 - **Sound limits.** At most 3 copies of one sound and 32 voices at once. Laser deaths start dozens of identical
   sounds and stalled the game mixing them. `sameSoundLimit=0` and `maxVoices=0`.
 - **Lighting updates 30 times a second** in rooms that run at 60. No setting.
+- **Checkpoints are saved in the background.** The game no longer waits for the memory card, which stuttered it for
+  20-90 ms at every checkpoint. If the Vita crashes or loses power right after a checkpoint, that checkpoint can be
+  lost and you continue from the one before; a save is never left half-written. `asyncSave=0`.
 - **Pauses at some room loads.** The game never unloads its texture pages, so over a session it runs out of video
   memory. The loader then clears them all, which costs 1-1.5 s at the next room load. No setting.
 
