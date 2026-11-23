@@ -9,10 +9,14 @@
  */
 
 #include <vitasdk.h>
+#include <errno.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
+#include "file_replace.h"
 #include "main.h"
 #include "so_util.h"
 
@@ -35,13 +39,24 @@ typedef struct {
 	void **object_array;
 } nfx_ext_func;
 
-static char *nfx_slot_path(const char *slot) {
-	static char path[512];
-	char dir[512];
-	sprintf(dir, "%snetflix/", data_path);
+typedef struct {
+	char save[512], backup[520], legacy[520], stage[520];
+} nfx_slot_paths;
+
+// Save I/O is infrequent. One lock also covers slot names that alias on FAT.
+static pthread_mutex_t nfx_slot_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int nfx_slot_path(nfx_slot_paths *paths, const char *slot) {
+	char dir[sizeof(data_path) + sizeof("netflix/")];
+	snprintf(dir, sizeof(dir), "%snetflix/", data_path);
 	recursive_mkdir(dir);
-	sprintf(path, "%s%s.sav", dir, slot);
-	return path;
+	int len = snprintf(paths->save, sizeof(paths->save), "%s%s.sav", dir, slot);
+	if (len < 0 || (size_t)len >= sizeof(paths->save))
+		return -1;
+	snprintf(paths->backup, sizeof(paths->backup), "%s.bak", paths->save);
+	snprintf(paths->legacy, sizeof(paths->legacy), "%s.tmp", paths->save);
+	snprintf(paths->stage, sizeof(paths->stage), "%s.new", paths->save);
+	return 0;
 }
 
 // CreateDsMap takes (key, double, string) triplets; a non-NULL string wins over the double
@@ -63,51 +78,86 @@ static void *nfx_return_double(double val) {
 	return &jni_double;
 }
 
-static char *nfx_read_file(const char *path) {
+// Return 1 for a missing file, or -1 for a read failure.
+static int nfx_read_file(const char *path, char **data) {
 	FILE *f = fopen(path, "rb");
 	if (!f)
-		return NULL;
-	fseek(f, 0, SEEK_END);
-	long size = ftell(f);
-	fseek(f, 0, SEEK_SET);
-	char *buf = size >= 0 ? malloc(size + 1) : NULL;
+		return errno == ENOENT ? 1 : -1;
+	long size = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
+	char *buf = size >= 0 && fseek(f, 0, SEEK_SET) == 0 ? malloc((size_t)size + 1) : NULL;
 	if (buf && fread(buf, 1, size, f) != (size_t)size) {
 		free(buf);
 		buf = NULL;
 	}
-	if (buf)
-		buf[size] = 0;
-	fclose(f);
-	return buf;
-}
-
-static char *nfx_read_slot(const char *slot) {
-	char *path = nfx_slot_path(slot);
-	char *data = nfx_read_file(path);
-	if (!data) {
-		// A crash between nfx_write_slot's remove and rename leaves only the new save in the temp file
-		char tmp[520];
-		snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-		data = nfx_read_file(tmp);
+	if (fclose(f) != 0 || !buf) {
+		free(buf);
+		return -1;
 	}
-	return data;
+	buf[size] = 0;
+	*data = buf;
+	return 0;
 }
 
-static int nfx_write_slot(const char *slot, const char *data) {
-	// Write to a temp file first so a crash mid-save can't corrupt the existing slot
-	char tmp[512];
-	char *path = nfx_slot_path(slot);
-	sprintf(tmp, "%s.tmp", path);
-	FILE *f = fopen(tmp, "wb");
+static int nfx_read_slot(const char *slot, char **data) {
+	nfx_slot_paths paths;
+	pthread_mutex_lock(&nfx_slot_lock);
+	int res = nfx_slot_path(&paths, slot);
+	if (!res) {
+		res = nfx_read_file(paths.save, data);
+		if (res == 1) {
+			// No .sav: a write stopped between its two renames. .sav only becomes .bak after the
+			// complete .new was written, synced and closed, so with a .bak present .new is the newer
+			// save. Without a .bak, .new may be incomplete and is never read.
+			res = nfx_read_file(paths.backup, data);
+			char *staged = NULL;
+			if (res == 0 && nfx_read_file(paths.stage, &staged) == 0) {
+				free(*data);
+				*data = staged;
+			}
+		}
+		// Older loaders can leave only .tmp
+		if (res == 1)
+			res = nfx_read_file(paths.legacy, data);
+	}
+	pthread_mutex_unlock(&nfx_slot_lock);
+	return res < 0 ? -1 : 0;
+}
+
+static int nfx_commit_slot(const nfx_slot_paths *paths, const char *data) {
+	FILE *f = fopen(paths->stage, "wb");
 	if (!f)
 		return -1;
 	size_t len = strlen(data);
-	int ok = fwrite(data, 1, len, f) == len;
-	fclose(f);
-	if (!ok)
+	int ok = fwrite(data, 1, len, f) == len && fflush(f) == 0 && fsync(fileno(f)) == 0;
+	if (fclose(f) != 0)
+		ok = 0;
+	if (!ok || replace_file(paths->stage, paths->save, paths->backup) < 0) {
+		remove_if_present(paths->stage);
 		return -1;
-	sceIoRemove(path);
-	return sceIoRename(tmp, path) < 0 ? -1 : 0;
+	}
+	remove_if_present(paths->legacy);
+	return 0;
+}
+
+static int nfx_write_slot(const char *slot, const char *data) {
+	nfx_slot_paths paths;
+	pthread_mutex_lock(&nfx_slot_lock);
+	int res = nfx_slot_path(&paths, slot);
+	if (!res)
+		res = nfx_commit_slot(&paths, data);
+	pthread_mutex_unlock(&nfx_slot_lock);
+	return res;
+}
+
+static int nfx_delete_slot(const char *slot) {
+	nfx_slot_paths paths;
+	pthread_mutex_lock(&nfx_slot_lock);
+	// Remove recovery files first so a partial delete cannot resurrect one.
+	int ok = nfx_slot_path(&paths, slot) == 0 &&
+		remove_if_present(paths.stage) >= 0 && remove_if_present(paths.legacy) >= 0 &&
+		remove_if_present(paths.backup) >= 0 && remove_if_present(paths.save) >= 0;
+	pthread_mutex_unlock(&nfx_slot_lock);
+	return ok ? 0 : -1;
 }
 
 static const char *nfx_locale() {
@@ -149,9 +199,10 @@ void *netflix_call(void *ext) {
 	} else if (!strcmp(m, "NfxaCloudRead")) {
 		if (!arg0)
 			return nfx_return_double(0.0);
-		char *data = nfx_read_slot(arg0);
-		debugPrintf("Nfxa: read slot %s (%s)\n", arg0, data ? "found" : "empty");
-		nfx_send_event("Nfx_cloudRead", data ? "string" : NULL, data, "error", 0.0);
+		char *data = NULL;
+		int err = nfx_read_slot(arg0, &data);
+		debugPrintf("Nfxa: read slot %s (%s)\n", arg0, err ? "failed" : data ? "found" : "empty");
+		nfx_send_event("Nfx_cloudRead", data ? "string" : NULL, data, "error", (double)err);
 		free(data);
 		return nfx_return_double(1.0);
 	} else if (!strcmp(m, "NfxaCloudWrite")) {
@@ -161,14 +212,15 @@ void *netflix_call(void *ext) {
 		hang_io_begin(); // save I/O: no freeze-locator dump meanwhile
 		int err = nfx_write_slot(arg0, arg1);
 		hang_io_end();
-		debugPrintf("Nfxa: write slot %s (%d bytes) = %d\n", arg0, strlen(arg1), err);
+		debugPrintf("Nfxa: write slot %s (%u bytes) = %d\n", arg0, (unsigned)strlen(arg1), err); // the Vita printf has no %zu
 		nfx_send_event("Nfx_cloudWrite", NULL, NULL, "error", (double)err);
 		return nfx_return_double(1.0);
 	} else if (!strcmp(m, "NfxaCloudDelete")) {
 		if (!arg0)
 			return nfx_return_double(0.0);
-		sceIoRemove(nfx_slot_path(arg0));
-		nfx_send_event("Nfx_cloudDelete", NULL, NULL, "error", 0.0);
+		int err = nfx_delete_slot(arg0);
+		debugPrintf("Nfxa: delete slot %s = %d\n", arg0, err);
+		nfx_send_event("Nfx_cloudDelete", NULL, NULL, "error", (double)err);
 		return nfx_return_double(1.0);
 	} else if (!strcmp(m, "NfxaCloudResolve")) {
 		nfx_send_event("Nfx_cloudResolve", NULL, NULL, "error", 0.0);

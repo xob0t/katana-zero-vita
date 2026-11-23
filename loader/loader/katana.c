@@ -832,16 +832,26 @@ void katana_late_install(void) {
 // is drawn.
 void katana_texture_selftest(void) {
 	uintptr_t read_qoif = so_symbol(&yoyoloader_mod, "_Z12ReadQOIFFilePviPiS0_b");
-	uint32_t insn = read_qoif ? *(uint32_t *)(read_qoif + 0xdc) : 0;
+	uintptr_t text = yoyoloader_mod.text_base;
+	size_t size = yoyoloader_mod.text_size;
+	uint32_t insn = 0;
+	if (!(read_qoif & 3) && read_qoif >= text && size >= 0xe0 && read_qoif - text <= size - 0xe0)
+		insn = *(uint32_t *)(read_qoif + 0xdc);
 	if ((insn & 0xff000000) != 0xeb000000) {
 		fatal_error("Texture decoder self-test: unexpected ReadQOIFFile layout (0x%08X); not starting to avoid a GPU crash.", insn);
 	}
 	int32_t imm = (int32_t)(insn << 8) >> 6;
-	int (*decompress)(char *, unsigned *, char *, unsigned, int, int) = (void *)(read_qoif + 0xdc + 8 + imm);
+	uintptr_t target = read_qoif + 0xdc + 8 + imm;
+	if (target < text || target - text > size - 4)
+		fatal_error("Texture decoder self-test: call target outside runner text; refusing to start.");
+	int (*decompress)(char *, unsigned *, char *, unsigned, int, int) = (void *)target;
 
 	static const char plain[] = "Katana ZERO texture self-test payload, Katana ZERO texture self-test payload";
-	char packed[8 + LZ4_COMPRESSBOUND(sizeof(plain))], out[sizeof(plain)];
-	int block = LZ4_compress_default(plain, packed + 8, sizeof(plain), sizeof(packed) - 8);
+	// ReadQOIFFile includes the 12-byte page header in the decoder's input length.
+	char packed[8 + LZ4_COMPRESSBOUND(sizeof(plain)) + 12] = {0}, out[sizeof(plain)];
+	int block = LZ4_compress_default(plain, packed + 8, sizeof(plain), LZ4_COMPRESSBOUND(sizeof(plain)));
+	if (block <= 0)
+		fatal_error("Texture decoder self-test: could not prepare LZ4 payload.");
 	memcpy(packed, "LZ4H", 4);
 	memcpy(packed + 4, &block, 4);
 	unsigned out_len = sizeof(out);
