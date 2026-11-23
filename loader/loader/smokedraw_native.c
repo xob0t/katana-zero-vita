@@ -56,8 +56,15 @@
 #include "so_util.h"
 extern int debugMode;
 #endif
+void *entry_hook(uintptr_t entry, void *replacement);
 
 #define ABI __attribute__((pcs("aapcs")))
+#ifdef SMOKEDRAW_TEST
+int smokedraw_test_bug; // fixture only: deliberate faults the exp_smokeverify comparison must catch
+#define BUG(n) (smokedraw_test_bug == (n))
+#else
+#define BUG(n) 0
+#endif
 
 typedef struct {
 	union {
@@ -122,7 +129,7 @@ static uintptr_t calls[NCALLS];
 
 // Runner functions the native stands in for (whole or for plain reals): they must be the audited code (no entry or
 // GOT hook), else the event runs as compiled. {symbol, ELF address, first two instruction words}
-enum { B_GET, B_REF, B_GV_X, B_GV_Y, B_GV_XSCALE, B_GV_YSCALE, B_GV_ANGLE, B_GV_ALPHA, B_GV_SPRITE, B_FIRST_PLAIN };
+enum { B_GET, B_REF, B_GV_X, B_GV_Y, B_GV_XSCALE, B_GV_YSCALE, B_GV_ANGLE, B_GV_ALPHA, B_GV_SPRITE, B_GV_INDEX };
 static const struct {
 	const char *name;
 	uint32_t addr, w0, w1;
@@ -136,6 +143,7 @@ static const struct {
 	{"_Z13GV_ImageAngleP9CInstanceiP6RValue", 0xf84b2c, 0xed900a2b, 0xe3a00000},
 	{"_Z13GV_ImageAlphaP9CInstanceiP6RValue", 0xf84b48, 0xed900a2c, 0xe3a00000},
 	{"_Z14GV_SpriteIndexP9CInstanceiP6RValue", 0xf848e8, 0xe3a0100f, 0xe5900088},
+	{"_Z13GV_ImageIndexP9CInstanceiP6RValue", 0xf84908, 0xe92d4c10, 0xe28db008}, // called, but must be this one
 	{"_Z23YYGML_Variable_GetValueRK8YYRValueiiP6RValuebb", 0xf89eb0, 0xe92d4ef0, 0xe28db018},
 	{"_Z24Variable_GetValue_DirectP12YYObjectBaseiiP6RValuebb", 0xf891d0, 0xe92d4ff0, 0xe28db01c},
 	{"_Z24Variable_SetValue_DirectP12YYObjectBaseiiP6RValue", 0xf8936c, 0xe92d4df0, 0xe28db018},
@@ -186,13 +194,15 @@ static bvar_fn set_fn[NVARS], get_image_index;
 static event_fn original;
 static int installed;
 static uint32_t validated_frame;
+static unsigned validated_generation;
 static int validated;
 
 int smokedraw_ab, smokedraw_ab_off, smokedraw_prof, smokedraw_verify;
 unsigned smokedraw_native_calls, smokedraw_fallbacks;
 unsigned smokedraw_reject_line[8], smokedraw_reject_count[8];
 unsigned smokedraw_prof_us, smokedraw_prof_calls;
-unsigned smokedraw_verified, smokedraw_mismatches;
+unsigned smokedraw_verified, smokedraw_mismatches, smokedraw_verify_records, smokedraw_verify_skipped;
+unsigned smokedraw_verify_unrecorded;
 
 static int reject(unsigned line) {
 	for (int i = 0; i < 8; i++)
@@ -389,8 +399,10 @@ static int validate(void) {
 		const uint8_t *e = builtin_variables + 16 * id[n];
 		if (n <= V_SPRITE_INDEX)
 			REQUIRE(word(e, 4) == bypassed_addr[B_GV_X + (n - V_X)]);
-		if (n == V_IMAGE_INDEX)
-			REQUIRE((get_image_index = (bvar_fn)(uintptr_t)word(e, 4)) != NULL);
+		if (n == V_IMAGE_INDEX) { // GV_ImageIndex (writes a real, never a value that needs freeing)
+			REQUIRE(word(e, 4) == bypassed_addr[B_GV_INDEX]);
+			get_image_index = (bvar_fn)bypassed_addr[B_GV_INDEX];
+		}
 		if (builtin_write[n]) {
 			REQUIRE(e[12] && word(e, 8));
 			set_fn[n] = (bvar_fn)(uintptr_t)word(e, 8);
@@ -405,11 +417,14 @@ static int validate(void) {
 	return 1;
 }
 
-// Entry checks: nothing here has an effect
+// Entry checks: nothing here has an effect. The static ones run again each frame and after any hook install
+// (so_hook_generation: hook_addr/hook_arm/hook_thumb and so_got_slot bump it).
 static inline int admit(void *self, void *other) {
 	uint32_t frame = *frame_counter;
-	if (frame != validated_frame || !validated) {
+	unsigned generation = so_hook_generation;
+	if (frame != validated_frame || generation != validated_generation || !validated) {
 		validated_frame = frame;
+		validated_generation = generation;
 		validated = validate();
 	}
 	REQUIRE(validated);
@@ -452,7 +467,8 @@ static void native_event(void *self, void *other) {
 		tr.line = 17;
 		script_result(&result);
 		assign_rv(&arg[0], const_false);
-		((script_fn)calls[C_LIGHTS])(self, other, &result, 1, args);
+		if (!BUG(1))
+			((script_fn)calls[C_LIGHTS])(self, other, &result, 1, args);
 		tr.line = 18;
 		RV *timer = ref(self, V_UPDATE_LIGHT_TIMER);
 		free_rv(timer);
@@ -548,7 +564,8 @@ static void native_event(void *self, void *other) {
 				assign_rv(&arg[i], &img[i]);
 			}
 			assign_rv(&arg[7], const_false);
-			((script_fn)calls[C_RECOLORED])(self, other, &result, 8, args);
+			if (!BUG(4))
+				((script_fn)calls[C_RECOLORED])(self, other, &result, 8, args);
 
 			tr.line = 47;
 			if ((truth(g_blackout) || truth(get_std(self, V_BLACKOUT))) && !truth(get_std(self, V_SPARK))) {
@@ -577,22 +594,23 @@ static void native_event(void *self, void *other) {
 				bset(self, V_IMAGE_BLEND, &blend);
 				tr.line = 60;
 				RV *ra = get_std(self, V_REAL_ALPHA);
-				alpha_product(ra, get_std(self, V_ALPHA), &alpha);
+				alpha_product(ra, BUG(2) ? get(other, V_ALPHA) : get_std(self, V_ALPHA), &alpha);
 				bset(self, V_IMAGE_ALPHA, &alpha);
 
 				tr.line = 62;
 				RV *light_col = get_std(self, V_LIGHT_COL);
 				RV index, a;
+				int32_t sprite_id = (int32_t)word(self, 0x88); // read before image_index, as the original does
 				index.kind = 0xffffff;
 				get_image_index(self, ARRAY_INDEX, &index);
-				int sprite = (int)((d2l_fn)calls[C_D2L])((double)(int32_t)word(self, 0x88));
+				int sprite = (int)((d2l_fn)calls[C_D2L])((double)sprite_id);
 				double subimg = real_of(&index);
 				float x = field(self, 0xb8), y = field(self, 0xbc), xs = field(self, 0xa4), ys = field(self, 0xa8),
 					rot = field(self, 0xac);
 				int colour = (int)((int64_fn)calls[C_INT64])(light_col);
 				bget_field(self, 0xb0, &a);
 				((draw_ext_fn)calls[C_DRAW_EXT])(self, sprite, (float)subimg, x, y, xs, ys, rot, colour,
-					(float)a.v.d);
+					(float)(BUG(5) ? a.v.d * 0.5 : a.v.d));
 			}
 		} else {
 			tr.line = 69;
@@ -658,7 +676,8 @@ static void native_event(void *self, void *other) {
 		RV tmp = *get_std(self, V_AX);
 		copy_rv(&back, &tmp);
 	}
-	bset(self, V_X, &back);
+	if (!BUG(3))
+		bset(self, V_X, &back);
 	free_rv(&back);
 	free_rv(&result);
 	free_rv(&ynew);
@@ -698,72 +717,115 @@ static void ABI smokedraw_event(void *self, void *other) {
 }
 
 /*
- * exp_smokeverify (debug): the original runs first with draw_self/draw_sprite_ext recorded and not submitted; the
- * cloud's variables (non-owning slots), image fields and the random state go back to their entry values; the native
- * runs with its draws recorded and submitted; draws, variables (flags of ay/ax/angle ignored), the instance's
- * fields 0x7c and 0x88..0xc0 and the random state are compared.
+ * exp_smokeverify (debug builds): both versions run on every cloud, from the same state, and are compared.
+ * 1. Snapshot the cloud: every variable slot, instance fields 0x7c..0xc0 (position, image state, flags), RNG.
+ * 2. The original runs. Its script calls (update_light_array, inside_screen, update_region, draw_sprite_recolored:
+ *    arguments and returned value) and every sprite submission (CSprite::Draw arguments and the instance it draws
+ *    for) are recorded. Submissions are not rendered; draw_self/draw_sprite_ext still run down to CSprite::Draw, so
+ *    their state effects (the +0x9c frame offset, ms_drawInstance) happen.
+ * 3. The snapshot is put back (variable values that own nothing, the fields, the RNG).
+ * 4. The native runs with the same recording, rendered normally.
+ * 5. Compared: the ordered records, every variable slot (the flags word of ay/ax/angle excepted: the original leaves
+ *    stack bytes there), fields 0x7c..0xc0, RNG.
+ * State outside the cloud that the original's scripts write (light rdist, close_light_array elements, room-seed
+ * scratch fields) is not put back. The second pass can't depend on it: those scripts write each of these before
+ * reading it, so the same calls with the same arguments (compared in 5) write the same values, and a script call the
+ * native skips or adds shows up in the records.
+ * Script calls are recorded through entry hooks installed at startup; a script whose entry is already hooked (the
+ * heavy profiler's stage hooks, a native) isn't recorded and the report says so.
  */
-#ifndef SMOKEDRAW_TEST
-#define MAX_DRAWS 8
-#define MAX_SLOTS 192
+#define MAX_RECORDS 16
+enum { R_SCRIPT = 1, R_SPRITE = 8 };
 typedef struct {
-	uint32_t kind; // 0: draw_self (fields copied), 1: draw_sprite_ext
-	uint8_t data[60];
-} Draw;
-static Draw draws[2][MAX_DRAWS];
-static int draw_count[2], capture = -1, capture_skip;
-static draw_self_fn orig_draw_self;
-static draw_ext_fn orig_draw_ext;
+	uint32_t kind; // R_SCRIPT + script index, or R_SPRITE
+	uint32_t w[44];
+} Record;
+typedef void ABI (*sprite_draw_fn)(void *sprite, float subimg, float x, float y, float xs, float ys, float rot,
+	uint32_t colour, float alpha);
+static const char *const script_names[4] = {
+	"_Z29gml_Script_update_light_arrayP9CInstanceS0_R8YYRValueiPPS1_",
+	"_Z24gml_Script_inside_screenP9CInstanceS0_R8YYRValueiPPS1_",
+	"_Z24gml_Script_update_regionP9CInstanceS0_R8YYRValueiPPS1_",
+	"_Z32gml_Script_draw_sprite_recoloredP9CInstanceS0_R8YYRValueiPPS1_",
+};
+static script_fn script_orig[4];
+static sprite_draw_fn orig_sprite_draw;
+static void **draw_instance;
 static uint32_t *rng_state, *rng_index;
+static Record records[2][MAX_RECORDS];
+static int record_count[2], capture = -1, capture_skip;
 
-static void ABI capture_draw_self(void *inst) {
-	if (capture >= 0) {
-		if (draw_count[capture] < MAX_DRAWS) {
-			Draw *d = &draws[capture][draw_count[capture]];
-			d->kind = 0;
-			memcpy(d->data, &inst, 4);
-			memcpy(d->data + 4, (uint8_t *)inst + 0x88, 56); // sprite .. y (0x88..0xc0)
-		}
-		draw_count[capture]++;
-		if (capture_skip)
-			return;
-	}
-	orig_draw_self(inst);
+static Record *new_record(uint32_t kind) {
+	int n = record_count[capture]++;
+	if (n >= MAX_RECORDS)
+		return NULL; // still counted: an overflow fails the comparison
+	Record *r = &records[capture][n];
+	memset(r, 0, sizeof(*r));
+	r->kind = kind;
+	return r;
 }
-static void ABI capture_draw_ext(void *inst, int sprite, float subimg, float x, float y, float xs, float ys, float rot,
-		int colour, float alpha) {
+static RV *ABI record_script(int k, void *self, void *other, RV *result, int argc, RV **args) {
+	Record *r = NULL;
+	if (capture >= 0 && (r = new_record(R_SCRIPT + k)) != NULL) {
+		r->w[0] = (uint32_t)(uintptr_t)self;
+		r->w[1] = (uint32_t)(uintptr_t)other;
+		r->w[2] = (uint32_t)argc;
+		for (int i = 0; i < argc && i < 8 && args; i++) { // value and kind (the flags word: see above)
+			memcpy(&r->w[3 + 4 * i], &args[i]->v, 8);
+			r->w[5 + 4 * i] = args[i]->kind;
+		}
+	}
+	int which = capture;
+	RV *out = script_orig[k](self, other, result, argc, args);
+	if (r && which == capture) {
+		memcpy(&r->w[40], &out->v, 8);
+		r->w[42] = out->kind;
+		r->w[43] = 1;
+	}
+	return out;
+}
+static RV *ABI record_lights(void *s, void *o, RV *r, int c, RV **a) { return record_script(0, s, o, r, c, a); }
+static RV *ABI record_inside(void *s, void *o, RV *r, int c, RV **a) { return record_script(1, s, o, r, c, a); }
+static RV *ABI record_region(void *s, void *o, RV *r, int c, RV **a) { return record_script(2, s, o, r, c, a); }
+static RV *ABI record_recolored(void *s, void *o, RV *r, int c, RV **a) { return record_script(3, s, o, r, c, a); }
+static void *const script_recorders[4] = {(void *)record_lights, (void *)record_inside, (void *)record_region,
+	(void *)record_recolored};
+
+static void ABI record_sprite_draw(void *sprite, float subimg, float x, float y, float xs, float ys, float rot,
+		uint32_t colour, float alpha) {
 	if (capture >= 0) {
-		if (draw_count[capture] < MAX_DRAWS) {
-			Draw *d = &draws[capture][draw_count[capture]];
+		Record *r = new_record(R_SPRITE);
+		if (r) {
 			float f[7] = {subimg, x, y, xs, ys, rot, alpha};
-			d->kind = 1;
-			memset(d->data, 0, sizeof(d->data));
-			memcpy(d->data, &inst, 4);
-			memcpy(d->data + 4, &sprite, 4);
-			memcpy(d->data + 8, &colour, 4);
-			memcpy(d->data + 12, f, sizeof(f));
+			r->w[0] = (uint32_t)(uintptr_t)sprite;
+			r->w[1] = colour;
+			memcpy(&r->w[2], f, sizeof(f));
+			r->w[9] = (uint32_t)(uintptr_t)*draw_instance;
 		}
-		draw_count[capture]++;
 		if (capture_skip)
 			return;
 	}
-	orig_draw_ext(inst, sprite, subimg, x, y, xs, ys, rot, colour, alpha);
+	orig_sprite_draw(sprite, subimg, x, y, xs, ys, rot, colour, alpha);
 }
 
+#define MAX_SLOTS 192
 typedef struct {
 	uint32_t key;
 	RV *slot;
 	RV value;
 } Slot;
+// The cloud's variables in table order, or -1 if there are more than MAX_SLOTS
 static int snapshot_vars(void *self, Slot *out) {
 	const uint8_t *ht = (const uint8_t *)(uintptr_t)word(self, 0x24);
 	uint32_t n = word(ht, 8) + 1;
 	const uint8_t *entries = (const uint8_t *)(uintptr_t)word(ht, 16);
 	int count = 0;
-	for (uint32_t i = 0; i < n && count < MAX_SLOTS; i++) {
+	for (uint32_t i = 0; i < n; i++) {
 		uint32_t k = word(entries + 12 * i, 8);
 		RV *slot = (RV *)(uintptr_t)word(entries + 12 * i, 0);
 		if (k && slot) {
+			if (count == MAX_SLOTS)
+				return -1;
 			out[count].key = k;
 			out[count].slot = slot;
 			out[count].value = *slot;
@@ -773,34 +835,37 @@ static int snapshot_vars(void *self, Slot *out) {
 	return count;
 }
 
+#define FIELDS_FROM 0x7c
+#define FIELDS_TO 0xc0
 static void verify_event(void *self, void *other) {
 	static Slot before[MAX_SLOTS], after_gml[MAX_SLOTS], after_native[MAX_SLOTS];
-	static uint8_t fields_before[0xc0], fields_gml[0xc0];
+	uint8_t fields_before[FIELDS_TO - FIELDS_FROM], fields_gml[FIELDS_TO - FIELDS_FROM];
 	uint32_t rng_before[17], rng_gml[17];
 	int nb = snapshot_vars(self, before);
-	memcpy(fields_before, self, sizeof(fields_before));
+	if (nb < 0) { // too many variables to put back: just run the native
+		smokedraw_verify_skipped++;
+		native_event(self, other);
+		return;
+	}
+	memcpy(fields_before, (uint8_t *)self + FIELDS_FROM, sizeof(fields_before));
 	memcpy(rng_before, rng_state, 64);
 	rng_before[16] = *rng_index;
 
-	draw_count[0] = draw_count[1] = 0;
+	record_count[0] = record_count[1] = 0;
 	capture = 0;
 	capture_skip = 1;
 	original(self, other);
 	capture = -1;
 	capture_skip = 0;
 	int ng = snapshot_vars(self, after_gml);
-	memcpy(fields_gml, self, sizeof(fields_gml));
+	memcpy(fields_gml, (uint8_t *)self + FIELDS_FROM, sizeof(fields_gml));
 	memcpy(rng_gml, rng_state, 64);
 	rng_gml[16] = *rng_index;
 
-	// Back to the entry state: plain variable values, image fields (index, scales, angle, alpha, blend) and their
-	// derived 0x4000 flag, the random state. Owning slots (arrays: close_light_array) keep their contents.
 	for (int i = 0; i < nb; i++)
 		if (!owning(&before[i].value) && !owning(before[i].slot))
 			*before[i].slot = before[i].value;
-	memcpy((uint8_t *)self + 0x98, fields_before + 0x98, 0xb8 - 0x98);
-	uint32_t flags7c = (word(self, 0x7c) & ~0x4000u) | (word(fields_before, 0x7c) & 0x4000u);
-	memcpy((uint8_t *)self + 0x7c, &flags7c, 4);
+	memcpy((uint8_t *)self + FIELDS_FROM, fields_before, sizeof(fields_before));
 	memcpy(rng_state, rng_before, 64);
 	*rng_index = rng_before[16];
 
@@ -809,35 +874,59 @@ static void verify_event(void *self, void *other) {
 	capture = -1;
 
 	int nn = snapshot_vars(self, after_native);
-	int ok = draw_count[0] == draw_count[1] && draw_count[0] <= MAX_DRAWS &&
-		!memcmp(draws[0], draws[1], sizeof(Draw) * draw_count[0]) && ng == nn &&
-		!memcmp(rng_state, rng_gml, 64) && *rng_index == rng_gml[16] &&
-		!memcmp((uint8_t *)self + 0x7c, fields_gml + 0x7c, 4) && !memcmp((uint8_t *)self + 0x88, fields_gml + 0x88, 0x38);
-	int bad_slot = -1;
-	for (int i = 0; ok && i < ng; i++) {
+	int records_ok = record_count[0] == record_count[1] && record_count[0] <= MAX_RECORDS &&
+		!memcmp(records[0], records[1], sizeof(Record) * record_count[0]);
+	int fields_ok = !memcmp((uint8_t *)self + FIELDS_FROM, fields_gml, sizeof(fields_gml));
+	int rng_ok = !memcmp(rng_state, rng_gml, 64) && *rng_index == rng_gml[16];
+	int bad_slot = ng < 0 || ng != nn ? -2 : -1;
+	for (int i = 0; bad_slot == -1 && i < ng; i++) {
 		const Slot *a = &after_gml[i], *n = &after_native[i];
 		int loose = a->key == (uint32_t)id[V_AY] + 1 || a->key == (uint32_t)id[V_AX] + 1 ||
 			a->key == (uint32_t)id[V_ANGLE] + 1;
 		if (a->key != n->key || a->slot != n->slot || a->value.kind != n->value.kind ||
-				memcmp(&a->value.v, &n->value.v, 8) || (!loose && a->value.flags != n->value.flags)) {
-			ok = 0;
+				memcmp(&a->value.v, &n->value.v, 8) || (!loose && a->value.flags != n->value.flags))
 			bad_slot = i;
-		}
 	}
-	if (ok) {
+	if (records_ok && fields_ok && rng_ok && bad_slot == -1) {
 		smokedraw_verified++;
-	} else if (smokedraw_mismatches++ < 8) {
-		debugPrintf("[SMOKEDRAW] mismatch: draws %d/%d slots %d/%d bad slot %d (key %u) rng %s fields %s\n",
-			draw_count[0], draw_count[1], ng, nn, bad_slot, bad_slot >= 0 ? after_gml[bad_slot].key : 0,
-			!memcmp(rng_state, rng_gml, 64) ? "same" : "differs",
-			!memcmp((uint8_t *)self + 0x88, fields_gml + 0x88, 0x38) ? "same" : "differ");
-		for (int k = 0; k < draw_count[0] && k < draw_count[1] && k < MAX_DRAWS; k++)
-			if (memcmp(&draws[0][k], &draws[1][k], sizeof(Draw)))
-				debugPrintf("[SMOKEDRAW]   draw %d (kind %u/%u) differs\n", k, draws[0][k].kind, draws[1][k].kind);
-		for (int o = 0x88; o < 0xc0; o += 4)
-			if (word(self, o) != word(fields_gml, o))
-				debugPrintf("[SMOKEDRAW]   field 0x%x gml %08x native %08x\n", o, word(fields_gml, o), word(self, o));
+		smokedraw_verify_records += record_count[1];
+		return;
 	}
+	if (smokedraw_mismatches++ < 8) {
+		debugPrintf("[SMOKEDRAW] mismatch: records %d/%d %s, fields %s, rng %s, variables %s (slot %d key %u)\n",
+			record_count[0], record_count[1], records_ok ? "same" : "differ", fields_ok ? "same" : "differ",
+			rng_ok ? "same" : "differs", bad_slot == -1 ? "same" : "differ", bad_slot,
+			bad_slot >= 0 ? after_gml[bad_slot].key : 0);
+		for (int k = 0; k < record_count[0] && k < record_count[1] && k < MAX_RECORDS; k++)
+			if (memcmp(&records[0][k], &records[1][k], sizeof(Record)))
+				debugPrintf("[SMOKEDRAW]   record %d (kind %u/%u) differs\n", k, records[0][k].kind, records[1][k].kind);
+		for (int o = FIELDS_FROM; o < FIELDS_TO; o += 4)
+			if (word(self, o) != word(fields_gml, o - FIELDS_FROM))
+				debugPrintf("[SMOKEDRAW]   field 0x%x gml %08x native %08x\n", o, word(fields_gml, o - FIELDS_FROM),
+					word(self, o));
+	}
+}
+
+// exp_smokeverify setup: the recording hooks. 0 if CSprite::Draw can't be hooked or the RNG/draw instance is missing.
+static int verify_install(void) {
+	rng_state = (uint32_t *)so_symbol(&yoyoloader_mod, "state");
+	rng_index = (uint32_t *)so_symbol(&yoyoloader_mod, "g_RndIndex");
+	draw_instance = (void **)so_symbol(&yoyoloader_mod, "_ZN15CSkeletonSprite15ms_drawInstanceE");
+	if (!rng_state || !rng_index || !draw_instance)
+		return 0;
+	orig_sprite_draw = (sprite_draw_fn)entry_hook(so_symbol(&yoyoloader_mod, "_ZN7CSprite4DrawEffffffjf"),
+		(void *)record_sprite_draw);
+	if (!orig_sprite_draw)
+		return 0;
+	for (int k = 0; k < 4; k++) {
+		script_orig[k] = (script_fn)entry_hook(so_symbol(&yoyoloader_mod, script_names[k]), script_recorders[k]);
+		if (!script_orig[k])
+			smokedraw_verify_unrecorded |= 1u << k;
+	}
+	if (smokedraw_verify_unrecorded)
+		debugPrintf("smoke cloud Draw verify: script calls not recorded (entry already hooked), mask %x\n",
+			smokedraw_verify_unrecorded);
+	return 1;
 }
 
 void smokedraw_native_report(int frames) {
@@ -853,16 +942,26 @@ void smokedraw_native_report(int frames) {
 		debugPrintf("[SMOKEDRAW] native event %.3f ms/frame in %.1f calls\n", smokedraw_prof_us / 1000.0f / frames,
 			(float)smokedraw_prof_calls / frames);
 	if (smokedraw_verify)
-		debugPrintf("[SMOKEDRAW] verify: %u events compared, %u mismatches\n", smokedraw_verified, smokedraw_mismatches);
+		debugPrintf("[SMOKEDRAW] verify: %u events compared (%u script calls and sprite draws), %u mismatches, "
+			"%u skipped%s\n", smokedraw_verified, smokedraw_verify_records, smokedraw_mismatches,
+			smokedraw_verify_skipped, smokedraw_verify_unrecorded ? ", some scripts not recorded" : "");
 	smokedraw_native_calls = smokedraw_fallbacks = smokedraw_prof_us = smokedraw_prof_calls = 0;
 	memset(smokedraw_reject_line, 0, sizeof(smokedraw_reject_line));
 	memset(smokedraw_reject_count, 0, sizeof(smokedraw_reject_count));
 	if (smokedraw_ab)
 		smokedraw_ab_off = !smokedraw_ab_off;
 }
-#else
-static void verify_event(void *self, void *other) { native_event(self, other); }
-#endif
+
+// The GOT slot a PLT stub jumps through (add ip, pc, #a; add ip, ip, #b; ldr pc, [ip, #c]!), or NULL
+static uintptr_t *plt_slot(uintptr_t stub) {
+	const uint32_t *w = (const uint32_t *)stub;
+	if ((w[0] & 0xfffff000) != 0xe28fc000 || (w[1] & 0xfffff000) != 0xe28cc000 || (w[2] & 0xfffff000) != 0xe5bcf000)
+		return NULL;
+	uint32_t a = w[0] & 0xff, ra = ((w[0] >> 8) & 0xf) * 2, b = w[1] & 0xff, rb = ((w[1] >> 8) & 0xf) * 2;
+	a = ra ? (a >> ra) | (a << (32 - ra)) : a;
+	b = rb ? (b >> rb) | (b << (32 - rb)) : b;
+	return (uintptr_t *)(stub + 8 + a + b + (w[2] & 0xfff));
+}
 
 // Target of the `bl` at site, or 0
 static uintptr_t bl_target(uintptr_t site) {
@@ -892,9 +991,15 @@ int smokedraw_native_install(void *(*rx_alloc)(size_t)) {
 			return 0;
 		if (call_symbols[i]) {
 			uintptr_t sym = so_symbol(&yoyoloader_mod, call_symbols[i]);
-			int plt = target >= bias + PLT_START && target < bias + PLT_START + PLT_SIZE;
-			if (!sym || (target != sym && !plt))
+			if (!sym)
 				return 0;
+			if (target != sym) { // the symbol's own PLT stub
+				if (target < bias + PLT_START || target >= bias + PLT_START + PLT_SIZE)
+					return 0;
+				uintptr_t *slot = plt_slot(target);
+				if (!slot || slot != so_got_slot(&yoyoloader_mod, call_symbols[i]))
+					return 0;
+			}
 		} else if (target != bias + local_targets[i]) {
 			return 0;
 		}
@@ -937,23 +1042,13 @@ int smokedraw_native_install(void *(*rx_alloc)(size_t)) {
 	kuKernelCpuUnrestrictedMemcpy(rx, code, sizeof(code));
 	kuKernelFlushCaches(rx, sizeof(code));
 	original = (event_fn)rx;
-#ifndef SMOKEDRAW_TEST
-	smokedraw_ab = exp_flag("smokeab");
-	smokedraw_prof = exp_flag("smokeprof");
+	// Debug only: the A/B switch flips in the profiling report, which runs with debugMode
+	smokedraw_ab = debugMode && exp_flag("smokeab");
+	smokedraw_prof = debugMode && exp_flag("smokeprof");
 	if (debugMode && exp_flag("smokeverify")) {
-		extern void *entry_hook(uintptr_t entry, void *replacement);
-		rng_state = (uint32_t *)so_symbol(&yoyoloader_mod, "state");
-		rng_index = (uint32_t *)so_symbol(&yoyoloader_mod, "g_RndIndex");
-		if (rng_state && rng_index) {
-			orig_draw_self = (draw_self_fn)entry_hook(so_symbol(&yoyoloader_mod, "_Z15YYGML_draw_selfP9CInstance"),
-				(void *)capture_draw_self);
-			orig_draw_ext = (draw_ext_fn)entry_hook(
-				so_symbol(&yoyoloader_mod, "_Z21YYGML_draw_sprite_extP9CInstanceiffffffif"), (void *)capture_draw_ext);
-		}
-		smokedraw_verify = orig_draw_self && orig_draw_ext;
+		smokedraw_verify = verify_install();
 		debugPrintf("smoke cloud Draw verify: %s\n", smokedraw_verify ? "on" : "NOT available");
 	}
-#endif
 	hook_addr(entry, (uintptr_t)smokedraw_event);
 	kuKernelFlushCaches((void *)entry, 8);
 	installed = 1;
