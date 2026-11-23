@@ -33,6 +33,8 @@ back the original.
   testing nobody noticed a difference. **GRAPHICS → ENEMY AI**, or `enemyHalfRate=0`.
 - **Smoke updates every 4th frame.** Smoke clouds that have settled update on every 4th frame, a quarter of them on
   each frame, and burning-corpse embers do the same. It looks the same and saves about 2 ms per frame in smoky rooms.
+- **No blood inside smoke clouds with BLOOD SPRAY off.** The game still moved the hidden blood of every hit and drew
+  it in smoke clouds. The port skips that, up to 1 ms per frame while blood flies. No setting.
 - **No rain.** Rainy levels run about 20% faster without it. `rain=2`, or `rain=1` for half the drops.
 - **No replays.** No end-of-level VHS replay and no death rewind. With them on, memory runs out after a few minutes
   in one room and heavy rooms lose about 2 fps. `replays=1` leaves it to the game's own graphics option.
