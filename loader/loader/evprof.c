@@ -122,7 +122,7 @@ void evprof_frame(int log) {
 			if (pos < 8)
 				top[pos] = i;
 		}
-		char line[1024];
+		char line[1024] = "";
 		int len = 0;
 		for (int k = 0; k < n && len < (int)sizeof(line) - 128; k++) {
 			int i = top[k];

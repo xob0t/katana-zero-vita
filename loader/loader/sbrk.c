@@ -50,9 +50,12 @@ void _init_vita_heap(void)
 	SceUID fd = sceIoOpen(DATA_PATH "/" APP_GAME_NAME "/yyl.cfg", SCE_O_RDONLY, 0777);
 #else
 	SceUID fd = sceIoOpen(LAUNCH_FILE_PATH, SCE_O_RDONLY, 0777);
-	if (fd > 0) {
-		size = sceIoRead(fd, t, 0x200);
+	size = -1;
+	if (fd >= 0) {
+		size = sceIoRead(fd, t, 0x200 - 1);
 		sceIoClose(fd);
+	}
+	if (size > 0) {
 		t[size] = 0;
 	} else {
 		sceClibSnprintf(t, 0x200, "%s", "AM2R");
@@ -60,21 +63,17 @@ void _init_vita_heap(void)
 	sceClibSnprintf(&t[0x1000], 0x6000, "%s/%s/yyl.cfg", DATA_PATH, t);
 	fd = sceIoOpen(&t[0x1000], SCE_O_RDONLY, 0777);
 #endif
-	if (fd > 0)
+	_newlib_heap_size = 240 * 1024 * 1024;
+	if (fd >= 0)
 	{
-		size = sceIoRead(fd, t, 0x8000);
+		size = sceIoRead(fd, t, sizeof(t) - 1);
 		sceIoClose(fd);
-		t[size] = 0;
-		char *s = sceClibStrstr(t, "maximizeNewlib=");
-		if (s && s[15] == '1') {
-			_newlib_heap_size = 300 * 1024 * 1024;
-		} else {
-			_newlib_heap_size = 240 * 1024 * 1024;
+		if (size > 0) {
+			t[size] = 0;
+			char *s = sceClibStrstr(t, "maximizeNewlib=");
+			if (s && s[15] == '1')
+				_newlib_heap_size = 300 * 1024 * 1024;
 		}
-	}
-	else
-	{
-		_newlib_heap_size = 240 * 1024 * 1024;
 	}
 #endif
 	_newlib_heap_memblock = sceKernelAllocMemBlock("Newlib heap", 0x0c20d060, _newlib_heap_size, 0);
