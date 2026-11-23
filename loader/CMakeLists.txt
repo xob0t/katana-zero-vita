@@ -55,6 +55,7 @@ add_executable(YoYoLoader
   loader/main.c
   loader/dialog.c
   loader/so_util.c
+  loader/so_elf.c
   loader/sha1.c
   loader/openal_patch.c
   loader/gamepad.c
@@ -179,6 +180,7 @@ add_executable(YoYoLoader
   loader/zip.c
   loader/dialog.c
   loader/so_util.c
+  loader/so_elf.c
 )
 
 target_link_libraries(YoYoLoader
