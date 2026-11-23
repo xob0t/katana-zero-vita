@@ -63,6 +63,20 @@ static free_fn release;
 static increment_fn increment;
 static script_fn original_draw;
 static int installed;
+/* exp_laserfast0: the script's temporary _randvar_array, its lookups and min() through the runner, as before the
+ * fast path. exp_laserab: the fast path is off in every other debug report window (katana_prof.c flips it). */
+static int exp_laserfast0;
+/* exp_laserprof: time the native draw and its draw_sprite_ext calls (debug report [LASERPROF]). */
+#ifndef LASER_TEST
+#include <psp2/kernel/processmgr.h>
+int laser_ab,laser_ab_off,laser_prof;
+unsigned laser_prof_us,laser_prof_sprite_us,laser_prof_calls,laser_prof_segments;
+#define PROF_NOW() (laser_prof?sceKernelGetProcessTimeLow():0)
+#else
+#define PROF_NOW() 0
+static int laser_ab_off,laser_prof;
+static unsigned laser_prof_us,laser_prof_sprite_us,laser_prof_calls,laser_prof_segments;
+#endif
 unsigned laser_native_hits,laser_native_fallbacks,laser_native_segments;
 unsigned laser_native_probe_hits,laser_native_probe_fallbacks,laser_native_queries;
 unsigned laser_native_reject_line[64],laser_native_reject_count[64],laser_native_reject_overflow;
@@ -121,6 +135,7 @@ static int draw_admit(void *self,RV *result,int argc,RV **args) {
 RV *ABI laser_native_draw(void *self,void *other,RV *result,int argc,RV **args) {
  if(!draw_admit(self,result,argc,args)) { ++laser_native_fallbacks; return original_draw(self,other,result,argc,args); }
  ++laser_native_hits;
+ uint32_t prof_start=PROF_NOW();
  Trace trace={*trace_start,"gml_Script_draw_laser",9}; *trace_start=&trace;
  uint32_t z=0; memcpy(&result->value,&z,4); result->kind=5;
  RV yes=real(1),no=real(0),toggle=real(0); yes.kind=no.kind=13;
@@ -130,14 +145,23 @@ RV *ABI laser_native_draw(void *self,void *other,RV *result,int argc,RV **args) 
  trace.line=16; builtin(COLOUR,&colour,self,other,0,NULL);
  trace.line=17; builtin(ALPHA,&alpha,self,other,0,NULL);
  trace.line=19;
+ int fast=!laser_ab_off&&!exp_laserfast0;
+ /* The script builds a new 7-element array in _randvar_array on every call and drops it at the end: 6 beams on
+  * screen make 360 arrays of garbage a second, and the collector's older-generation passes (3.5-6.5 ms) then hit
+  * several frames a second. Nothing outside the script sees the array (no GML runs until it is set back to 0), so
+  * the fast path keeps the seven random(1) values here, drawn in the same order, and only writes the final 0. */
+ RV vals[7];
  for(int i=0;i<7;++i) {
-  trace.line=23; RV *array=get(self,RANDARRAY,1); double v=random_value(1);
+  trace.line=23;
+  if(fast) { vals[i]=real(random_value(1)); trace.line=24; continue; }
+  RV *array=get(self,RANDARRAY,1); double v=random_value(1);
   push_context(self); RV *element=array_lval(array,i);
   push_context((void *)(uintptr_t)word((void *)(uintptr_t)word(array,0),0));
   if(0x46u&(1u<<(element->kind&31))) release(element);
   element->value=v; element->kind=0; pop_context(2); trace.line=24;
  }
  double travelled=0,a=0,b=0; int index=0;
+ const RV *cached=fast?vals:NULL;
  RV limit=real(height*32),at=real(0);
  trace.line=28;
  for(;;) {
@@ -149,8 +173,11 @@ RV *ABI laser_native_draw(void *self,void *other,RV *result,int argc,RV **args) 
    trace.line=33; double x1=(x+a)-b;
    trace.line=34; double y1=y+travelled;
    trace.line=35; double x2=(x+b)-a;
-   RV end=real(travelled+spacing); RV *mins[2]={&end,&limit}; RV minout=real(0);
-   trace.line=36; double y2=y+minimum(&minout,2,mins)->value;
+   RV end=real(travelled+spacing); double y2;
+   trace.line=36;
+   /* YYGML_min of two reals: the first, replaced by a later one only if strictly less (0xdf3b9c). */
+   if(fast) y2=y+(limit.value<end.value?limit.value:end.value);
+   else { RV *mins[2]={&end,&limit}; RV minout=real(0); y2=y+minimum(&minout,2,mins)->value; }
    trace.line=38; double dir=direction((float)x1,(float)y1,(float)x2,(float)y2);
    trace.line=39;
    double px=x1+(double)length_x(2,(float)(dir+90));
@@ -158,24 +185,36 @@ RV *ABI laser_native_draw(void *self,void *other,RV *result,int argc,RV **args) 
    RV endpoints[4]={real(x1),real(y1),real(x2),real(y2)},distance=real(0);
    builtin(DISTANCE,&distance,self,other,4,endpoints);
    double opacity=alpha.value*(0.6+a*0.4);
+   uint32_t sprite_start=PROF_NOW();
    draw_sprite(self,2184,0,(float)px,(float)py,(float)distance.value,4,(float)dir,(int)colour.value,(float)opacity);
+   if(laser_prof) { laser_prof_sprite_us+=PROF_NOW()-sprite_start; ++laser_prof_segments; }
    ++laser_native_segments;
   }
   trace.line=42; toggle.value=toggle.value!=0?0:1;
   trace.line=toggle.value!=0?49:45;
   travelled+=toggle.value!=0?spacing:spacing*1.5;
   trace.line=52;
-  RV *array=get(self,RANDARRAY,0);
-  const RV *items=(const RV *)(uintptr_t)word((void *)(uintptr_t)word(array,0),4);
-  a=items[index%7].value;
-  trace.line=53; array=get(self,RANDARRAY,0);
-  items=(const RV *)(uintptr_t)word((void *)(uintptr_t)word(array,0),4);
-  b=items[(index+1)%7].value; trace.line=54; index+=2;
+  /* The loop only reads _randvar_array, and nothing it calls can change it. */
+  if(!fast) {
+   RV *array=get(self,RANDARRAY,0);
+   cached=(const RV *)(uintptr_t)word((void *)(uintptr_t)word(array,0),4);
+  }
+  a=cached[index%7].value;
+  trace.line=53;
+  if(!fast) {
+   RV *array=get(self,RANDARRAY,0);
+   cached=(const RV *)(uintptr_t)word((void *)(uintptr_t)word(array,0),4);
+  }
+  b=cached[(index+1)%7].value; trace.line=54; index+=2;
  }
  trace.line=57; RV *array=get(self,RANDARRAY,1);
  if(0x46u&(1u<<(array->kind&31))) release(array);
  array->value=0; array->kind=0;
- *trace_start=trace.previous; return result;
+ /* The original's array conversion leaves the slot's flags 0 (the slot was a real on entry: draw_admit) */
+ if(fast) array->flags=0;
+ *trace_start=trace.previous;
+ if(laser_prof) { laser_prof_us+=PROF_NOW()-prof_start; ++laser_prof_calls; }
+ return result;
 }
 static int probe_admit(void *self,uintptr_t fp,uintptr_t sp) {
  Table t;
@@ -268,5 +307,9 @@ int laser_native_install(void *(*rx_alloc)(size_t)) {
  kuKernelCpuUnrestrictedMemcpy(rx,code,sizeof(code)); kuKernelFlushCaches(rx,sizeof(code));
  original_draw=(script_fn)rx; laser_probe_original=(uintptr_t)rx+16; laser_probe_resume=step+0x5bf0;
  hook_addr(draw,(uintptr_t)laser_native_draw); hook_addr(probe,(uintptr_t)laser_native_probe_bridge);
- kuKernelFlushCaches((void *)draw,8); kuKernelFlushCaches((void *)probe,8); installed=1; return 1;
+ kuKernelFlushCaches((void *)draw,8); kuKernelFlushCaches((void *)probe,8); installed=1;
+#ifndef LASER_TEST
+ laser_prof=exp_flag("laserprof"); exp_laserfast0=exp_flag("laserfast0"); laser_ab=exp_flag("laserab");
+#endif
+ return 1;
 }
