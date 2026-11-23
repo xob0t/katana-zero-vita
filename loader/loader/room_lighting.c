@@ -112,11 +112,13 @@ void room_lighting_install(gml_func_entry *table) {
 	}
 	orig_platform_draw = gml_replace(table, "gml_Object_obj_new_platform_lighting_Draw_0", platform_draw);
 	orig_spheres_draw = gml_replace(table, "gml_Object_obj_drawspheres_Draw_0", spheres_draw);
-	orig_clubber_user6 = gml_replace(table, "gml_Object_obj_clubber_Other_16", clubber_user6);
+	extern int dancer_glow; // dancerGlow=0 (default) already returns from the dancers' user 6 at its entry
+	if (dancer_glow)
+		orig_clubber_user6 = gml_replace(table, "gml_Object_obj_clubber_Other_16", clubber_user6);
 	orig_heli_user6 = gml_replace(table, "gml_Object_obj_heli_Other_16", heli_user6);
 	if (debugMode)
 		orig_opto_room_start = gml_replace(table, "gml_Object_obj_opto_master_Other_4", opto_room_start);
 	debugPrintf("room lighting: lamp glow off in haunted_cart2 and club_0 (draw %s, spheres %s, clubber %s, heli %s)\n",
 		orig_platform_draw ? "ok" : "MISSING", orig_spheres_draw ? "ok" : "MISSING",
-		orig_clubber_user6 ? "ok" : "MISSING", orig_heli_user6 ? "ok" : "MISSING");
+		orig_clubber_user6 ? "ok" : "glow off already", orig_heli_user6 ? "ok" : "MISSING");
 }
