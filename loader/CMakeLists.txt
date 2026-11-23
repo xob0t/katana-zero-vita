@@ -107,6 +107,7 @@ add_executable(YoYoLoader
   loader/trail_lights.c
   loader/smokedraw_native.c
   loader/recolor_lights.c
+  loader/fog_trail.c
   loader/evprof.c
   loader/hang_watch.c
   loader/gcalloc.c
