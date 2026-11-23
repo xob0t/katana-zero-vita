@@ -58,7 +58,7 @@ static int at_rest(void *self, void *other) {
 	memcpy(&friction_bits, &friction, 4);
 	return field(self, F_X) == 0x3f800000 && field(self, F_Y) == 0x3f800000 && field(self, F_DIRECTION) == 0 &&
 		field(self, F_SPEED) == 0 && field(self, F_FRICTION) == friction_bits &&
-		(field(self, F_HSPEED) & 0x7fffffff) == 0 && (field(self, F_VSPEED) & 0x7fffffff) == 0 &&
+		field(self, F_HSPEED) == 0 && field(self, F_VSPEED) == 0 && // +0.0 only: speed = 0 writes positive zeros
 		parent_exists(self, other);
 }
 
