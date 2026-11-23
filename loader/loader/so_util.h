@@ -60,6 +60,7 @@ void so_initialize(so_module *mod);
 uintptr_t so_symbol(so_module *mod, const char *symbol);
 uintptr_t so_alloc_near(so_module *so, uintptr_t site, size_t sz);
 uintptr_t *so_got_slot(so_module *mod, const char *symbol);
+extern volatile unsigned so_hook_generation;
 int exp_flag(const char *name);
 extern int text_phycont_result;
 

@@ -597,6 +597,8 @@ void katana_prof_report(int frames) {
 	lightback_native_report(frames);
 	extern void held_native_report(int frames);
 	held_native_report(frames);
+	extern void smokedraw_native_report(int frames);
+	smokedraw_native_report(frames);
 	static int builtins_hooked = 0;
 	if (!builtins_hooked) {
 		builtins_hooked = 1;

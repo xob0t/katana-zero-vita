@@ -1193,6 +1193,12 @@ static void patch_performance() {
 		extern int laser_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native lasers: %s\n", laser_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
+	// Native smoke cloud Draw (smokedraw_native.c): the event with its variable plumbing inlined, every helper, setter
+	// and draw call kept in order (ARM differential fixture work/smokedraw/). exp_smokedraw0 keeps the original GML.
+	if (!exp_flag("smokedraw0")) {
+		extern int smokedraw_native_install(void *(*rx_alloc)(size_t));
+		debugPrintf("native smoke cloud Draw: %s\n", smokedraw_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
 	// Exact natives of obj_orangelight Step and obj_lightback Step, from the static recompiler kill test
 	// (work/cpu_research/kill_test/REPORT.md): the events with the runner's compare/truth/variable helpers inlined
 	// (light_fast_inline.c). room_haunted_cart2 (129 lights): orangelight 2.13 -> 1.53 ms, lightback 0.51 -> 0.42 ms.

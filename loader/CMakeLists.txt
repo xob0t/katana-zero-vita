@@ -47,6 +47,8 @@ endif(STANDALONE)
 set_source_files_properties(loader/collision_native.c loader/rope_fast.c loader/flash_mask.c loader/virtual_capture.c loader/input_native.c loader/laser_native.c loader/letter_native.c loader/minecart_native.c loader/clubber_native.c loader/dossier_native.c loader/wavy_native.c loader/trail_lights.c loader/visibility_native.c loader/lightback_native.c loader/held_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 # Verified against the original ARM code with exactly these flags
 set_source_files_properties(loader/dustspawner_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-marm;-O2")
+# Unicorn-verified with exactly these flags (work/smokedraw/smokedraw_verify.py)
+set_source_files_properties(loader/smokedraw_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-O2")
 # Kill-test natives (exp_lightfast, exp_lightfast_inline): Unicorn-verified with exactly these flags. The sibling
 # call keeps the fallback into the original event at the caller's stack depth, as in the verified build.
 set_source_files_properties(loader/light_fast.c loader/light_fast_inline.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-O2;-foptimize-sibling-calls")
@@ -102,6 +104,7 @@ add_executable(YoYoLoader
   loader/light_fast.c
   loader/light_fast_inline.c
   loader/trail_lights.c
+  loader/smokedraw_native.c
   loader/evprof.c
   loader/hang_watch.c
   loader/gcalloc.c

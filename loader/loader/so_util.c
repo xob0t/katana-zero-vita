@@ -67,6 +67,10 @@ typedef struct ldst_enc {
 #define LDR_OFFS(RT, RN, IMM) ((ldst_enc){.bits = {.cond = 0b1110, .enc = 0b010, .p = 1, .u = (IMM >= 0), .b = 0, .w = 0, .bit20_1 = 1, .rn = RN, .rt = RT, .imm12 = (IMM >= 0) ? IMM : -IMM}})
 
 #define PATCH_SZ 0x10000 //64 KB-ish arenas
+
+// Bumped by every code hook and every GOT slot lookup (the loader looks a slot up to rewrite it), so natives that
+// check once for hooked runner functions know when to look again (smokedraw_native.c)
+volatile unsigned so_hook_generation;
 static so_module *head = NULL, *tail = NULL;
 
 so_hook hook_thumb(uintptr_t addr, uintptr_t dst) {
@@ -74,6 +78,7 @@ so_hook hook_thumb(uintptr_t addr, uintptr_t dst) {
 	//printf("THUMB HOOK\n");
 	if (addr == 0)
 		return;
+	so_hook_generation++;
 	h.thumb_addr = addr;
 	addr &= ~1;
 	if (addr & 2) {
@@ -97,6 +102,7 @@ so_hook hook_arm(uintptr_t addr, uintptr_t dst) {
 	if (addr == 0)
 		return;
 	so_hook h;
+	so_hook_generation++;
 	h.thumb_addr = 0;
 	h.addr = addr;
 	h.patch_instr[0] = 0xe51ff004; // LDR PC, [PC, #-0x4]
@@ -692,6 +698,7 @@ static void trampoline_ldm(so_module *mod, uint32_t *dst) {
 
 // Returns the resolved PLT GOT slot for symbol, so calls made through the PLT can be redirected
 uintptr_t *so_got_slot(so_module *mod, const char *symbol) {
+	so_hook_generation++;
 	for (int i = 0; i < mod->num_relplt; i++) {
 		Elf32_Sym *sym = &mod->dynsym[ELF32_R_SYM(mod->relplt[i].r_info)];
 		if (strcmp(mod->dynstr + sym->st_name, symbol) == 0)
