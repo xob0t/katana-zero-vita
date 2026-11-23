@@ -43,7 +43,7 @@ back the original.
   their plain colour, without light tint or rim shading. With 15-25 of them on screen the shading cost 15-35 ms per
   frame. `farRocketLights=1`.
 - **No shadows under the traffic cones in the motorcycle chase.** About 100 cones each drew a shadow out of ~20
-  strips; without them the cone stretch runs at XX fps instead of YY. `coneShadows=1`.
+  strips. Without them the cone stretch runs at 53-58 fps instead of 40-53. `coneShadows=1`.
 - **No dust in the cathedral's window light.** 41 fps with it, 59 without. `cathedralDust=1`.
 - **Lower resolution in GPU-heavy rooms.** A room where the GPU can't keep up at 960x540, so frames miss the screen
   refresh while the CPU has time to spare, drops to 640x360 until the next room. `dynamicRes=0`.
