@@ -5,7 +5,9 @@
  * The burn spreads through obj_burncircle_spawner cells; each new cell makes a burn circle, which makes three flames
  * and six decorative child circles, and the cutscene stamps every live circle into its burn mask each frame. At the
  * peak ~330 cells, ~720 circles and ~200 flames are alive and a tick took ~55 ms (14-17 fps, work/t30/burn_dyn); with
- * the changes below ~32 ms (30 fps in the 30 fps modes, burn_new; the original behaviour: burn_orig).
+ * the changes below ~50 ms at the peak (Nov 23, 500 MHz: 19.6 fps at 30 ticks/s). The ~32 ms measured before
+ * (burn_new) came partly from a bug: a dropped child's max_size reached its parent, which then destroyed itself
+ * early (24873 circle Steps in all instead of 108029, see create_depth).
  *
  * 1. Native Steps (exact). Most Step calls take one short branch:
  *    obj_burncircle, once `spawn` is true (a main circle after its first Step):
