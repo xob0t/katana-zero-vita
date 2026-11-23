@@ -80,6 +80,7 @@ add_executable(YoYoLoader
   loader/glow_rest.c
   loader/wobble_rest.c
   loader/blood_drops.c
+  loader/fog_skip.c
   loader/katana_menu.c
   loader/sound_limit.c
   loader/stdio_mt.c
