@@ -559,6 +559,26 @@ void katana_prof_report(int frames) {
 				debugPrintf("[RECOLORLIGHTS] fell back at recolor_lights.c:%u x%u\n", recolor_lights_reject_line[k],
 					recolor_lights_reject_count[k]);
 		}
+		// Fog rooms: roll dust clouds drawn without lighting (fog_trail.c) or lit (fogTrailLights=1); with
+		// exp_fogtrailsample, the clouds' average lit layer (colour weighted by light_alpha, light_alpha / raised alpha)
+		extern unsigned fog_trail_native, fog_trail_original, fog_trail_samples;
+		extern double fog_trail_sum[5];
+		static unsigned last_fog_native, last_fog_original;
+		if (frames > 0 && (fog_trail_native != last_fog_native || fog_trail_original != last_fog_original)) {
+			char sampled[160] = "";
+			if (fog_trail_samples && fog_trail_sum[3] > 0)
+				snprintf(sampled, sizeof(sampled), " | lit layer: rgb %.0f %.0f %.0f, light_alpha %.3f, light_alpha / raised alpha %.3f (%u samples)",
+					fog_trail_sum[0] / fog_trail_sum[3], fog_trail_sum[1] / fog_trail_sum[3], fog_trail_sum[2] / fog_trail_sum[3],
+					fog_trail_sum[3] / fog_trail_samples, fog_trail_sum[4] / fog_trail_samples, fog_trail_samples);
+			debugPrintf("[FOGTRAIL] dust cloud draws per frame: %.1f unlit, %.1f lit%s\n", (float)(fog_trail_native -
+				last_fog_native) / frames, (float)(fog_trail_original - last_fog_original) / frames, sampled);
+		}
+		last_fog_native = fog_trail_native;
+		last_fog_original = fog_trail_original;
+		extern int fog_trail_ab, fog_trail_ab_off;
+		static unsigned fog_ab_windows;
+		if (fog_trail_ab && ++fog_ab_windows % 2 == 0)
+			fog_trail_ab_off = !fog_trail_ab_off;
 		// exp_recolorlightsprof: draw_sprite_recolored's own time (all calls, the cheap cached ones too)
 		extern uint32_t recolor_lights_prof_us, recolor_lights_prof_calls;
 		if (frames > 0 && recolor_lights_prof_calls) {

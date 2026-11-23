@@ -197,6 +197,7 @@ void loadConfig(const char *game) {
 			else if (strcmp("dissolveChunkScale", buffer) == 0) { extern int dissolve_chunk_scale; dissolve_chunk_scale = value; }
 			else if (strcmp("dossierCircles", buffer) == 0) { extern int dossier_circles; dossier_circles = value; }
 			else if (strcmp("fogScale", buffer) == 0) { extern int fog_scale; fog_scale = value; }
+			else if (strcmp("fogTrailLights", buffer) == 0) { extern int fog_trail_lights; fog_trail_lights = value; }
 			else if (strcmp("dancerGlow", buffer) == 0) { extern int dancer_glow; dancer_glow = value; }
 			else if (strcmp("cathedralDust", buffer) == 0) { extern int cathedral_dust; cathedral_dust = value; }
 			else if (strcmp("dynamicRes", buffer) == 0) { extern int dynamic_res; dynamic_res = value; }

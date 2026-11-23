@@ -1052,8 +1052,11 @@ static void patch_performance() {
 		orig_softbody_node_step = orig;
 	if ((orig = gml_replace(table, "gml_Object_obj_rain_Draw_0", rain_draw)))
 		orig_rain_draw = orig;
-	if ((orig = gml_replace(table, "gml_Object_obj_particle_Other_25", particle_draw)))
-		orig_particle_draw = orig;
+	if ((orig = gml_replace(table, "gml_Object_obj_particle_Other_25", particle_draw))) {
+		// In the fog rooms the roll's dust clouds skip their light tint (fogTrailLights=1 keeps it; fog_trail.c)
+		extern event_func fog_trail_install(event_func orig);
+		orig_particle_draw = fog_trail_install(orig);
+	}
 
 	instance_destroy_fn = (void *)so_symbol(&yoyoloader_mod, "_Z22YYGML_instance_destroyP9CInstanceS0_iPP8YYRValue");
 	// rain in yyl.cfg: 0 removes rain entirely (default: first level 39 -> 47 fps), 1 keeps every
