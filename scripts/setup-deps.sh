@@ -40,6 +40,8 @@ if [ "$(git -C "$BUILD/vitaGL" rev-parse HEAD)" != "$VITAGL_COMMIT" ]; then
 fi
 if git -C "$BUILD/vitaGL" apply --check "$ROOT/patches/vitagl.patch" 2>/dev/null; then
   git -C "$BUILD/vitaGL" apply "$ROOT/patches/vitagl.patch"
+  # The Makefile doesn't track headers: objects built before the patch would keep the old header code
+  make -C "$BUILD/vitaGL" clean
 elif ! git -C "$BUILD/vitaGL" apply --check -R "$ROOT/patches/vitagl.patch" 2>/dev/null; then
   # The tree carries changes other than the current patch (usually an older version of it): building on would
   # silently leave out the patch's newer changes

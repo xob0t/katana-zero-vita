@@ -1,16 +1,45 @@
 diff --git a/source/gxm.c b/source/gxm.c
-index 4cbb40b..cb92697 100644
+index 4cbb40b..e766230 100644
 --- a/source/gxm.c
 +++ b/source/gxm.c
 @@ -67,6 +67,7 @@ GLboolean dirty_query = GL_FALSE; // Flag whether occlusion queries needs result
  static GLboolean needs_end_scene = GL_FALSE; // Flag for gxm end scene requirement at scene reset
  static GLboolean needs_scene_reset = GL_TRUE; // Flag for when a scene reset is required
  static GLboolean scene_not_flushed = GL_FALSE; // Flag for when a scene had been forcibly flushed as last operation
-+GLboolean vgl_scene_open = GL_FALSE; // for the host: a sceGxm scene has begun and not ended (its commands not submitted yet)
++GLboolean vgl_scene_open = GL_FALSE; // for the host: a sceGxm scene may be open (its commands not submitted yet)
  
  SceGxmContext *gxm_context; // sceGxm context instance
  GLenum vgl_error = GL_NO_ERROR; // Error returned by glGetError
-@@ -166,6 +167,7 @@ static inline __attribute__((always_inline)) int setup_render_target(SceGxmRende
+@@ -111,6 +112,28 @@ int frame_elem_purge_idx = 0; // Index for currently populatable purge list elem
+ int frame_rt_purge_idx = 0; // Index for currently populatable purge list rendertarget
+ static int frame_purge_clean_idx = 1;
+ SceUID gc_mutex[2];
++static SceKernelLwMutexWork purge_lock; // purge list appends vs the collector's rotation of the lists
++static int purge_lock_ready = 0;
++
++void vgl_purge_append(void *x) {
++	if (!x) // a hole would stop the collector's scan
++		return;
++	if (purge_lock_ready)
++		sceKernelLockLwMutex(&purge_lock, 1, NULL);
++	frame_purge_list[frame_purge_idx][frame_elem_purge_idx++] = x;
++	if (purge_lock_ready)
++		sceKernelUnlockLwMutex(&purge_lock, 1);
++}
++
++void vgl_purge_append_rt(void *x) {
++	if (!x)
++		return;
++	if (purge_lock_ready)
++		sceKernelLockLwMutex(&purge_lock, 1, NULL);
++	frame_rt_purge_list[frame_purge_idx][frame_rt_purge_idx++] = x;
++	if (purge_lock_ready)
++		sceKernelUnlockLwMutex(&purge_lock, 1);
++}
+ static int gc_thread_priority = 0x10000100;
+ static int gc_thread_affinity = 0;
+ static uint8_t gxm_display_rt_size = 1; // Number of scenes per frame to use for the display rendertarget
+@@ -166,6 +189,7 @@ static inline __attribute__((always_inline)) int setup_render_target(SceGxmRende
  #define MAX_RENDER_TARGETS_NUM 47 // Maximum amount of dedicated render targets usable for fbos
  #define MAX_SHARED_RT_SIZE 256 // Maximum  width value in pixels for shared rendertargets usage
  render_target rt_list[MAX_RENDER_TARGETS_NUM];
@@ -18,7 +47,7 @@ index 4cbb40b..cb92697 100644
  
  render_target *get_free_render_target(int w, int h) {
  	int i;
-@@ -177,7 +179,7 @@ render_target *get_free_render_target(int w, int h) {
+@@ -177,7 +201,7 @@ render_target *get_free_render_target(int w, int h) {
  			}
  		} else {
  			rt_list[i].max_refs = w > MAX_SHARED_RT_SIZE ? 1 : MAX_SCENES_PER_FRAME;
@@ -27,7 +56,7 @@ index 4cbb40b..cb92697 100644
  #ifdef LOG_ERRORS
  			if (r)
  				vgl_log("%s:%d Failed to create a shared rendertarget of size %dx%d (%s).\n", __FILE__, __LINE__, w, h, get_gxm_error_literal(r));
-@@ -201,7 +203,7 @@ render_target *get_free_render_target(int w, int h) {
+@@ -201,7 +225,7 @@ render_target *get_free_render_target(int w, int h) {
  	sceGxmFinish(gxm_context);
  	sceGxmDestroyRenderTarget(r->rt);
  	r->max_refs = w > MAX_SHARED_RT_SIZE ? 1 : MAX_SCENES_PER_FRAME;
@@ -36,22 +65,46 @@ index 4cbb40b..cb92697 100644
  #ifdef LOG_ERRORS
  	if (res)
  		vgl_log("%s:%d Failed to create a shared rendertarget of size %dx%d (%s).\n", __FILE__, __LINE__, w, h, get_gxm_error_literal(res));
-@@ -567,10 +569,14 @@ void start_shader_patcher(void) {
+@@ -293,9 +317,13 @@ int garbage_collector(unsigned int args, void *arg) {
+ 				break;
+ 		}
+ 		frame_purge_clean_idx = (frame_purge_clean_idx + 1) % FRAME_PURGE_FREQ;
++		if (purge_lock_ready)
++			sceKernelLockLwMutex(&purge_lock, 1, NULL);
+ 		frame_purge_idx = (frame_purge_idx + 1) % FRAME_PURGE_FREQ;
+ 		frame_elem_purge_idx = 0;
+ 		frame_rt_purge_idx = 0;
++		if (purge_lock_ready)
++			sceKernelUnlockLwMutex(&purge_lock, 1);
+ #ifndef HAVE_SINGLE_THREADED_GC
+ 		sceKernelSignalSema(gc_mutex[1], 1);
+ 	}
+@@ -350,6 +378,8 @@ void init_gxm(void) {
+ #endif
+ 	}
+ 
++	sceKernelCreateLwMutex(&purge_lock, "vitaGL purge lists", 0, 0, NULL);
++	purge_lock_ready = 1;
+ #ifndef HAVE_SINGLE_THREADED_GC
+ 	// Initializing garbage collector
+ 	gc_mutex[0] = sceKernelCreateSema("vitaGL GC Sema Push", 0, 0, FRAME_PURGE_FREQ, NULL);
+@@ -567,10 +597,14 @@ void start_shader_patcher(void) {
  #endif
  }
  
 +uint32_t vgl_scene_end_us, vgl_scene_begin_us, vgl_scene_count; // stats for the host
  static inline __attribute__((always_inline)) void scene_end(void) {
  	// Ends current gxm scene
-+	vgl_scene_open = GL_FALSE;
  	query_fence.value++;
+-	sceGxmEndScene(gxm_context, NULL, &query_fence);
 +	uint32_t t0 = sceKernelGetProcessTimeLow();
- 	sceGxmEndScene(gxm_context, NULL, &query_fence);
++	if (sceGxmEndScene(gxm_context, NULL, &query_fence) == 0)
++		vgl_scene_open = GL_FALSE;
 +	vgl_scene_end_us += sceKernelGetProcessTimeLow() - t0;
  	if (system_app_mode && vsync_interval)
  		sceDisplayWaitVblankStartMulti(vsync_interval);
  }
-@@ -611,6 +617,8 @@ void scene_reset(void) {
+@@ -611,6 +645,8 @@ void scene_reset(void) {
  #endif
  
  		// Starting drawing scene
@@ -60,19 +113,19 @@ index 4cbb40b..cb92697 100644
  		is_rendering_display = !active_write_fb;
  		if (is_rendering_display) { // Default framebuffer is used
  			if (system_app_mode) {
-@@ -623,6 +631,7 @@ void scene_reset(void) {
+@@ -623,6 +659,7 @@ void scene_reset(void) {
  				gxm_sync_objects[gxm_back_buffer_index],
  				&gxm_color_surfaces[gxm_back_buffer_index],
  				&gxm_depth_stencil_surface);
-+			vgl_scene_open = !r;
++			vgl_scene_open = GL_TRUE;
  #ifdef LOG_ERRORS
  			if (r) {
  				vgl_log("%s:%d Scene reset failed due to sceGxmBeginScene erroring (%s) on display.\n", __FILE__, __LINE__, get_gxm_error_literal(r));
-@@ -675,12 +684,14 @@ void scene_reset(void) {
+@@ -675,12 +712,14 @@ void scene_reset(void) {
  					NULL, NULL, NULL,
  					&active_write_fb->colorbuffer,
  					active_write_fb->depthbuffer_ptr);
-+			vgl_scene_open = !r;
++			vgl_scene_open = GL_TRUE;
  #ifdef LOG_ERRORS
  			if (r)
  				vgl_log("%s:%d Scene reset failed due to sceGxmBeginScene erroring (%s) on framebuffer 0x%08X.\n", __FILE__, __LINE__, get_gxm_error_literal(r), active_write_fb);
@@ -84,7 +137,7 @@ index 4cbb40b..cb92697 100644
  		if (old_framebuffer != in_use_framebuffer) {
  			dirty_scissor_state = GL_TRUE;
 diff --git a/source/utils/gpu_utils.c b/source/utils/gpu_utils.c
-index 4464db5..b4da863 100644
+index 4464db5..5a7a7c1 100644
 --- a/source/utils/gpu_utils.c
 +++ b/source/utils/gpu_utils.c
 @@ -100,9 +100,15 @@ static inline __attribute__((always_inline)) void *gpu_alloc_mapped_aligned_for_
@@ -103,14 +156,16 @@ index 4464db5..b4da863 100644
  	vgl_alloc_attempt(alignment, size, VGL_MEM_RAM)
  	vgl_alloc_attempt(alignment, size, VGL_MEM_PHYCONT)
  	vgl_alloc_attempt(alignment, size, VGL_MEM_BUDGET)
-@@ -153,10 +159,38 @@ static inline __attribute__((always_inline)) uint32_t vgl_cache_old_textures(siz
+@@ -153,10 +159,43 @@ static inline __attribute__((always_inline)) uint32_t vgl_cache_old_textures(siz
  #endif
  
  int unsafe_allocator_counter = 0;
-+// Stats for the host: forced collections from any entry (gpu_alloc_mapped_aligned_for_*, vglMalloc, vglMemalign,
-+// vglCalloc), and how many began while a scene was open. Their last cycle frees what the current frame released, which
-+// that scene may still use (an fbo deleted right after drawing to it froze the game this way)
-+int vgl_forced_gc_runs = 0, vgl_forced_gc_open_scene = 0;
++// For the host (a watchdog can tell a freeze inside a forced collection): forced collections begun and finished from
++// any entry (gpu_alloc_mapped_aligned_for_*, vglMalloc, vglMemalign, vglCalloc), how many began with a scene open, and
++// the size asked for by the last one. Their last cycle frees what the current frame released, which that scene may
++// still use (an fbo deleted right after drawing to it froze the game this way)
++volatile int vgl_forced_gc_runs = 0, vgl_forced_gc_done = 0, vgl_forced_gc_open_scene = 0;
++volatile size_t vgl_forced_gc_size = 0;
 +extern GLboolean vgl_scene_open;
 +int vgl_forced_gc_allocs = 0, vgl_failed_allocs = 0; // stats for the host
 +size_t vgl_failed_alloc_size = 0;
@@ -137,12 +192,15 @@ index 4464db5..b4da863 100644
  	// Performing a garbage collection cycle prior to attempting to allocate the memory again
  	unsafe_allocator_counter++;
  	if (unsafe_allocator_counter == 1) {
-+		vgl_forced_gc_runs++;
++		vgl_forced_gc_size = size;
 +		vgl_forced_gc_open_scene += vgl_scene_open;
++		__sync_synchronize();
++		vgl_forced_gc_runs++;
++		__sync_synchronize();
  		glFinish();
  	}
  #if defined(HAVE_SINGLE_THREADED_GC) && !defined(HAVE_PTHREAD)
-@@ -164,7 +198,11 @@ void *gpu_alloc_mapped_aligned_unsafe_for_cpu(size_t alignment, size_t size) {
+@@ -164,7 +203,11 @@ void *gpu_alloc_mapped_aligned_unsafe_for_cpu(size_t alignment, size_t size) {
  #else
  	sceKernelWaitSema(gc_mutex[1], 1, NULL);
  	sceKernelSignalSema(gc_mutex[0], 1);
@@ -155,16 +213,19 @@ index 4464db5..b4da863 100644
  #endif
  
  	// Allocating requested memblock
-@@ -182,6 +220,8 @@ void *gpu_alloc_mapped_aligned_unsafe_for_gpu(size_t alignment, size_t size) {
+@@ -182,6 +225,11 @@ void *gpu_alloc_mapped_aligned_unsafe_for_gpu(size_t alignment, size_t size) {
  	// Performing a garbage collection cycle prior to attempting to allocate the memory again
  	unsafe_allocator_counter++;
  	if (unsafe_allocator_counter == 1) {
-+		vgl_forced_gc_runs++;
++		vgl_forced_gc_size = size;
 +		vgl_forced_gc_open_scene += vgl_scene_open;
++		__sync_synchronize();
++		vgl_forced_gc_runs++;
++		__sync_synchronize();
  		// Ideally we'd want glFinish here, but this would cause a circular dependency if the allocation failing is related to a depthstencil surface allocation
  		sceGxmFinish(gxm_context);
  	}
-@@ -190,7 +230,11 @@ void *gpu_alloc_mapped_aligned_unsafe_for_gpu(size_t alignment, size_t size) {
+@@ -190,7 +238,11 @@ void *gpu_alloc_mapped_aligned_unsafe_for_gpu(size_t alignment, size_t size) {
  #else
  	sceKernelWaitSema(gc_mutex[1], 1, NULL);
  	sceKernelSignalSema(gc_mutex[0], 1);
@@ -177,10 +238,11 @@ index 4464db5..b4da863 100644
  #endif
  
  	// Allocating requested memblock
-@@ -221,6 +265,13 @@ void *gpu_alloc_mapped_aligned_for_cpu(size_t alignment, size_t size) {
+@@ -221,6 +273,14 @@ void *gpu_alloc_mapped_aligned_for_cpu(size_t alignment, size_t size) {
  #endif
  	unsafe_allocator_counter = 0;
  	res = gpu_alloc_mapped_aligned_unsafe_for_cpu(alignment, size);
++	vgl_forced_gc_done++;
 +	vgl_forced_gc_allocs++;
 +	if (!res) {
 +		vgl_failed_allocs++;
@@ -191,10 +253,11 @@ index 4464db5..b4da863 100644
  
  #ifdef LOG_ERRORS
  	if (!res) {
-@@ -250,6 +301,13 @@ void *gpu_alloc_mapped_aligned_for_gpu(size_t alignment, size_t size) {
+@@ -250,6 +310,14 @@ void *gpu_alloc_mapped_aligned_for_gpu(size_t alignment, size_t size) {
  #endif
  	unsafe_allocator_counter = 0;
  	res = gpu_alloc_mapped_aligned_unsafe_for_gpu(alignment, size);
++	vgl_forced_gc_done++;
 +	vgl_forced_gc_allocs++;
 +	if (!res) {
 +		vgl_failed_allocs++;
@@ -325,3 +388,95 @@ index 4b791b7..1500b57 100644
  	return sceClibMspaceRealloc(mempool_mspace[type], ptr, size);
  #else
  	return heap_realloc(type, ptr, size);
+diff --git a/source/utils/mem_utils.h b/source/utils/mem_utils.h
+index 80f3f86..1a591c8 100644
+--- a/source/utils/mem_utils.h
++++ b/source/utils/mem_utils.h
+@@ -50,16 +50,12 @@ extern int frame_purge_idx; // Index for currently populatable purge list
+ extern int frame_elem_purge_idx; // Index for currently populatable purge list element
+ extern int frame_rt_purge_idx; // Index for currently populatable purge list rendertarget
+ 
+-// Macro to mark a pointer or a rendertarget as dirty for garbage collection
+-#ifdef DEBUG_GC
+-#define mark_as_dirty(x) \
+-	if (frame_elem_purge_idx >= FRAME_PURGE_LIST_SIZE) { \
+-		vgl_log("%s:%d Garbage collector overflow. Consider increasing FRAME_PURGE_LIST_SIZE.\n", __FILE__, __LINE__); \
+-	} \
+-	frame_purge_list[frame_purge_idx][frame_elem_purge_idx++] = x
+-#else
+-#define mark_as_dirty(x) frame_purge_list[frame_purge_idx][frame_elem_purge_idx++] = x
+-#endif
++// Mark a pointer or a rendertarget as dirty for garbage collection. The appends take a lock shared with the garbage
++// collector's rotation of the purge lists (gxm.c): unsynchronized, an append could land in the new slot at the old
++// index, leaving a hole that stops the collector's scan there
++void vgl_purge_append(void *x);
++void vgl_purge_append_rt(void *x);
++#define mark_as_dirty(x) vgl_purge_append(x)
+ #ifdef HAVE_SHARED_RENDERTARGETS
+ typedef struct {
+ 	SceGxmRenderTarget *rt;
+@@ -72,26 +68,10 @@ typedef struct {
+ #endif
+ } render_target;
+ void __mark_rt_as_dirty(render_target *rt);
+-#ifdef DEBUG_GC
+-#define _mark_rt_as_dirty(x) \
+-	if (frame_rt_purge_idx >= FRAME_PURGE_RENDERTARGETS_LIST_SIZE) { \
+-		vgl_log("%s:%d Garbage collector overflow. Consider increasing FRAME_PURGE_RENDERTARGETS_LIST_SIZE.\n", __FILE__, __LINE__); \
+-	} \
+-	frame_rt_purge_list[frame_purge_idx][frame_rt_purge_idx++] = x
+-#else
+-#define _mark_rt_as_dirty(x) frame_rt_purge_list[frame_purge_idx][frame_rt_purge_idx++] = x
+-#endif
++#define _mark_rt_as_dirty(x) vgl_purge_append_rt(x)
+ #define mark_rt_as_dirty(x) __mark_rt_as_dirty((render_target *)x)
+ #else
+-#ifdef DEBUG_GC
+-#define mark_rt_as_dirty(x) \
+-	if (frame_rt_purge_idx >= FRAME_PURGE_RENDERTARGETS_LIST_SIZE) { \
+-		vgl_log("%s:%d Garbage collector overflow. Consider increasing FRAME_PURGE_RENDERTARGETS_LIST_SIZE.\n", __FILE__, __LINE__); \
+-	} \
+-	frame_rt_purge_list[frame_purge_idx][frame_rt_purge_idx++] = x
+-#else
+-#define mark_rt_as_dirty(x) frame_rt_purge_list[frame_purge_idx][frame_rt_purge_idx++] = x
+-#endif
++#define mark_rt_as_dirty(x) vgl_purge_append_rt(x)
+ #endif
+ 
+ void vgl_mem_init(size_t size_ram, size_t size_cdram, size_t size_phycont, size_t size_cdlg);
+diff --git a/source/vgl.c b/source/vgl.c
+index 014e790..af034cd 100644
+--- a/source/vgl.c
++++ b/source/vgl.c
+@@ -21,6 +21,7 @@
+  * Implementation for custom vitaGL functions
+  */
+ #include "shared.h"
++extern volatile int vgl_forced_gc_done;
+ #include "texture_callbacks.h"
+ #include "vitaGL.h"
+ 
+@@ -606,6 +607,7 @@ void *vglMalloc(uint32_t size) {
+ 		vgl_log("%s:%d: vglMalloc failed allocating %u bytes (Call generated from 0x%08X). Attempting to recover enough memory to go past it.\n", __FILE__, __LINE__, size, __builtin_return_address(0));
+ 		unsafe_allocator_counter = 0;
+ 		res = gpu_alloc_mapped_aligned_unsafe_for_cpu(MEM_ALIGNMENT, size);
++		vgl_forced_gc_done++;
+ #ifdef LOG_ERRORS
+ 		if (!res) {
+ 			vgl_log("%s:%d vglMalloc failed with a requested size of %u bytes.\n", __FILE__, __LINE__, size);
+@@ -650,6 +652,7 @@ void *vglMemalign(uint32_t alignment, uint32_t size) {
+ 		vgl_log("%s:%d: vglMemalign failed allocating 0x%X bytes with 0x%X alignment.\n", __FILE__, __LINE__, size, alignment);
+ 		unsafe_allocator_counter = 0;
+ 		res = gpu_alloc_mapped_aligned_unsafe_for_cpu(alignment, size);
++		vgl_forced_gc_done++;
+ #ifdef LOG_ERRORS
+ 		if (!res) {
+ 			vgl_log("%s:%d vglMemalign failed with a requested size of %u bytes.\n", __FILE__, __LINE__, size);
+@@ -690,6 +693,7 @@ void *vglCalloc(uint32_t nmember, uint32_t size) {
+ 		vgl_log("%s:%d: vglCalloc failed allocating 0x%X blocks of 0x%X bytes.\n", __FILE__, __LINE__, nmember, size);
+ 		unsafe_allocator_counter = 0;
+ 		res = gpu_alloc_mapped_aligned_unsafe_for_cpu(MEM_ALIGNMENT, size * nmember);
++		vgl_forced_gc_done++;
+ 		if (!res) {
+ 			vgl_log("%s:%d vglCalloc failed with a requested size of %u bytes.\n", __FILE__, __LINE__, size);
+ 		} else {

@@ -59,42 +59,47 @@ static int app_game_w, app_game_h; // size the game set, before the override
  * it. Room start runs before anything is drawn, so that is the usual case. With a scene open the drain waits for the
  * start of Draw, or the next presented frame. The new room then loads its pages into free VRAM, and the forced
  * collection stays a rare last resort, reported by [FORCEDGC]. exp_texdrain0 disables.
+ * The check comes after the flush returns: the flush builtin first submits the runner's pending batch
+ * (Graphics::Flush), and a virtual capture barrier can materialize a draw, either of which can open a scene. The loader's
+ * own page recovery after the swap (below) drains the same way.
  */
 extern GLboolean vgl_scene_open;
 static builtin_fn orig_texture_flush;
-static int texdrain_pending;
+static const char *texdrain_pending; // what released the memory, until the drain runs
 unsigned texdrain_count;
 
 static void texdrain_run(const char *where) {
 	if (!texdrain_pending || vgl_scene_open)
 		return;
-	texdrain_pending = 0;
+	const char *what = texdrain_pending;
+	texdrain_pending = NULL;
 	uint32_t t0 = sceKernelGetProcessTimeLow();
 	size_t before = vglMemFree(VGL_MEM_VRAM);
 	extern void vgl_collect_garbage_now(void);
 	vgl_collect_garbage_now();
 	texdrain_count++;
-	debugPrintf("[TEXDRAIN] freed after the game's texture flush (%s, %.1f ms): free vram %uKB -> %uKB, phycont %uKB\n",
-		where, (sceKernelGetProcessTimeLow() - t0) / 1000.0f, before / 1024, vglMemFree(VGL_MEM_VRAM) / 1024,
+	debugPrintf("[TEXDRAIN] freed after %s (%s, %.1f ms): free vram %uKB -> %uKB, phycont %uKB\n", what, where,
+		(sceKernelGetProcessTimeLow() - t0) / 1000.0f, before / 1024, vglMemFree(VGL_MEM_VRAM) / 1024,
 		vglMemFree(VGL_MEM_PHYCONT) / 1024);
 }
 
 static void texture_flush_drain(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) {
 	orig_texture_flush(result, self, other, argc, args);
-	texdrain_pending = 1;
+	texdrain_pending = "the game's texture flush";
 	texdrain_run("at the call");
 }
 
 // Forced collections since the last presented frame: rare once the drain runs, so each one is logged
 static void forced_gc_report(void) {
-	extern int vgl_forced_gc_runs, vgl_forced_gc_open_scene;
+	extern volatile int vgl_forced_gc_runs, vgl_forced_gc_open_scene;
+	extern volatile size_t vgl_forced_gc_size;
 	static int seen, seen_open;
 	if (vgl_forced_gc_runs == seen)
 		return;
-	debugPrintf("[FORCEDGC] %d forced garbage collection(s) in the last frame, %d with a scene open | room %d | free vram %uKB "
-		"ram %uKB phycont %uKB\n", vgl_forced_gc_runs - seen, vgl_forced_gc_open_scene - seen_open,
-		current_room ? *current_room : -1, vglMemFree(VGL_MEM_VRAM) / 1024, vglMemFree(VGL_MEM_RAM) / 1024,
-		vglMemFree(VGL_MEM_PHYCONT) / 1024);
+	debugPrintf("[FORCEDGC] %d forced garbage collection(s) in the last frame, %d with a scene open, last for %uKB | room %d | "
+		"free vram %uKB ram %uKB phycont %uKB\n", vgl_forced_gc_runs - seen, vgl_forced_gc_open_scene - seen_open,
+		(unsigned)(vgl_forced_gc_size / 1024), current_room ? *current_room : -1, vglMemFree(VGL_MEM_VRAM) / 1024,
+		vglMemFree(VGL_MEM_RAM) / 1024, vglMemFree(VGL_MEM_PHYCONT) / 1024);
 	seen = vgl_forced_gc_runs;
 	seen_open = vgl_forced_gc_open_scene;
 }
@@ -275,9 +280,10 @@ void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
 		gml_rvalue result = {0};
 		texture_flush(&result, NULL, NULL, 0, NULL);
 		// Free the flushed pages now: otherwise vitaGL releases them a few frames later and the reloads,
-		// still not fitting, land in RAM again
-		extern void vgl_collect_garbage_now(void);
-		vgl_collect_garbage_now();
+		// still not fitting, land in RAM again. Only with no scene open: the flush call itself can open one
+		// (texdrain above); then the drain runs at the start of Draw or after the next swap
+		texdrain_pending = "the page recovery flush";
+		texdrain_run("after the swap");
 		texflush_last_us = sceKernelGetProcessTimeLow();
 		texflush_count++;
 		debugPrintf("[TEXFLUSH] texture pages flushed after %s (%.1f ms); free vram now %uKB\n", reason,
