@@ -452,9 +452,20 @@ void katana_prof_report(int frames) {
 			memset(letter_time_n, 0, sizeof(letter_time_n));
 		}
 		extern unsigned wavy_native_fast, wavy_native_slow, wavy_native_strips;
+		extern int wave_strips, wave_ab, wave_ab_k, wave_prof;
+		extern uint32_t wave_prof_us, wave_prof_calls;
+		static unsigned wave_last_strips;
 		if (wavy_native_fast || wavy_native_slow)
-			debugPrintf("[WAVY] calls %u/%u (native/original), strips %u (totals)\n", wavy_native_fast, wavy_native_slow,
-				wavy_native_strips);
+			debugPrintf("[WAVY] calls %u/%u (native/original), strips %u (totals), %.1f per frame | waveStrips %d | A/B: k%d\n",
+				wavy_native_fast, wavy_native_slow, wavy_native_strips,
+				frames > 0 ? (float)(wavy_native_strips - wave_last_strips) / frames : 0.0f, wave_strips, wave_ab_k);
+		wave_last_strips = wavy_native_strips;
+		if (wave_prof && frames > 0 && wave_prof_calls)
+			debugPrintf("[WAVYPROF] draw_sprite_wavy %.3f ms/frame in %.1f calls\n", wave_prof_us / 1000.0f / frames,
+				(float)wave_prof_calls / frames);
+		wave_prof_us = wave_prof_calls = 0;
+		if (wave_ab)
+			wave_ab_k = wave_ab_k >= 4 ? 1 : wave_ab_k * 2;
 		extern unsigned wavy_reject[16], wavy_reject_kind;
 		for (int i = 0; i < 14; i++)
 			if (wavy_reject[i])

@@ -49,6 +49,9 @@ back the original.
 - **Thinner prison fog.** One puff in 4 is kept and drawn denser. `fogScale=1`.
 - **Unlit roll dust in fog.** In the foggy rooms (the prison, the neighbour's party) the dust clouds a roll kicks up
   get one fixed pale tint instead of being lit by the lights around them. Rolling there: 57 -> 59 fps. `fogTrailLights=1`.
+- **Coarser wavy starfield.** The swaying backgrounds of the nightmare dialogues and the psychiatrist's sessions are
+  drawn in strips 4 times taller, so the sway moves in coarser steps. Chinatown's nightmare dialogue: 41.8 -> 44.5
+  fps. `waveStrips=1` (`waveStrips=2` for strips half as tall).
 - **Sound limits.** At most 3 copies of one sound and 32 voices at once. Laser deaths start dozens of identical
   sounds and stalled the game mixing them. `sameSoundLimit=0` and `maxVoices=0`.
 - **Lighting updates 30 times a second** in rooms that run at 60. No setting.
