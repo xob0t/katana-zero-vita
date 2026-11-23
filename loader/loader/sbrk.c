@@ -107,3 +107,9 @@ void _free_vita_heap(void)
 	_newlib_heap_base = 0;
 	_newlib_heap_cur = 0;
 }
+
+// Bytes of the newlib heap handed out by sbrk so far (the freeze locator and the per-room memory line)
+size_t newlib_heap_used(void)
+{
+	return _newlib_heap_cur - _newlib_heap_base;
+}

@@ -100,6 +100,8 @@ add_executable(YoYoLoader
   loader/light_fast_inline.c
   loader/trail_lights.c
   loader/evprof.c
+  loader/hang_watch.c
+  loader/gcalloc.c
   loader/screenshot.c
 )
 

@@ -13,6 +13,9 @@
 #include "so_elf.h"
 #include "yyl_config.h"
 
+// stdio_mt.c's mt_fclose reports closes to the freeze locator (hang_watch.c), which isn't part of this host test
+void hang_io_file_close(void *file) { (void)file; }
+
 int mt_register_apk(FILE *f);
 int mt_fseek(FILE *f, long offset, int whence);
 long mt_ftell(FILE *f);

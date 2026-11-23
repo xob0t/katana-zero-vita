@@ -47,6 +47,7 @@
 #include <sys/stat.h>
 
 #include "main.h"
+#include "hang_watch.h"
 #include "config.h"
 #include "dialog.h"
 #include "so_util.h"
@@ -372,6 +373,20 @@ static int log_available(void) {
 }
 
 uint32_t debug_printf_us, debug_printf_calls; // time spent in debugPrintf (the exp_spikes report line)
+
+// Appends preformatted text to the log buffer only if nobody holds its lock and it fits; never waits (the freeze
+// locator's reporter: the game thread may be stuck inside debugPrintf). Returns 1 if appended.
+int debug_try_append(const char *text, int len) {
+	if (!log_ready || len <= 0 || sceKernelTryLockLwMutex(&log_mutex, 1) < 0)
+		return 0;
+	int ok = log_len + len <= LOG_BUF_SIZE;
+	if (ok) {
+		sceClibMemcpy(&log_buf[log_len], text, len);
+		log_len += len;
+	}
+	sceKernelUnlockLwMutex(&log_mutex, 1);
+	return ok;
+}
 
 int debugPrintf(char *text, ...) {
 	if (!debugMode || !log_available())
@@ -911,7 +926,11 @@ void main_loop() {
 	
 	setup_ended = 1;
 	glReleaseShaderCompiler();
+	extern void hang_watch_start(int cpu_mask);
+	hang_watch_start(WORKER_THREAD_CPU_MASK);
 	for (;;) {
+		hang_heartbeat();
+		hang_set_stage(HANG_STAGE_INPUT);
 		if (post_active) {
 			SceKernelThreadInfo info;
 			info.size = sizeof(SceKernelThreadInfo);
@@ -974,6 +993,7 @@ void main_loop() {
 		}
 
 		uint64_t prof_t0 = sceKernelGetProcessTimeWide();
+		hang_set_stage(HANG_STAGE_PROCESS);
 		Java_com_yoyogames_runner_RunnerJNILib_Process(fake_env, 0, SCREEN_W, SCREEN_H, sensor.accelerometer.x, sensor.accelerometer.y, sensor.accelerometer.z, 0, 0, 60.0f);
 		if (!Java_com_yoyogames_runner_RunnerJNILib_canFlip || Java_com_yoyogames_runner_RunnerJNILib_canFlip()) {
 			if (ime_active) {
@@ -991,11 +1011,14 @@ void main_loop() {
 				vglSwapBuffers(GL_TRUE);
 			} else {
 				uint64_t prof_t1 = sceKernelGetProcessTimeWide();
+				hang_set_stage(HANG_STAGE_SWAP);
 				if (!katana_frame_skipped())
 					vglSwapBuffers(GL_FALSE);
 				swap_only_us = (uint32_t)(sceKernelGetProcessTimeWide() - prof_t1);
+				hang_set_stage(HANG_STAGE_AFTER_SWAP);
 				katana_after_swap(swap_only_us, (uint32_t)(prof_t1 - prof_t0));
 				uint32_t shot_t0 = sceKernelGetProcessTimeLow();
+				hang_set_stage(HANG_STAGE_SCREENSHOT);
 				screenshot_check();
 				screenshot_check_us = sceKernelGetProcessTimeLow() - shot_t0;
 				// Keep the system from auto-suspending during play without input
@@ -1005,6 +1028,7 @@ void main_loop() {
 					power_tick_frames = 0;
 					sceKernelPowerTick(SCE_KERNEL_POWER_TICK_DEFAULT); // also keeps the display on
 				}
+				hang_set_stage(HANG_STAGE_REPORT);
 				frame_profile(prof_t0, prof_t1, sceKernelGetProcessTimeWide());
 			}
 		}
@@ -1142,14 +1166,20 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 		current_room = (int *)so_symbol(&yoyoloader_mod, "Current_Room");
 	if (current_room && *current_room != win_room) {
 		win_room = *current_room;
+		hang_watch_room(win_room);
 		win_frames = 0;
 		win_frame_us = win_run_us = 0;
 		// GPU memory at each room change: textures and surfaces that miss VRAM land in slower RAM pools
 		extern size_t vgl_gpu_fallback_bytes;
 		extern unsigned vgl_gpu_fallback_allocs;
-		debugPrintf("[VRAM] room %d: free vram %uKB (largest %uKB) ram %uKB phycont %uKB | GPU allocations outside VRAM %u (%uKB)\n",
+		// Newlib heap: sbrk'd so far and free inside that (a long-session leak shows as "sbrk'd" growing room after room)
+		extern size_t newlib_heap_used(void);
+		struct mallinfo mi = mallinfo();
+		debugPrintf("[VRAM] room %d: free vram %uKB (largest %uKB) ram %uKB phycont %uKB | GPU allocations outside VRAM %u (%uKB) | "
+			"newlib heap %uKB sbrk'd of %uKB, %uKB of it free\n",
 			win_room, vglMemFree(VGL_MEM_VRAM) / 1024, gpu_pool_largest(VGL_MEM_VRAM) / 1024, vglMemFree(VGL_MEM_RAM) / 1024,
-			vglMemFree(VGL_MEM_PHYCONT) / 1024, vgl_gpu_fallback_allocs, (unsigned)(vgl_gpu_fallback_bytes / 1024));
+			vglMemFree(VGL_MEM_PHYCONT) / 1024, vgl_gpu_fallback_allocs, (unsigned)(vgl_gpu_fallback_bytes / 1024),
+			(unsigned)(newlib_heap_used() / 1024), _newlib_heap_size / 1024, (unsigned)(mi.fordblks / 1024));
 	}
 	win_frames++;
 	static uint64_t last_swap;
@@ -1167,6 +1197,8 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 	glprof_frame();
 	extern void katana_goto_check(void);
 	katana_goto_check();
+	extern void gcalloc_frame(void);
+	gcalloc_frame();
 	// Report GPU memory allocation failures (vitaGL returns NULL, the texture/surface stays empty)
 	extern int vgl_failed_allocs;
 	extern size_t vgl_failed_alloc_size;
@@ -1848,6 +1880,7 @@ static FILE *fopen_buffered(const char *file, const char *mode) {
 		errno = ENOMEM;
 		return NULL;
 	}
+	hang_io_file_open(f, mode); // save I/O until it is closed (mt_fclose): no freeze-locator dump meanwhile
 	return f;
 }
 
