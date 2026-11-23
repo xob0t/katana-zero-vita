@@ -40,6 +40,12 @@ if [ "$(git -C "$BUILD/vitaGL" rev-parse HEAD)" != "$VITAGL_COMMIT" ]; then
 fi
 if git -C "$BUILD/vitaGL" apply --check "$ROOT/patches/vitagl.patch" 2>/dev/null; then
   git -C "$BUILD/vitaGL" apply "$ROOT/patches/vitagl.patch"
+elif ! git -C "$BUILD/vitaGL" apply --check -R "$ROOT/patches/vitagl.patch" 2>/dev/null; then
+  # The tree carries changes other than the current patch (usually an older version of it): building on would
+  # silently leave out the patch's newer changes
+  echo "error: $BUILD/vitaGL differs from patches/vitagl.patch; reset it with" >&2
+  echo "  git -C $BUILD/vitaGL checkout -- . && bash scripts/setup-deps.sh" >&2
+  exit 1
 fi
 make -C "$BUILD/vitaGL" DEPTH_STENCIL_HACK=1 SOFTFP_ABI=1 NO_DEBUG=1 SHARED_RENDERTARGETS=1 NO_SPLASHSCREEN=1 ENABLE_LEGACY_PIPELINE=1 HAVE_SHADER_CACHE=1 -j "$JOBS" install
 

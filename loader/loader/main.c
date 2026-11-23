@@ -1053,11 +1053,14 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 	katana_stage_frame(spike);
 	extern void evprof_frame(int log);
 	evprof_frame(spike);
-	// Forced garbage collections (vitaGL allocations that missed every pool) during this frame
-	extern int vgl_forced_gc_allocs;
-	static int forced_gc_seen;
+	// Forced garbage collections (vitaGL allocations that missed every pool) during this frame, and how many of them
+	// found a scene open and ended it first (vitaGL gxm.c vgl_end_scene_for_gc)
+	extern int vgl_forced_gc_allocs, vgl_gc_scene_ends;
+	static int forced_gc_seen, gc_scene_ends_seen;
 	int forced_gc = vgl_forced_gc_allocs - forced_gc_seen;
 	forced_gc_seen = vgl_forced_gc_allocs;
+	int gc_scene_ends = vgl_gc_scene_ends - gc_scene_ends_seen;
+	gc_scene_ends_seen = vgl_gc_scene_ends;
 	if (processed - start > 100000 || swapped - processed > 50000) {
 		debugPrintf("[HITCH] process %.1fms swap %.1fms\n", (processed - start) / 1000.0f, (swapped - processed) / 1000.0f);
 		// Where the "swap" time went (it also covers the work after vglSwapBuffers), and memory at that moment
@@ -1066,9 +1069,9 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 		kfree.size = sizeof(kfree);
 		sceKernelGetFreeMemorySize(&kfree);
 		debugPrintf("[HITCH] vglSwapBuffers %.1fms t30_update %.1fms dynres %.1fms screenshot_check "
-			"%.1fms | forced gc %d | free vram %uKB ram %uKB phycont %uKB, kernel user %uKB phycont %uKB\n",
+			"%.1fms | forced gc %d (scene open %d) | free vram %uKB ram %uKB phycont %uKB, kernel user %uKB phycont %uKB\n",
 			swap_only_us / 1000.0f, after_swap_step_us[0] / 1000.0f, after_swap_step_us[1] / 1000.0f,
-			screenshot_check_us / 1000.0f, forced_gc, vglMemFree(VGL_MEM_VRAM) / 1024,
+			screenshot_check_us / 1000.0f, forced_gc, gc_scene_ends, vglMemFree(VGL_MEM_VRAM) / 1024,
 			vglMemFree(VGL_MEM_RAM) / 1024, vglMemFree(VGL_MEM_PHYCONT) / 1024, kfree.size_user / 1024,
 			kfree.size_phycont / 1024);
 	}
