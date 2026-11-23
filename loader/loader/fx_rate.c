@@ -7,16 +7,25 @@
  * exp_fx0 turns it off, exp_fx2 / exp_fx3 pick another N (testing).
  *
  * Instances are staggered by id: an instance updates when (id + tick) % N == 0, so each tick carries 1/N of them. On
- * its update tick the Step runs with global.fr multiplied by N (it covers the ticks it skipped), then fr is put back.
- * What the scaled fr gets wrong is corrected around the call:
+ * its update tick the Step runs with global.fr multiplied by the ticks it covers (those since its last run, N
+ * normally), then fr is put back. What the scaled fr gets wrong is corrected around the call:
  * - obj_smokecloud Step ends with `prev_speed = speed; speed *= fr`, and the runner applies built-in speed on every
- *   tick, Step or not: speed is divided by N afterwards, so the cloud drifts the per-tick distance on each of the N
- *   ticks. The slash fade (alpha -= 0.02 per tick of overlap, no fr) is repeated N - 1 times. animation_code (the
- *   cloud's frame counter) drops the excess of its accumulator, so fr x N would not be N ticks of animation (dissolve
- *   would last up to 50% longer at N=3, and clouds block enemy sight until they are gone): while the wrapped Step
- *   runs, animation_code runs N times with the real fr instead (fx_animation_code, called from the 30 fps mode's
- *   hook on it). Clouds that are still flying to their place (in_place false: a new cloud and its first Steps) run
- *   every tick, so they appear and spread smoothly.
+ *   tick, Step or not: speed is divided by the ticks covered afterwards, so the cloud drifts the per-tick distance on
+ *   each of them. animation_code (the cloud's frame counter) drops the excess of its accumulator, so fr x N would not
+ *   be N ticks of animation (dissolve would last up to 50% longer at N=3, and clouds block enemy sight until they are
+ *   gone): while the wrapped Step runs, animation_code runs once per tick covered with the real fr instead
+ *   (fx_animation_code, called from the 30 fps mode's hook on it). Clouds that are still flying to their place
+ *   (in_place false: a new cloud and its first Steps) run every tick, so they appear and spread smoothly.
+ * - Contacts stay at full rate. A settled cloud on screen (in_screen, set by its Draw) tests the original Step's three
+ *   gates every tick: place_meeting(x, y, obj_enemy) (the touched enemy gets first_attack_timer >= 20 and
+ *   whip_timer = 30, and a moving one dissolves and pushes the cloud), obj_player (the same push) and obj_slash
+ *   (alpha -= 0.02 per tick of overlap, no fr). A skipped cloud with any of them true catches up the skipped ticks
+ *   (one Step covering them, its contact tests answering false, as they were tested) and then runs this tick's Step
+ *   at the real fr (smoke_last keeps each cloud's last run), so each of those writes happens on the tick and at the
+ *   place it would have, the push's speed decays per tick, dissolve starts on its first frame, and the fade counts
+ *   every overlapping tick once. A contact that starts on an update tick is handled by that update's Step (fr x N):
+ *   the enemy writes and the fade are exact, the cloud's own push decay and first dissolve frames are batched as in
+ *   any update.
  * - obj_corpsefire (burning-corpse embers) Step sets image_speed from fr, and the runner animates every tick (its
  *   Animation End destroys the ember): image_speed is divided by N. Its own motion (x += hsp * fr) would move in
  *   jumps every N ticks; the jump is spread over the N ticks with built-in hspeed/vspeed, which the runner applies
@@ -40,7 +49,7 @@ typedef int (*builtin_var_fn)(void *inst, int index, gml_rvalue *value);
 
 int fx_rate_n;           // N: 4, or from exp_fx0 / exp_fx2 / exp_fx3
 static int fx_keep30;    // exp_fxkeep30: N also at 30 ticks/s
-static int *var_fr, *var_in_place, *var_alpha, *var_animation_finished;
+static int *var_fr, *var_in_place, *var_animation_finished;
 static builtin_var_fn gv_speed, sv_speed, gv_image_speed, sv_image_speed, gv_x, gv_y, sv_x, sv_y, sv_hspeed, sv_vspeed;
 static event_func orig_smoke_step, orig_corpsefire_step;
 
@@ -48,7 +57,7 @@ static event_func orig_smoke_step, orig_corpsefire_step;
 int fx_anim_repeat;
 static double fx_anim_fr;
 
-unsigned fx_smoke_full, fx_smoke_update, fx_smoke_skip, fx_smoke_slash, fx_anim_calls, fx_ember_update, fx_ember_skip;
+unsigned fx_smoke_full, fx_smoke_update, fx_smoke_skip, fx_smoke_contacts, fx_anim_calls, fx_ember_update, fx_ember_skip;
 
 static int fx_period(void) {
 	int n = fx_rate_n;
@@ -124,38 +133,155 @@ void *fx_animation_code(gml_script_fn orig, void *self, void *other, void *resul
 	return ret;
 }
 
+// The smoke Step's contact gates: place_meeting through the registry, with g_pFunction set as the GML call sites do
+static runner_function **fx_functions, **fx_current_function;
+static const int *fx_fn_place_meeting;
+static int (*fx_object_find)(const char *name);
+static int *var_in_screen;
+static int fx_contact_objects[3] = {-2, -2, -2}; // obj_enemy, obj_player, obj_slash; -2 not looked up yet
+
+static int fx_place_meeting(void *self, float x, float y, int object) {
+	gml_rvalue args[3] = {{x, 0, 0}, {y, 0, 0}, {0, 0, 15}};
+	uint32_t ref[2] = {(uint32_t)object, 0x01000000}; // an object reference, as YYC passes obj_* constants
+	memcpy(&args[2].val, ref, 8);
+	runner_function *f = *fx_functions + fx_fn_place_meeting[1], *saved = *fx_current_function;
+	gml_rvalue out = {0, 0, 5};
+	*fx_current_function = f;
+	((builtin_fn)f->func)(&out, self, self, 3, args);
+	*fx_current_function = saved;
+	return (out.kind == 0 || out.kind == 13) && out.val != 0;
+}
+
+// Would this tick's Step take one of its contact branches? -1 if it can't tell (the Step runs then)
+static int fx_smoke_contact(void *self) {
+	gml_rvalue *v = fx_var(self, var_in_screen);
+	if (!v)
+		return -1;
+	if (v->val == 0)
+		return 0; // the contacts are inside if (in_screen)
+	static const char *const names[3] = {"obj_enemy", "obj_player", "obj_slash"};
+	float x, y;
+	memcpy(&x, (char *)self + 0xb8, 4);
+	memcpy(&y, (char *)self + 0xbc, 4);
+	for (int i = 0; i < 3; i++) {
+		if (fx_contact_objects[i] == -2)
+			fx_contact_objects[i] = fx_object_find(names[i]);
+		if (fx_contact_objects[i] < 0)
+			return -1;
+		if (fx_place_meeting(self, x, y, fx_contact_objects[i]))
+			return 1;
+	}
+	return 0;
+}
+
+// The tick each settled cloud's Step last ran (key id + 1, 0 empty); a room change clears it, and entries not seen
+// for SMOKE_STALE ticks are reused
+#define SMOKE_SLOTS 1024
+#define SMOKE_STALE 240
+static struct { uint32_t key, last; } smoke_table[SMOKE_SLOTS];
+static int smoke_room = -2;
+
+static uint32_t *smoke_last(void *self, uint32_t tick) {
+	if (*current_room != smoke_room) {
+		smoke_room = *current_room;
+		memset(smoke_table, 0, sizeof(smoke_table));
+	}
+	uint32_t key = *(uint32_t *)((char *)self + 0x80) + 1, i = (key * 2654435761u) % SMOKE_SLOTS;
+	int free_slot = -1;
+	for (int n = 0; n < SMOKE_SLOTS; n++, i = (i + 1) % SMOKE_SLOTS) {
+		if (smoke_table[i].key == key)
+			return &smoke_table[i].last;
+		if (!smoke_table[i].key) {
+			if (free_slot < 0)
+				free_slot = i;
+			break;
+		}
+		if (free_slot < 0 && tick - smoke_table[i].last > SMOKE_STALE)
+			free_slot = i;
+	}
+	if (free_slot < 0)
+		return NULL; // full: this cloud runs every tick
+	smoke_table[free_slot].key = key;
+	smoke_table[free_slot].last = tick - 1; // first seen settled: it ran last tick (in_place false runs every tick)
+	return &smoke_table[free_slot].last;
+}
+
+// While a catch-up Step runs for ticks whose contacts were all tested false, the Step's own place_meeting calls
+// (they are only its three contact gates) answer false too: the registry entry is swapped around the call
+static void (*fx_place_meeting_real)(gml_rvalue *, void *, void *, int, gml_rvalue *);
+static void fx_place_meeting_false(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) {
+	result->val = 0;
+	result->flags = 0;
+	result->kind = 13; // false, as place_meeting returns
+}
+
+// The Step covering k ticks: fr x k, animation_code k times at the real fr, speed back to a per-tick drift
+static void smoke_run(void *self, void *other, int k, int no_contacts) {
+	runner_function *pm = no_contacts ? *fx_functions + fx_fn_place_meeting[1] : NULL;
+	if (pm) {
+		fx_place_meeting_real = pm->func;
+		pm->func = (void *)fx_place_meeting_false;
+	}
+	double fr = k > 1 ? fx_scale_fr(k) : -1;
+	if (fr >= 0) {
+		fx_anim_fr = fr;
+		fx_anim_repeat = k;
+	}
+	orig_smoke_step(self, other);
+	if (pm)
+		pm->func = (void *)fx_place_meeting_real;
+	if (fr < 0)
+		return;
+	fx_anim_repeat = 0;
+	fx_restore_fr(fr, k);
+	double speed = builtin_get(gv_speed, self);
+	if (speed != 0)
+		builtin_set(sv_speed, self, speed / k);
+}
+
 static void smoke_step(void *self, void *other) {
 	int n = fx_period();
+	uint32_t tick = *frame_count, *last = NULL;
 	gml_rvalue *v;
-	if (n <= 1 || !(v = fx_var(self, var_in_place)) || v->val == 0) {
+	if (n <= 1 || !(v = fx_var(self, var_in_place)) || v->val == 0 || !(last = smoke_last(self, tick))) {
 		fx_smoke_full += n > 1;
 		orig_smoke_step(self, other);
 		return;
 	}
-	if (!fx_due(self, n)) {
-		fx_smoke_skip++;
-		return;
+	// The ticks this Step covers: those since its last run; one after a longer gap (deactivated, paused), as the
+	// original would
+	uint32_t k = tick - *last;
+	if (k == 0 || k > (uint32_t)n) {
+		k = 1;
+	} else if (k < (uint32_t)n && !fx_due(self, n)) {
+		int contact = fx_smoke_contact(self);
+		if (!contact) {
+			fx_smoke_skip++;
+			return;
+		}
+		if (contact > 0) {
+			// The skipped ticks had no contact: they are caught up first with the Step's contact tests answering
+			// false, then this tick's Step runs at the real fr, so the push, its speed decay and the dissolve's first
+			// frame happen as on this tick at full rate
+			fx_smoke_contacts++;
+			*last = tick;
+			if (k > 1) {
+				fx_smoke_update++;
+				smoke_run(self, other, (int)k - 1, 1);
+				if (*(uint32_t *)((char *)self + 0x7c) & 3)
+					return; // destroyed (or deactivated) by the catch-up: the original would not Step it again
+			}
+			fx_smoke_full++;
+			orig_smoke_step(self, other);
+			return;
+		}
 	}
-	fx_smoke_update++;
-	gml_rvalue *a = fx_var(self, var_alpha);
-	double alpha = a ? a->val : 0;
-	double fr = fx_scale_fr(n);
-	if (fr < 0) {
-		orig_smoke_step(self, other);
-		return;
-	}
-	fx_anim_fr = fr;
-	fx_anim_repeat = n;
-	orig_smoke_step(self, other);
-	fx_anim_repeat = 0;
-	fx_restore_fr(fr, n);
-	double speed = builtin_get(gv_speed, self);
-	if (speed != 0)
-		builtin_set(sv_speed, self, speed / n);
-	if (a && (a = fx_var(self, var_alpha)) && fabs(alpha - 0.02 - a->val) < 1e-9) {
-		a->val -= 0.02 * (n - 1);
-		fx_smoke_slash++;
-	}
+	*last = tick;
+	if (k == 1)
+		fx_smoke_full++;
+	else
+		fx_smoke_update++;
+	smoke_run(self, other, (int)k, 0);
 }
 
 static void corpsefire_step(void *self, void *other) {
@@ -192,13 +318,13 @@ void fx_rate_report(int frames) {
 	if (!fx_rate_n)
 		return;
 	if (fx_smoke_full || fx_smoke_update || fx_smoke_skip)
-		debugPrintf("[FXRATE] N %d (now %d): smoke steps full %.1f updated %.1f skipped %.1f per tick, slash fades %u, "
+		debugPrintf("[FXRATE] N %d (now %d): smoke steps full %.1f updated %.1f skipped %.1f per tick, contact runs %u, "
 			"animation_code runs %.1f per tick\n", fx_rate_n, fx_period(), (float)fx_smoke_full / frames,
-			(float)fx_smoke_update / frames, (float)fx_smoke_skip / frames, fx_smoke_slash, (float)fx_anim_calls / frames);
+			(float)fx_smoke_update / frames, (float)fx_smoke_skip / frames, fx_smoke_contacts, (float)fx_anim_calls / frames);
 	if (fx_ember_update || fx_ember_skip)
 		debugPrintf("[FXRATE] embers updated %.1f skipped %.1f per tick\n", (float)fx_ember_update / frames,
 			(float)fx_ember_skip / frames);
-	fx_smoke_full = fx_smoke_update = fx_smoke_skip = fx_smoke_slash = fx_anim_calls = fx_ember_update = fx_ember_skip = 0;
+	fx_smoke_full = fx_smoke_update = fx_smoke_skip = fx_smoke_contacts = fx_anim_calls = fx_ember_update = fx_ember_skip = 0;
 }
 
 void fx_rate_install(gml_func_entry *table) {
@@ -209,7 +335,11 @@ void fx_rate_install(gml_func_entry *table) {
 	fx_keep30 = exp_flag("fxkeep30");
 	var_fr = (int *)so_symbol(&yoyoloader_mod, "g_VAR_fr");
 	var_in_place = (int *)so_symbol(&yoyoloader_mod, "g_VAR_in_place");
-	var_alpha = (int *)so_symbol(&yoyoloader_mod, "g_VAR_alpha");
+	var_in_screen = (int *)so_symbol(&yoyoloader_mod, "g_VAR_in_screen");
+	fx_functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
+	fx_current_function = (runner_function **)so_symbol(&yoyoloader_mod, "g_pFunction");
+	fx_fn_place_meeting = (const int *)so_symbol(&yoyoloader_mod, "g_FUNC_place_meeting");
+	fx_object_find = (void *)so_symbol(&yoyoloader_mod, "_Z11Object_FindPKc");
 	var_animation_finished = (int *)so_symbol(&yoyoloader_mod, "g_VAR_animation_finished");
 #define FX_RESOLVE(var, sym) var = (builtin_var_fn)so_symbol(&yoyoloader_mod, sym)
 	FX_RESOLVE(gv_speed, "_Z8GV_SpeedP9CInstanceiP6RValue");
@@ -225,7 +355,8 @@ void fx_rate_install(gml_func_entry *table) {
 #undef FX_RESOLVE
 	int smoke = 0, embers = 0;
 	// The smoke needs the animation_code repeat (the 30 fps mode's entry hook on it, installed earlier)
-	if (var_fr && var_in_place && var_alpha && var_animation_finished && gv_speed && sv_speed && t30_animation_code_hooked)
+	if (var_fr && var_in_place && var_in_screen && var_animation_finished && gv_speed && sv_speed && fx_functions &&
+			fx_current_function && fx_fn_place_meeting && fx_object_find && current_room && t30_animation_code_hooked)
 		smoke = !!(orig_smoke_step = gml_replace(table, "gml_Object_obj_smokecloud_Step_0", smoke_step));
 	if (var_fr && gv_image_speed && sv_image_speed && gv_x && gv_y && sv_x && sv_y && sv_hspeed && sv_vspeed &&
 			!exp_flag("fxembers0"))

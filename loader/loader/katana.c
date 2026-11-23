@@ -467,11 +467,14 @@ static int lz4_page_decompress(char *dest, unsigned *dest_len, char *src, unsign
 		fatal_error("game.apk has bzip2 texture pages. Rebuild it with scripts/prepare_apk.py.");
 	uint32_t block_len;
 	memcpy(&block_len, src + 4, 4);
+	extern volatile int hang_texture_decode;
+	hang_texture_decode = 1;
 	// The runner passes the QOI size from the page header, which prepare_apk.py sets to the exact decoded size: a
 	// shorter result means a damaged page, and the rest of the buffer would be uninitialised
 	int n = block_len <= src_len - 8 ? LZ4_decompress_safe(src + 8, dest, block_len, *dest_len) : -1;
 	if (n < 0 || (unsigned)n != *dest_len)
 		fatal_error("LZ4 texture page failed to decode (%u of %u bytes -> %u): %d", block_len, src_len, *dest_len, n);
+	hang_texture_decode = 0;
 	return 0; // BZ_OK
 }
 
@@ -771,6 +774,8 @@ void katana_late_install(void) {
 	}
 	extern void sound_limit_install(void);
 	sound_limit_install();
+	extern void gcalloc_install(void);
+	gcalloc_install();
 	dissolve_install();
 	fog_install();
 	if (!exp_flag("dossiernative0")) {
@@ -833,16 +838,26 @@ void katana_late_install(void) {
 // is drawn.
 void katana_texture_selftest(void) {
 	uintptr_t read_qoif = so_symbol(&yoyoloader_mod, "_Z12ReadQOIFFilePviPiS0_b");
-	uint32_t insn = read_qoif ? *(uint32_t *)(read_qoif + 0xdc) : 0;
+	uintptr_t text = yoyoloader_mod.text_base;
+	size_t size = yoyoloader_mod.text_size;
+	uint32_t insn = 0;
+	if (!(read_qoif & 3) && read_qoif >= text && size >= 0xe0 && read_qoif - text <= size - 0xe0)
+		insn = *(uint32_t *)(read_qoif + 0xdc);
 	if ((insn & 0xff000000) != 0xeb000000) {
 		fatal_error("Texture decoder self-test: unexpected ReadQOIFFile layout (0x%08X); not starting to avoid a GPU crash.", insn);
 	}
 	int32_t imm = (int32_t)(insn << 8) >> 6;
-	int (*decompress)(char *, unsigned *, char *, unsigned, int, int) = (void *)(read_qoif + 0xdc + 8 + imm);
+	uintptr_t target = read_qoif + 0xdc + 8 + imm;
+	if (target < text || target - text > size - 4)
+		fatal_error("Texture decoder self-test: call target outside runner text; refusing to start.");
+	int (*decompress)(char *, unsigned *, char *, unsigned, int, int) = (void *)target;
 
 	static const char plain[] = "Katana ZERO texture self-test payload, Katana ZERO texture self-test payload";
-	char packed[8 + LZ4_COMPRESSBOUND(sizeof(plain))], out[sizeof(plain)];
-	int block = LZ4_compress_default(plain, packed + 8, sizeof(plain), sizeof(packed) - 8);
+	// ReadQOIFFile includes the 12-byte page header in the decoder's input length.
+	char packed[8 + LZ4_COMPRESSBOUND(sizeof(plain)) + 12] = {0}, out[sizeof(plain)];
+	int block = LZ4_compress_default(plain, packed + 8, sizeof(plain), LZ4_COMPRESSBOUND(sizeof(plain)));
+	if (block <= 0)
+		fatal_error("Texture decoder self-test: could not prepare LZ4 payload.");
 	memcpy(packed, "LZ4H", 4);
 	memcpy(packed + 4, &block, 4);
 	unsigned out_len = sizeof(out);
@@ -1130,6 +1145,16 @@ static void patch_performance() {
 		extern int letter_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native dialogue letters: %s\n", letter_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
+	// Exact natives of the view tests inside_screen_point / inside_screen (visibility_native.c): the runner's own
+	// global getters and comparisons without the GML temporaries. In-run A/B (exp_visab), process per frame:
+	// haunted_cart2 -0.68 ms (450 + 57 calls), club_4 with smoke -0.43 ms, bunker2_3 -0.23 ms.
+	// exp_visibilitynative0: the original scripts.
+	if (!exp_flag("visibilitynative0")) {
+		extern int visibility_native_install(void *(*rx_alloc)(size_t));
+		int r = visibility_native_install(katana_rx_alloc);
+		debugPrintf("native inside_screen_point %s, inside_screen %s\n", r & 1 ? "installed" : "NOT installed",
+			r & 2 ? "installed" : "NOT installed");
+	}
 	if (!exp_flag("minecartnative0")) { // minecart master and its rail helpers
 		extern int minecart_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native minecart master: %s\n", minecart_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
@@ -1181,6 +1206,13 @@ static void patch_performance() {
 		extern int light_fast_inline_install(void *(*rx_alloc)(size_t));
 		light_fast_mode = light_fast_inline_install(katana_rx_alloc) ? 2 : 0;
 		debugPrintf("light fast: %s (inline)\n", light_fast_mode ? "installed" : "NOT installed");
+	}
+	// Exact native of the off-screen path of obj_lightback user event 0, the lighting pass's per-light event
+	// (lightback_native.c): visible lights run the original. In-run A/B (exp_lbab): haunted_cart2 (111 of 129
+	// lights off-screen) -0.44 ms process per frame. exp_lightbacknative0: the original for every light.
+	if (!exp_flag("lightbacknative0")) {
+		extern int lightback_native_install(void *(*rx_alloc)(size_t));
+		debugPrintf("native off-screen lightback: %s\n", lightback_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
 	// Cathedral dust (obj_cathedral_dustspawner): every visible spawner redraws all ~208 particles through
 	// event_user(0), ~7.4 ms per frame: room_cathedral runs at 41 fps with it, 59 without. cathedralDust=0 (default)

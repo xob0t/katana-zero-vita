@@ -44,7 +44,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DSTANDALONE_MODE")
 endif(STANDALONE)
 
 # Native replacements must round exactly like the runner (no FMA contraction)
-set_source_files_properties(loader/collision_native.c loader/rope_fast.c loader/flash_mask.c loader/virtual_capture.c loader/input_native.c loader/held_native.c loader/laser_native.c loader/letter_native.c loader/minecart_native.c loader/clubber_native.c loader/dossier_native.c loader/wavy_native.c loader/trail_lights.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+set_source_files_properties(loader/collision_native.c loader/rope_fast.c loader/flash_mask.c loader/virtual_capture.c loader/input_native.c loader/laser_native.c loader/letter_native.c loader/minecart_native.c loader/clubber_native.c loader/dossier_native.c loader/wavy_native.c loader/trail_lights.c loader/visibility_native.c loader/lightback_native.c loader/held_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 # Verified against the original ARM code with exactly these flags
 set_source_files_properties(loader/dustspawner_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-marm;-O2")
 # Kill-test natives (exp_lightfast, exp_lightfast_inline): Unicorn-verified with exactly these flags. The sibling
@@ -55,6 +55,7 @@ add_executable(YoYoLoader
   loader/main.c
   loader/dialog.c
   loader/so_util.c
+  loader/so_elf.c
   loader/sha1.c
   loader/openal_patch.c
   loader/gamepad.c
@@ -93,6 +94,8 @@ add_executable(YoYoLoader
   loader/letter_native.c
   loader/clubber_native.c
   loader/minecart_native.c
+  loader/visibility_native.c
+  loader/lightback_native.c
   loader/dustspawner_native.c
   loader/dossier_native.c
   loader/wavy_native.c
@@ -100,6 +103,8 @@ add_executable(YoYoLoader
   loader/light_fast_inline.c
   loader/trail_lights.c
   loader/evprof.c
+  loader/hang_watch.c
+  loader/gcalloc.c
   loader/screenshot.c
 )
 
@@ -180,6 +185,7 @@ add_executable(YoYoLoader
   loader/zip.c
   loader/dialog.c
   loader/so_util.c
+  loader/so_elf.c
 )
 
 target_link_libraries(YoYoLoader

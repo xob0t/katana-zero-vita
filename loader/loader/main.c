@@ -47,11 +47,13 @@
 #include <sys/stat.h>
 
 #include "main.h"
+#include "hang_watch.h"
 #include "config.h"
 #include "dialog.h"
 #include "so_util.h"
 #include "sha1.h"
 #include "unzip.h"
+#include "yyl_config.h"
 
 #include "openal_patch.h"
 
@@ -170,7 +172,7 @@ void recursive_mkdir(char *dir) {
 
 void loadConfig(const char *game) {
 	char configFile[512];
-	char line[128], buffer[64];
+	char buffer[YYL_KEY_SIZE];
 	int value;
 #ifdef STANDALONE_MODE
 	sprintf(configFile, "app0:yyl.cfg");
@@ -181,13 +183,11 @@ void loadConfig(const char *game) {
 
 	if (config) {
 		// Lines are key=value; anything else (comments, typos) is skipped
-		while (fgets(line, sizeof(line), config)) {
-			if (sscanf(line, " %63[^= \t\r\n] = %d", buffer, &value) != 2)
-				continue;
+		while (yyl_read_setting(config, buffer, &value)) {
 			if (strcmp("forceGLES1", buffer) == 0) forceGL1 = value;
 			else if (strcmp("forceBilinear", buffer) == 0) forceBilinear = value;
 			else if (strcmp("winMode", buffer) == 0) platTarget = value ? 1 : 0; // Retrocompatibility
-			else if (strcmp("platTarget", buffer) == 0) platTarget = value;
+			else if (strcmp("platTarget", buffer) == 0 && value >= 0 && value < YYL_PLATFORM_COUNT) platTarget = value;
 			else if (strcmp("debugShaders", buffer) == 0) debugShaders = value;
 			else if (strcmp("debugMode", buffer) == 0) debugMode = value;
 			else if (strcmp("memOverlay", buffer) == 0) mem_overlay = value;
@@ -210,12 +210,15 @@ void loadConfig(const char *game) {
 			else if (strcmp("doubleBuffering", buffer) == 0) double_buffering = value;
 			else if (strcmp("frameSkip", buffer) == 0) frame_skip = value;
 			// fpsMode: 0 NATIVE, 1 DYNAMIC, 2 30 FPS (the FPS MODE menu overrides it); fps30 is its old name
-			else if (strcmp("fpsMode", buffer) == 0 || strcmp("fps30", buffer) == 0) { extern int fps30; fps30 = value; }
+			else if (strcmp("fpsMode", buffer) == 0 || strcmp("fps30", buffer) == 0) {
+				extern int fps30;
+				if (value >= 0 && value <= 2) fps30 = value;
+			}
 			// enemyHalfRate: 1 enemy AI every other tick at 60 fps (default), 0 every tick (the ENEMY AI menu overrides it)
 			else if (strcmp("enemyHalfRate", buffer) == 0) { extern int enemy_half_rate; enemy_half_rate = value ? 1 : 0; }
 			else if (strcmp("stickDeadzone", buffer) == 0) { extern double stick_deadzone; stick_deadzone = (value < 0 ? 0 : value > 90 ? 90 : value) / 100.0; }
 			else if (strcmp("replays", buffer) == 0) replays = value;
-			else if (strcmp("rain", buffer) == 0) rain_level = value;
+			else if (strcmp("rain", buffer) == 0 && value >= 0 && value <= 2) rain_level = value;
 			else if (strcmp("ropeLights", buffer) == 0) rope_lights = value;
 			else if (strcmp("renderRes", buffer) == 0) {
 				// Display modes the Vita scales up in hardware
@@ -260,7 +263,10 @@ int read_file_range(const char *path, uint64_t offset, uint8_t *buf, uint64_t si
 	SceUID fd = sceIoOpen(path, SCE_O_RDONLY, 0777);
 	if (fd < 0)
 		return -1;
-	sceIoLseek(fd, offset, SCE_SEEK_SET);
+	if (sceIoLseek(fd, offset, SCE_SEEK_SET) != (SceOff)offset) {
+		sceIoClose(fd);
+		return -1;
+	}
 	uint64_t done = 0;
 	while (done < size) {
 		uint32_t chunk = size - done > 4 * 1024 * 1024 ? 4 * 1024 * 1024 : size - done;
@@ -269,8 +275,18 @@ int read_file_range(const char *path, uint64_t offset, uint8_t *buf, uint64_t si
 			break;
 		done += r;
 	}
-	sceIoClose(fd);
-	return done == size ? 0 : -1;
+	return sceIoClose(fd) >= 0 && done == size ? 0 : -1;
+}
+
+static int read_runner_entry(unzFile apk, void *buffer, size_t size) {
+	size_t done = 0;
+	while (done < size) {
+		int got = unzReadCurrentFile(apk, (char *)buffer + done, size - done);
+		if (got <= 0)
+			return -1;
+		done += got;
+	}
+	return 0;
 }
 
 #if 1
@@ -287,10 +303,11 @@ static int log_len = 0;
 static SceKernelLwMutexWork log_mutex;
 static SceKernelLwMutexWork log_flush_mutex; // one flush at a time: they share log_flush_buf and keep lines in order
 static SceKernelLwMutexWork android_log_mutex; // the runner logs from several threads
+static pthread_once_t log_once = PTHREAD_ONCE_INIT;
 static int log_ready = 0;
 
 void debug_flush() {
-	if (!log_ready)
+	if (!__atomic_load_n(&log_ready, __ATOMIC_ACQUIRE))
 		return;
 	sceKernelLockLwMutex(&log_flush_mutex, 1, NULL);
 	sceKernelLockLwMutex(&log_mutex, 1, NULL);
@@ -301,8 +318,15 @@ void debug_flush() {
 	if (len) {
 		SceUID fd = sceIoOpen(LOG_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0777);
 		if (fd >= 0) {
-			sceIoWrite(fd, log_flush_buf, len);
-			sceIoClose(fd);
+			int written = 0;
+			while (written < len) {
+				int n = sceIoWrite(fd, log_flush_buf + written, len - written);
+				if (n <= 0)
+					break;
+				written += n;
+			}
+			if (sceIoClose(fd) < 0 || written != len)
+				sceClibPrintf("Short write or close failure for %s\n", LOG_PATH);
 		}
 	}
 	sceKernelUnlockLwMutex(&log_flush_mutex, 1);
@@ -321,47 +345,93 @@ static int log_sync = 0;
 static int game_core_index(void);
 
 static void log_init() {
-	sceKernelCreateLwMutex(&log_mutex, "log mutex", 0, 0, NULL);
-	sceKernelCreateLwMutex(&log_flush_mutex, "log flush mutex", 0, 0, NULL);
-	sceKernelCreateLwMutex(&android_log_mutex, "android log mutex", 0, 0, NULL);
-	log_ready = 1;
+	if (sceKernelCreateLwMutex(&log_mutex, "log mutex", 0, 0, NULL) < 0)
+		return;
+	if (sceKernelCreateLwMutex(&log_flush_mutex, "log flush mutex", 0, 0, NULL) < 0) {
+		sceKernelDeleteLwMutex(&log_mutex);
+		return;
+	}
+	if (sceKernelCreateLwMutex(&android_log_mutex, "android log mutex", 0, 0, NULL) < 0) {
+		sceKernelDeleteLwMutex(&log_flush_mutex);
+		sceKernelDeleteLwMutex(&log_mutex);
+		return;
+	}
 	SceUID thid = sceKernelCreateThread("Log Writer", log_writer_thread, 0x10000100, 0x4000, 0,
 		0x70000 & ~(0x10000 << game_core_index()), NULL);
-	if (thid < 0 || sceKernelStartThread(thid, 0, NULL) < 0)
+	if (thid < 0 || sceKernelStartThread(thid, 0, NULL) < 0) {
+		if (thid >= 0)
+			sceKernelDeleteThread(thid);
 		log_sync = 1; // no writer thread: flush after every line like the original logger
+	}
+	__atomic_store_n(&log_ready, 1, __ATOMIC_RELEASE);
+}
+
+static int log_available(void) {
+	if (!__atomic_load_n(&log_ready, __ATOMIC_ACQUIRE))
+		pthread_once(&log_once, log_init);
+	return __atomic_load_n(&log_ready, __ATOMIC_ACQUIRE);
 }
 
 uint32_t debug_printf_us, debug_printf_calls; // time spent in debugPrintf (the exp_spikes report line)
 
-int debugPrintf(char *text, ...) {
-	if (!debugMode)
+// Appends preformatted text to the log buffer only if nobody holds its lock and it fits; never waits (the freeze
+// locator's reporter: the game thread may be stuck inside debugPrintf). Returns 1 if appended.
+int debug_try_append(const char *text, int len) {
+	if (!log_ready || len <= 0 || sceKernelTryLockLwMutex(&log_mutex, 1) < 0)
 		return 0;
-	if (!log_ready)
-		log_init();
+	int ok = log_len + len <= LOG_BUF_SIZE;
+	if (ok) {
+		sceClibMemcpy(&log_buf[log_len], text, len);
+		log_len += len;
+	}
+	sceKernelUnlockLwMutex(&log_mutex, 1);
+	return ok;
+}
+
+int debugPrintf(char *text, ...) {
+	if (!debugMode || !log_available())
+		return 0;
 	uint32_t printf_t0 = sceKernelGetProcessTimeLow();
 
 	va_list list;
-	static char string[0x8000];
-
-	sceKernelLockLwMutex(&log_mutex, 1, NULL);
+	char local[1024], *string = local;
 	uint32_t ms = sceKernelGetProcessTimeLow() / 1000;
-	int len = snprintf(string, sizeof(string), "[%5u.%03u] ", ms / 1000, ms % 1000);
+	int prefix = snprintf(local, sizeof(local), "[%5u.%03u] ", ms / 1000, ms % 1000);
 	va_start(list, text);
-	len += vsnprintf(&string[len], sizeof(string) - len, text, list);
+	int body = vsnprintf(local + prefix, sizeof(local) - prefix, text, list);
 	va_end(list);
-	if (len > (int)sizeof(string) - 1)
-		len = sizeof(string) - 1;
-	if (log_len + len > LOG_BUF_SIZE) {
-		// Buffer full: write it out synchronously rather than dropping lines
+	if (body < 0)
+		return 0;
+	int len = prefix + (body < 0x7fff - prefix ? body : 0x7fff - prefix);
+	if (len >= sizeof(local)) {
+		string = malloc(len + 1);
+		if (string) {
+			memcpy(string, local, prefix);
+			va_start(list, text);
+			body = vsnprintf(string + prefix, len + 1 - prefix, text, list);
+			va_end(list);
+			if (body < 0) {
+				free(string);
+				return 0;
+			}
+			if (body < len - prefix)
+				len = prefix + body;
+		} else {
+			string = local;
+			len = sizeof(local) - 1;
+		}
+	}
+	sceKernelLockLwMutex(&log_mutex, 1, NULL);
+	while (log_len + len > LOG_BUF_SIZE) {
 		sceKernelUnlockLwMutex(&log_mutex, 1);
 		debug_flush();
 		sceKernelLockLwMutex(&log_mutex, 1, NULL);
 	}
-	if (len > 0 && log_len + len <= LOG_BUF_SIZE) {
-		sceClibMemcpy(&log_buf[log_len], string, len);
-		log_len += len;
-	}
+	sceClibMemcpy(&log_buf[log_len], string, len);
+	log_len += len;
 	sceKernelUnlockLwMutex(&log_mutex, 1);
+	if (string != local)
+		free(string);
 	if (log_sync)
 		debug_flush();
 	debug_printf_us += sceKernelGetProcessTimeLow() - printf_t0;
@@ -482,14 +552,12 @@ static int log_is_repeat(const char *msg) {
 }
 
 int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
-	if (!debugMode)
+	if (!debugMode || !log_available())
 		return 0;
 
 	va_list list;
 	static char string[0x8000];
 
-	if (!log_ready)
-		log_init();
 	sceKernelLockLwMutex(&android_log_mutex, 1, NULL);
 	va_start(list, fmt);
 	vsnprintf(string, sizeof(string), fmt, list);
@@ -501,13 +569,11 @@ int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
 }
 
 int __android_log_vprint(int prio, const char *tag, const char *fmt, va_list list) {
-	if (!debugMode)
+	if (!debugMode || !log_available())
 		return 0;
 
 	static char string[0x8000];
 
-	if (!log_ready)
-		log_init();
 	sceKernelLockLwMutex(&android_log_mutex, 1, NULL);
 	vsnprintf(string, sizeof(string), fmt, list);
 	va_end(list);
@@ -860,7 +926,11 @@ void main_loop() {
 	
 	setup_ended = 1;
 	glReleaseShaderCompiler();
+	extern void hang_watch_start(int cpu_mask);
+	hang_watch_start(WORKER_THREAD_CPU_MASK);
 	for (;;) {
+		hang_heartbeat();
+		hang_set_stage(HANG_STAGE_INPUT);
 		if (post_active) {
 			SceKernelThreadInfo info;
 			info.size = sizeof(SceKernelThreadInfo);
@@ -923,6 +993,7 @@ void main_loop() {
 		}
 
 		uint64_t prof_t0 = sceKernelGetProcessTimeWide();
+		hang_set_stage(HANG_STAGE_PROCESS);
 		Java_com_yoyogames_runner_RunnerJNILib_Process(fake_env, 0, SCREEN_W, SCREEN_H, sensor.accelerometer.x, sensor.accelerometer.y, sensor.accelerometer.z, 0, 0, 60.0f);
 		if (!Java_com_yoyogames_runner_RunnerJNILib_canFlip || Java_com_yoyogames_runner_RunnerJNILib_canFlip()) {
 			if (ime_active) {
@@ -940,11 +1011,14 @@ void main_loop() {
 				vglSwapBuffers(GL_TRUE);
 			} else {
 				uint64_t prof_t1 = sceKernelGetProcessTimeWide();
+				hang_set_stage(HANG_STAGE_SWAP);
 				if (!katana_frame_skipped())
 					vglSwapBuffers(GL_FALSE);
 				swap_only_us = (uint32_t)(sceKernelGetProcessTimeWide() - prof_t1);
+				hang_set_stage(HANG_STAGE_AFTER_SWAP);
 				katana_after_swap(swap_only_us, (uint32_t)(prof_t1 - prof_t0));
 				uint32_t shot_t0 = sceKernelGetProcessTimeLow();
+				hang_set_stage(HANG_STAGE_SCREENSHOT);
 				screenshot_check();
 				screenshot_check_us = sceKernelGetProcessTimeLow() - shot_t0;
 				// Keep the system from auto-suspending during play without input
@@ -954,6 +1028,7 @@ void main_loop() {
 					power_tick_frames = 0;
 					sceKernelPowerTick(SCE_KERNEL_POWER_TICK_DEFAULT); // also keeps the display on
 				}
+				hang_set_stage(HANG_STAGE_REPORT);
 				frame_profile(prof_t0, prof_t1, sceKernelGetProcessTimeWide());
 			}
 		}
@@ -1091,14 +1166,20 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 		current_room = (int *)so_symbol(&yoyoloader_mod, "Current_Room");
 	if (current_room && *current_room != win_room) {
 		win_room = *current_room;
+		hang_watch_room(win_room);
 		win_frames = 0;
 		win_frame_us = win_run_us = 0;
 		// GPU memory at each room change: textures and surfaces that miss VRAM land in slower RAM pools
 		extern size_t vgl_gpu_fallback_bytes;
 		extern unsigned vgl_gpu_fallback_allocs;
-		debugPrintf("[VRAM] room %d: free vram %uKB (largest %uKB) ram %uKB phycont %uKB | GPU allocations outside VRAM %u (%uKB)\n",
+		// Newlib heap: sbrk'd so far and free inside that (a long-session leak shows as "sbrk'd" growing room after room)
+		extern size_t newlib_heap_used(void);
+		struct mallinfo mi = mallinfo();
+		debugPrintf("[VRAM] room %d: free vram %uKB (largest %uKB) ram %uKB phycont %uKB | GPU allocations outside VRAM %u (%uKB) | "
+			"newlib heap %uKB sbrk'd of %uKB, %uKB of it free\n",
 			win_room, vglMemFree(VGL_MEM_VRAM) / 1024, gpu_pool_largest(VGL_MEM_VRAM) / 1024, vglMemFree(VGL_MEM_RAM) / 1024,
-			vglMemFree(VGL_MEM_PHYCONT) / 1024, vgl_gpu_fallback_allocs, (unsigned)(vgl_gpu_fallback_bytes / 1024));
+			vglMemFree(VGL_MEM_PHYCONT) / 1024, vgl_gpu_fallback_allocs, (unsigned)(vgl_gpu_fallback_bytes / 1024),
+			(unsigned)(newlib_heap_used() / 1024), _newlib_heap_size / 1024, (unsigned)(mi.fordblks / 1024));
 	}
 	win_frames++;
 	static uint64_t last_swap;
@@ -1116,6 +1197,8 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 	glprof_frame();
 	extern void katana_goto_check(void);
 	katana_goto_check();
+	extern void gcalloc_frame(void);
+	gcalloc_frame();
 	// Report GPU memory allocation failures (vitaGL returns NULL, the texture/surface stays empty)
 	extern int vgl_failed_allocs;
 	extern size_t vgl_failed_alloc_size;
@@ -1193,9 +1276,7 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 }
 
 // Runs once, on the game thread, when the runner's Startup is over
-static void enter_main_loop(const char *how) {
-	extern void katana_texture_selftest(void);
-	katana_texture_selftest();
+static void enter_main_loop(void) {
 	extern void katana_late_install(void);
 	katana_late_install();
 	extern SceUID game_thread_id;
@@ -1204,18 +1285,18 @@ static void enter_main_loop(const char *how) {
 	// Pace the game with vblank-synced swaps instead of the runner's sleep limiter, which
 	// overshoots (58.5 fps on a 59.94 Hz display = a repeated frame every ~0.7 s). exp_sleeppace reverts.
 	vsync_pace = !exp_flag("sleeppace");
-	debugPrintf("Entering main loop %s\n", how);
+	debugPrintf("Entering main loop after Startup\n");
 	main_loop();
 }
 
-void __stack_chk_fail_fake() {
-	// Upstream's "stack smash on Startup" was GetStringUTFChars writing a 4-byte isCopy into Ext_Call's 1-byte
-	// jboolean next to the canary (fixed). Kept as a fallback for a smash during Startup only; any later one is real
-	// corruption (and may be on another thread): stop instead of starting a second loop.
-	static int entered;
-	if (entered++)
-		fatal_error("Stack corruption detected (called from %p).", __builtin_return_address(0));
-	enter_main_loop("after stack smash");
+__attribute__((noreturn)) void __stack_chk_fail_fake(void) {
+	// The old Startup workaround predates the fix for JNI's one-byte isCopy.
+	void *caller = __builtin_return_address(0);
+	sceClibPrintf("Stack corruption detected (called from %p).\n", caller);
+	debugPrintf("Stack corruption detected (called from %p).\n", caller);
+	debug_flush();
+	sceKernelExitProcess(1);
+	abort();
 }
 
 double GetPlatform() {
@@ -1506,6 +1587,7 @@ void patch_runner_post_init(void) {
 }
 
 // Thread-safe stdio for FILEs shared between runner threads (stdio_mt.c)
+int mt_register_apk(FILE *f);
 size_t mt_fread(void *buf, size_t size, size_t count, FILE *f);
 int mt_fseek(FILE *f, long offset, int whence);
 int mt_fseeko(FILE *f, off_t offset, int whence);
@@ -1792,6 +1874,13 @@ static FILE *fopen_buffered(const char *file, const char *mode) {
 	FILE *f = fopen(file, mode);
 	if (f && mode[0] == 'r')
 		setvbuf(f, NULL, _IOFBF, READ_STREAM_BUFFER);
+	// Startup gives libzip apk_path. Keep ordinary stdio cursors for saves and other files.
+	if (f && mode[0] == 'r' && !strchr(mode, '+') && !strcmp(file, apk_path) && mt_register_apk(f) < 0) {
+		fclose(f);
+		errno = ENOMEM;
+		return NULL;
+	}
+	hang_io_file_open(f, mode); // save I/O until it is closed (mt_fclose): no freeze-locator dump meanwhile
 	return f;
 }
 
@@ -1811,7 +1900,7 @@ FILE *fopen_hook(char *file, char *mode) {
 				if (mode[0] != 'w') {
 					char patched_fname[256];
 					sprintf(patched_fname, "app0:%s", file);
-					f = fopen(patched_fname, mode);
+					f = fopen_buffered(patched_fname, mode);
 				}
 				
 				if (f)
@@ -2078,6 +2167,25 @@ const char *getprogname_soloader(void) {
 }
 
 // Locale-aware variants: the runner only ever uses the C locale
+static locale_t newlocale_soloader(int mask, const char *name, locale_t base) {
+	// Android libc++ calls newlocale(0x1fbf, "C", NULL). Bionic's six
+	// POSIX categories occupy bits 0-5, and its extra categories have
+	// no newlib equivalent.
+	static const int masks[] = {
+		LC_CTYPE_MASK, LC_NUMERIC_MASK, LC_TIME_MASK, LC_COLLATE_MASK,
+		LC_MONETARY_MASK, LC_MESSAGES_MASK,
+	};
+	if (mask & ~0x1fbf) {
+		errno = EINVAL;
+		return NULL;
+	}
+	int translated = 0;
+	for (unsigned i = 0; i < sizeof(masks) / sizeof(*masks); i++)
+		if (mask & (1 << i))
+			translated |= masks[i];
+	return newlocale(translated, name, base);
+}
+
 int iswalpha_l_soloader(wint_t c, void *l) { return iswalpha(c); }
 int iswblank_l_soloader(wint_t c, void *l) { return iswblank(c); }
 int iswcntrl_l_soloader(wint_t c, void *l) { return iswcntrl(c); }
@@ -2152,8 +2260,9 @@ struct dirent *readdir_soloader(DIR *dir) {
 
 // Bionic rwlocks are zero-initialized; newlib's is a lazily initialized pointer.
 static pthread_rwlock_t *init_static_rwlock(pthread_rwlock_t *lock) {
-	if (*lock == NULL)
-		*lock = PTHREAD_RWLOCK_INITIALIZER;
+	pthread_rwlock_t expected = NULL;
+	__atomic_compare_exchange_n(lock, &expected, PTHREAD_RWLOCK_INITIALIZER, 0,
+		__ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
 	return lock;
 }
 
@@ -2636,7 +2745,7 @@ static so_default_dynlib default_dynlib[] = {
 	{ "modff", (uintptr_t)&modff },
 	{ "munmap", (uintptr_t)&munmap },
 	{ "nanosleep", (uintptr_t)&nanosleep_hook },
-	{ "newlocale", (uintptr_t)&newlocale },
+	{ "newlocale", (uintptr_t)&newlocale_soloader },
 	{ "open", (uintptr_t)&open_soloader },
 	{ "__open_2", (uintptr_t)&__open_2 },
 	{ "posix_memalign", (uintptr_t)&posix_memalign },
@@ -3432,19 +3541,17 @@ void *pthread_main(void *arg) {
 		fatal_error("Error could not find %s.", apk_path);
 	int res = unzLocateFile(apk_file, "lib/armeabi-v7a/libc++_shared.so", NULL);
 	if (res == UNZ_OK) {
-		unzGetCurrentFileInfo(apk_file, &file_info, NULL, 0, NULL, 0, NULL, 0);
-		unzOpenCurrentFile(apk_file);
-		uint64_t so_size = file_info.uncompressed_size;
-		uint8_t *so_buffer = (uint8_t *)malloc(so_size);
-		unzReadCurrentFile(apk_file, so_buffer, so_size);
-		unzCloseCurrentFile(apk_file);
-		res = so_mem_load(&cpp_mod, so_buffer, so_size, LOAD_ADDRESS);
-		if (res >= 0) {
-			has_cpp_so = GL_TRUE;
-		} else {
-			cpp_warn = GL_TRUE;
+		if (unzGetCurrentFileInfo(apk_file, &file_info, NULL, 0, NULL, 0, NULL, 0) == UNZ_OK &&
+			file_info.uncompressed_size > 0 && file_info.uncompressed_size <= INT_MAX &&
+			unzOpenCurrentFile(apk_file) == UNZ_OK) {
+			size_t so_size = file_info.uncompressed_size;
+			uint8_t *so_buffer = malloc(so_size);
+			int ok = so_buffer && read_runner_entry(apk_file, so_buffer, so_size) == 0;
+			if (unzCloseCurrentFile(apk_file) == UNZ_OK && ok)
+				has_cpp_so = so_mem_load(&cpp_mod, so_buffer, so_size, LOAD_ADDRESS) >= 0;
+			free(so_buffer);
 		}
-		free(so_buffer);
+		cpp_warn = !has_cpp_so;
 	}
 	
 	// Loading ARMv7 executable from the apk
@@ -3452,43 +3559,47 @@ void *pthread_main(void *arg) {
 	// runners, e.g. scripts/patch_plt_calls.py, without repacking the whole apk)
 	char so_override[512];
 	sprintf(so_override, "%slibyoyo.so", data_path_root);
-	uint64_t so_size;
+	size_t so_size;
 	uint8_t *so_buffer;
-	if (file_exists(so_override)) {
-		SceIoStat so_stat;
-		sceIoGetstat(so_override, &so_stat);
+	SceIoStat so_stat;
+	int has_override = sceIoGetstat(so_override, &so_stat) >= 0;
+	if (has_override) {
+		if (so_stat.st_size <= 0 || so_stat.st_size > INT_MAX)
+			fatal_error("Error: invalid size for %s.", so_override);
 		so_size = so_stat.st_size;
 		so_buffer = (uint8_t *)malloc(so_size);
 		if (!so_buffer || read_file_range(so_override, 0, so_buffer, so_size))
 			fatal_error("Error: could not read %s.", so_override);
 	} else {
-		unzLocateFile(apk_file, "lib/armeabi-v7a/libyoyo.so", NULL);
-		unzGetCurrentFileInfo(apk_file, &file_info, NULL, 0, NULL, 0, NULL, 0);
-		unzOpenCurrentFile(apk_file);
+		if (unzLocateFile(apk_file, "lib/armeabi-v7a/libyoyo.so", NULL) != UNZ_OK ||
+			unzGetCurrentFileInfo(apk_file, &file_info, NULL, 0, NULL, 0, NULL, 0) != UNZ_OK ||
+			file_info.uncompressed_size == 0 || file_info.uncompressed_size > INT_MAX ||
+			unzOpenCurrentFile(apk_file) != UNZ_OK)
+			fatal_error("Error: could not open libyoyo.so in %s.", apk_path);
 		so_size = file_info.uncompressed_size;
 		so_buffer = (uint8_t *)malloc(so_size);
 		if (!so_buffer)
-			fatal_error("Error: not enough memory for libyoyo.so (%llu bytes).", so_size);
+			fatal_error("Error: not enough memory for libyoyo.so (%u bytes).", (unsigned)so_size);
 		int ok;
 		if (file_info.compression_method == 0) {
 			// Stored entry: read it straight from the apk in large blocks instead of
 			// minizip's 16KB reads, which dominate startup time for 80MB YYC runners
 			ok = !read_file_range(apk_path, unzGetCurrentFileZStreamPos64(apk_file), so_buffer, so_size);
 		} else {
-			ok = unzReadCurrentFile(apk_file, so_buffer, so_size) == (int)so_size;
+			ok = read_runner_entry(apk_file, so_buffer, so_size) == 0;
 		}
-		if (!ok)
+		if (unzCloseCurrentFile(apk_file) != UNZ_OK || !ok)
 			fatal_error("Error: could not read libyoyo.so from %s.", apk_path);
-		unzCloseCurrentFile(apk_file);
 	}
-	debugPrintf("Runner source: %s\n", file_exists(so_override) ? so_override : "game.apk");
+	const char *runner_source = has_override ? so_override : apk_path;
+	debugPrintf("Runner source: %s\n", runner_source);
 	res = so_mem_load(&yoyoloader_mod, so_buffer, so_size, LOAD_ADDRESS + 0x1000000);
 	if (res < 0)
-		fatal_error("Error could not load lib/armeabi-v7a/libyoyo.so from inside game.apk. (Errorcode: 0x%08X)", res);
+		fatal_error("Error: could not load libyoyo.so from %s (0x%08X).", runner_source, res);
 	free(so_buffer);
 	
 	// Loading config file
-	char *platforms[] = {
+	const char *platforms[YYL_PLATFORM_COUNT] = {
 		"Mob",
 		"Win",
 		"PS4"
@@ -3799,9 +3910,12 @@ void *pthread_main(void *arg) {
 	}
 	
 	// Starting the Runner
+	extern void katana_texture_selftest(void);
+	katana_texture_selftest();
+	debugPrintf("Calling runner Startup\n");
 	Java_com_yoyogames_runner_RunnerJNILib_Startup(fake_env, 0, apk_path, data_path, pkg_name, 0);
 	
-	enter_main_loop("after Startup");
+	enter_main_loop();
 	
 	return 0;
 }

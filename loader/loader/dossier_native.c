@@ -5,7 +5,9 @@
  * The burn spreads through obj_burncircle_spawner cells; each new cell makes a burn circle, which makes three flames
  * and six decorative child circles, and the cutscene stamps every live circle into its burn mask each frame. At the
  * peak ~330 cells, ~720 circles and ~200 flames are alive and a tick took ~55 ms (14-17 fps, work/t30/burn_dyn); with
- * the changes below ~32 ms (30 fps in the 30 fps modes, burn_new; the original behaviour: burn_orig).
+ * the changes below ~50 ms at the peak (Nov 23, 500 MHz: 19.6 fps at 30 ticks/s). The ~32 ms measured before
+ * (burn_new) came partly from a bug: a dropped child's max_size reached its parent, which then destroyed itself
+ * early (24873 circle Steps in all instead of 108029, see create_depth).
  *
  * 1. Native Steps (exact). Most Step calls take one short branch:
  *    obj_burncircle, once `spawn` is true (a main circle after its first Step):
@@ -43,7 +45,7 @@ typedef struct {
 
 typedef void (*event_fn)(void *self, void *other);
 
-static event_fn orig_circle_step, orig_spawner_step, orig_cutscene_create;
+static event_fn orig_circle_step, orig_spawner_step, orig_cutscene_create, orig_cutscene_cleanup;
 static int (*yy_bool)(const rv *v);
 static int (*yy_compare)(const rv *a, const rv *b, double eps, int);
 static void (*yy_get_value)(const rv *inst, int var, int index, rv *out, int, int);
@@ -68,23 +70,57 @@ static int compare(const rv *a, double b) {
 
 // obj_folder_cutscene.fire_spd. The compiled events read it through a reference to the object, which looks up the
 // object's first instance by walking the instances (~1300 at the burn peak): 10 us per read. The room has one
-// obj_folder_cutscene; its Create records it, and the reference read stays the fallback. The instance is bound to
-// the room of its first use (Current_Room still names the previous room while the new room's instances are created).
+// obj_folder_cutscene; its Create records it (pointer and id), its Clean Up (run when it is destroyed, by
+// instance_destroy or the room's end, before it is freed) forgets it, and the reference read stays the fallback. The
+// instance is bound to the room of its first use (Current_Room still names the previous room while the new room's
+// instances are created). Before each use the id is looked up in the runner's id table (CInstance::ms_ID2Instance):
+// only a live, active instance that is still the recorded one is read.
 static void *cutscene;
+static uint32_t cutscene_id;
 static int cutscene_room = -1;
+static const uint32_t *id_hash;
 unsigned dossier_spd_cached, dossier_spd_looked_up;
 
 static void cutscene_create(void *self, void *other) {
 	orig_cutscene_create(self, other);
 	cutscene = self;
+	cutscene_id = *(uint32_t *)((char *)self + 0x80);
 	cutscene_room = -1;
 }
 
+static void cutscene_cleanup(void *self, void *other) {
+	if (self == cutscene)
+		cutscene = NULL;
+	orig_cutscene_cleanup(self, other);
+}
+
+// The instance with this id, if the runner has one (the lookup YYGML_FindInstance makes for ids >= 100000)
+static void *instance_by_id(uint32_t id) {
+	const uint32_t *buckets = id_hash ? (const uint32_t *)(uintptr_t)id_hash[0] : NULL;
+	if (!buckets)
+		return NULL;
+	const uint32_t *node = (const uint32_t *)(uintptr_t)buckets[2 * (id & id_hash[1])];
+	for (unsigned trips = 0; node && trips < 4096; node = (const uint32_t *)(uintptr_t)node[1], trips++)
+		if (node[2] == id)
+			return (void *)(uintptr_t)node[3];
+	return NULL;
+}
+
+static void *live_cutscene(void) {
+	if (!cutscene || instance_by_id(cutscene_id) != cutscene)
+		return NULL;
+	// still an obj_folder_cutscene, not marked for destruction or deactivated (instance flags at +0x7c)
+	if (*(int *)((char *)cutscene + 0x84) != OBJ_FOLDER_CUTSCENE || (*(uint32_t *)((char *)cutscene + 0x7c) & 0x100003))
+		return NULL;
+	return cutscene;
+}
+
 static int fire_spd(double *out) {
-	if (cutscene && cutscene_room < 0)
+	void *live = live_cutscene();
+	if (live && cutscene_room < 0)
 		cutscene_room = *current_room;
-	if (cutscene && *current_room == cutscene_room && *(int *)((char *)cutscene + 0x84) == OBJ_FOLDER_CUTSCENE) {
-		rv *v = vget(cutscene, var_fire_spd);
+	if (live && *current_room == cutscene_room) {
+		rv *v = vget(live, var_fire_spd);
 		if (v && v->kind == KIND_REAL) {
 			dossier_spd_cached++;
 			*out = v->val;
@@ -110,10 +146,12 @@ static int fire_spd(double *out) {
 // Create event), ~40 of them per frame at the burn peak, plus their Steps and mask stamps. A dropped child is never
 // created: instance_create_depth (wrapped in the function registry while a circle's first Step runs) draws the
 // child's random(1.5) from its Create, so the random sequence, and with it the spread and the cutscene's length, is
-// unchanged, and returns the parent's id: the two writes land on the parent, which sets spawn = true itself right
-// after, and its max_size is restored when the Step returns.
+// unchanged, and returns the parent's id. The two writes through bb then name the parent, which the same Step tests
+// next (size > max_size); the two YYGML_Variable_SetValue calls of those lines go through child_set_value (veneers
+// on their bl), which drops a write aimed at the parent while its first Step runs: a kept child has its own id, and
+// the parent's own writes (spawn = true after the loop) are not bb.* lines.
 int dossier_circles = 0;
-unsigned dossier_children_dropped, dossier_children_kept;
+unsigned dossier_children_dropped, dossier_children_kept, dossier_child_writes_dropped;
 static void *first_step_parent;
 static void (*orig_create_depth)(rv *result, void *self, void *other, int argc, rv *args);
 static double (*yy_random)(double range);
@@ -137,19 +175,63 @@ static void create_depth(rv *result, void *self, void *other, int argc, rv *args
 	orig_create_depth(result, self, other, argc, args);
 }
 
+// bb.max_size = ... and bb.spawn = true, the YYGML_Variable_SetValue(const YYRValue &inst, var, index, RValue *)
+// calls of the children's loop. bb is the id create_depth returned: a number or an instance reference (kind 15).
+static void (*yy_set_value)(const rv *inst, int var, int index, rv *value);
+static void child_set_value(const rv *inst, int var, int index, rv *value) {
+	if (first_step_parent && inst) {
+		uint32_t w[2];
+		memcpy(w, &inst->val, sizeof(w));
+		uint32_t id = inst->kind == KIND_REAL ? (uint32_t)inst->val : inst->kind == 15 ? w[0] : 0xffffffffu;
+		if (id == *(uint32_t *)((char *)first_step_parent + 0x80)) {
+			dossier_child_writes_dropped++;
+			return; // a dropped child's write
+		}
+	}
+	yy_set_value(inst, var, index, value);
+}
+
+static int child_writes_patched;
+
 static void circle_first_step(void *self, void *other) {
-	rv *max = vget(self, var_max_size);
-	if (!orig_create_depth || dossier_circles == 1 || !max || max->kind != KIND_REAL) {
+	if (!orig_create_depth || !child_writes_patched || dossier_circles == 1) {
 		orig_circle_step(self, other);
 		return;
 	}
-	double max_size = max->val;
 	void *outer = first_step_parent;
 	first_step_parent = self;
 	orig_circle_step(self, other);
 	first_step_parent = outer;
-	if ((max = vget(self, var_max_size)) && max->kind == KIND_REAL)
-		max->val = max_size;
+}
+
+// The two bl sites (APK 1.1.10 ELF addresses), each to the PLT entry or, in a patch_plt_calls.py build, straight to
+// the function: an 8-byte veneer near each (ldr pc, [pc, #-4]; .word child_set_value) and the bl turned to it.
+// Both are checked before either is written.
+static int patch_child_writes(uintptr_t circle) {
+	enum { EVENT = 0x364f9c0, MAX_SIZE_SITE = 0x3651264, SPAWN_SITE = 0x3651334, PLT_SET_VALUE = 0x4ab1140 };
+	uintptr_t sites[2] = {circle + MAX_SIZE_SITE - EVENT, circle + SPAWN_SITE - EVENT};
+	uintptr_t plt = circle + PLT_SET_VALUE - EVENT, direct = (uintptr_t)yy_set_value;
+	uint32_t *veneers[2];
+	for (int i = 0; i < 2; i++) {
+		uint32_t ins = *(uint32_t *)sites[i];
+		uintptr_t target = sites[i] + 8 + (uintptr_t)((int32_t)(ins << 8) >> 6);
+		if ((ins >> 24) != 0xeb || (target != plt && target != direct))
+			return 0;
+		veneers[i] = (uint32_t *)so_alloc_near(&yoyoloader_mod, sites[i], 8);
+		int32_t off = veneers[i] ? (int32_t)((uintptr_t)veneers[i] - (sites[i] + 8)) : 0;
+		if (!veneers[i] || off < -(1 << 25) || off >= (1 << 25))
+			return 0;
+	}
+	for (int i = 0; i < 2; i++) {
+		uint32_t code[2] = {0xe51ff004, (uint32_t)(uintptr_t)child_set_value};
+		kuKernelCpuUnrestrictedMemcpy(veneers[i], code, sizeof(code));
+		kuKernelFlushCaches(veneers[i], sizeof(code));
+		int32_t off = (int32_t)((uintptr_t)veneers[i] - (sites[i] + 8));
+		uint32_t bl = 0xeb000000 | (((uint32_t)off >> 2) & 0xffffff);
+		kuKernelCpuUnrestrictedMemcpy((void *)sites[i], &bl, 4);
+		kuKernelFlushCaches((void *)sites[i], 4);
+	}
+	return 1;
 }
 
 static void circle_step(void *self, void *other) {
@@ -243,12 +325,15 @@ int dossier_native_install(void *(*entry_hook)(uintptr_t entry, void *replacemen
 	var_kill_timer = (int *)SYM("g_VAR_kill_timer");
 	var_timer_max = (int *)SYM("g_VAR_timer_max");
 	current_room = (int *)SYM("Current_Room");
+	id_hash = (const uint32_t *)SYM("_ZN9CInstance14ms_ID2InstanceE");
+	yy_set_value = (void *)SYM("_Z23YYGML_Variable_SetValueRK8YYRValueiiP6RValue");
 	uintptr_t create = SYM("_Z39gml_Object_obj_folder_cutscene_Create_0P9CInstanceS0_");
+	uintptr_t cleanup = SYM("_Z40gml_Object_obj_folder_cutscene_CleanUp_0P9CInstanceS0_");
 	uintptr_t circle = SYM("_Z32gml_Object_obj_burncircle_Step_0P9CInstanceS0_");
 	uintptr_t spawner = SYM("_Z40gml_Object_obj_burncircle_spawner_Step_0P9CInstanceS0_");
 #undef SYM
 	if (!yy_bool || !yy_compare || !yy_get_value || !yy_destroy || !math_epsilon || !circle || !spawner || !create ||
-			!current_room)
+			!cleanup || !current_room || !id_hash)
 		return 0;
 	if (!var_spawn || !var_grow_spd || !var_size || !var_max_size || !var_fire_spd || !var_make_fire ||
 			!var_burnt_out || !var_barrier || !var_timer || !var_kill_timer || !var_timer_max)
@@ -259,7 +344,9 @@ int dossier_native_install(void *(*entry_hook)(uintptr_t entry, void *replacemen
 	typedef struct { const char *name; void *func; int argc; } runner_function;
 	runner_function **functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
 	int *count = (int *)so_symbol(&yoyoloader_mod, "the_numb");
-	for (int i = 0; dossier_circles != 1 && yy_random && gv_id && functions && *functions && count && i < *count; i++) {
+	// Children are dropped only with their writes dropped too (the sites are patched before the prologue hook)
+	child_writes_patched = dossier_circles != 1 && yy_random && gv_id && yy_set_value && patch_child_writes(circle);
+	for (int i = 0; child_writes_patched && functions && *functions && count && i < *count; i++) {
 		runner_function *f = &(*functions)[i];
 		if (f->name && !strcmp(f->name, "instance_create_depth")) {
 			orig_create_depth = f->func;
@@ -267,14 +354,15 @@ int dossier_native_install(void *(*entry_hook)(uintptr_t entry, void *replacemen
 			break;
 		}
 	}
-	if (!(orig_cutscene_create = entry_hook(create, cutscene_create)))
+	if (!(orig_cutscene_cleanup = entry_hook(cleanup, cutscene_cleanup)) ||
+			!(orig_cutscene_create = entry_hook(create, cutscene_create)))
 		return 0;
 	orig_circle_step = entry_hook(circle, circle_step);
 	orig_spawner_step = entry_hook(spawner, spawner_step);
 	return orig_circle_step && orig_spawner_step;
 }
 
-// Debug (profiling report): the cutscene's fire_spd, when the cutscene instance is known
+// Debug (profiling report): the cutscene's fire_spd, when the cutscene instance is known and alive
 int dossier_fire_spd(double *out) {
-	return cutscene && cutscene_room >= 0 && fire_spd(out);
+	return live_cutscene() && cutscene_room >= 0 && fire_spd(out);
 }
