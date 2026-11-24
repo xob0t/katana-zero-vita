@@ -18,8 +18,7 @@ To run near 60 fps, the port changes a few things:
 - **No end-of-level replay and no death rewind.** With them on, memory runs out after a while in one room.
 - **No rain.**
 - **Simpler effects in heavy scenes:** less lighting on particles and in a few rooms, lighter smoke, fog and
-  explosions, no cone shadows in the motorcycle chase.
-- **Checkpoints are saved in the background.** A crash right after one can lose that checkpoint, never corrupt it.
+  explosions.
 
 Each can be undone in `ux0:data/gms/katanazero/yyl.cfg`. [docs/compromises.md](docs/compromises.md) lists every change
 and its setting.
