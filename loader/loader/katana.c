@@ -834,6 +834,10 @@ void katana_late_install(void) {
 	extern int letter_glow_ab, letter_glow_prof;
 	letter_glow_ab = debugMode && exp_flag("letterglowab");
 	letter_glow_prof = debugMode && exp_flag("letterglowprof");
+	// exp_letterglowcompare: highlighted letters drawn three times a frame: the game's glow, 64 px lower the cheap
+	// glow (letterGlow=2), 128 px lower no glow (screenshots; every letter of the line is repeated)
+	extern int letter_glow_compare;
+	letter_glow_compare = exp_flag("letterglowcompare") ? 64 : 0;
 	if (!exp_flag("wavynative0")) {
 		extern int wavy_native_install(void *(*hook)(uintptr_t entry, void *replacement));
 		debugPrintf("native draw_sprite_wavy: %s\n", wavy_native_install(entry_hook) ? "installed" : "NOT installed");

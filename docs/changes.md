@@ -17,7 +17,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Collision checks keep their results, but when several objects overlap the probed spot, a check that names one of them may name another of them | `collisionRoundTrip=0` |
 | Swaying lamps change course every 4th frame (they still move every frame, with the same random pushes) | `lampSway=1` (`lampSway=2`: every other frame) |
 | Roll dust is unlit, and afterimages have no light tint | `trailLights=1` (`fogTrailLights=1`: only in the foggy rooms) |
-| No glow around highlighted words in dialogue | `letterGlow=1` |
+| Highlighted words in dialogue glow as before, but drawn in one batch: the glow's outline can sit a tiny fraction of a pixel off | `letterGlow=1` (`letterGlow=0`: no glow) |
 | The wavy dialogue backgrounds sway in coarser steps | `waveStrips=1` (`waveStrips=2`: half as coarse) |
 | Laser deaths cut the body into fewer, thicker slices | `dissolveChunkScale=1` |
 | At most 3 copies of one sound and 32 voices at once | `sameSoundLimit=0`, `maxVoices=0` |

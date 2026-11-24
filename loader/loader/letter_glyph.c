@@ -99,13 +99,16 @@ static void *ABI glyph_timed(void *f, int c, int b) { void *r; TIMED(R_GETGLYPH,
 static void ABI free_timed(const void *p, int b) { TIMED(R_FREE, orig_free(p, b)); }
 static void ABI flush_timed(void) { TIMED(R_FLUSH, orig_flush()); }
 
-/* ---- exp_letterglyphverify: capture of the vertex submissions ---- */
-#define MAX_QUADS 4
-#define MAX_BYTES (6 * 0x18)
+/* ---- exp_letterglyphverify / exp_letterglowverify: capture of the vertex submissions ---- */
+#define MAX_QUADS 16
+#define MAX_BYTES (72 * 0x18) /* one submission: the glow's 66-vertex batch fits */
+#define SCRATCH_QUADS 16
+#define SCRATCH_BYTES (6 * 0x18)
 typedef struct { int prim, stride, count; void *tex; uint8_t *at; uint8_t bytes[MAX_BYTES]; } Submit;
 typedef struct { Submit s[MAX_QUADS]; int n, overflow; } Capture;
 static Capture *capturing; static int capture_scratch; /* 1: native pass, verts go to scratch, nothing drawn */
-static uint8_t scratch[MAX_QUADS][MAX_BYTES + 64];
+static uint8_t scratch[SCRATCH_QUADS][SCRATCH_BYTES + 64];
+static Capture capture_a, capture_b;
 static void capture_close(Capture *c) {
 	if (c->n > 0 && c->s[c->n - 1].at) {
 		Submit *s = &c->s[c->n - 1];
@@ -119,7 +122,8 @@ static void *ABI alloc_verts_hook(int prim, void *tex, int stride, int count) {
 	Capture *c = capturing;
 	if (c) {
 		capture_close(c); /* the previous quad is complete; a flush in this call may reuse its memory */
-		if (c->n >= MAX_QUADS || stride * count > MAX_BYTES || stride * count < 0) {
+		int limit = capture_scratch ? SCRATCH_BYTES : MAX_BYTES;
+		if (c->n >= (capture_scratch ? SCRATCH_QUADS : MAX_QUADS) || stride * count > limit || stride * count < 0) {
 			c->overflow = 1;
 			if (capture_scratch)
 				return scratch[0];
@@ -205,29 +209,29 @@ static int same_capture(const Capture *a, const Capture *b) {
 }
 
 static void verify(const RV *args, void (*original)(void *), void *ctx) {
-	static Capture native, gml;
+	Capture *native = &capture_a, *gml = &capture_b;
 	void *font_before = *thefont;
-	memset(&native, 0, sizeof(native)); memset(&gml, 0, sizeof(gml));
-	capturing = &native; capture_scratch = 1;
+	memset(native, 0, sizeof(*native)); memset(gml, 0, sizeof(*gml));
+	capturing = native; capture_scratch = 1;
 	int handled = glyph(args, letter_glyph_fault);
-	capture_close(&native);
+	capture_close(native);
 	void *font_native = *thefont;
 	*thefont = font_before;
-	capturing = &gml; capture_scratch = 0;
+	capturing = gml; capture_scratch = 0;
 	original(ctx);
-	capture_close(&gml);
+	capture_close(gml);
 	capturing = NULL;
 	if (!handled) { letter_glyph_unverified++; return; }
 	letter_glyph_verified++;
-	letter_glyph_quads += gml.n;
-	if (font_native != *thefont || !same_capture(&native, &gml)) {
+	letter_glyph_quads += gml->n;
+	if (font_native != *thefont || !same_capture(native, gml)) {
 		if (letter_glyph_mismatch++ < 8) {
-			debugPrintf("[LETTERGLYPH] mismatch: %d/%d quads, font %p/%p, text kind %u\n", native.n, gml.n,
+			debugPrintf("[LETTERGLYPH] mismatch: %d/%d quads, font %p/%p, text kind %u\n", native->n, gml->n,
 				font_native, *thefont, args[2].kind);
-			for (int i = 0; i < native.n && i < gml.n; i++)
-				for (int k = 0; k < native.s[i].stride * native.s[i].count && k < MAX_BYTES; k += 4)
-					if (memcmp(native.s[i].bytes + k, gml.s[i].bytes + k, 4)) {
-						uint32_t u, v; memcpy(&u, native.s[i].bytes + k, 4); memcpy(&v, gml.s[i].bytes + k, 4);
+			for (int i = 0; i < native->n && i < gml->n; i++)
+				for (int k = 0; k < native->s[i].stride * native->s[i].count && k < MAX_BYTES; k += 4)
+					if (memcmp(native->s[i].bytes + k, gml->s[i].bytes + k, 4)) {
+						uint32_t u, v; memcpy(&u, native->s[i].bytes + k, 4); memcpy(&v, gml->s[i].bytes + k, 4);
 						debugPrintf("[LETTERGLYPH]   quad %d byte %d: %08x vs %08x\n", i, k, u, v);
 						break;
 					}
@@ -248,6 +252,203 @@ int letter_glyph_draw(const RV *args, void (*original)(void *), void *ctx) {
 	if (letter_timing && r) { letter_glyph_time[R_NATIVE] += NOW() - t0; letter_glyph_time_n[R_NATIVE]++; }
 	if (r) letter_glyph_native++; else letter_glyph_fallback++;
 	return r;
+}
+
+/* ---- letterGlow=2: the glow of highlighted dialogue letters in one batch ----
+ *
+ * The game's glow is draw_text_scaled_glow_ext(x, y, letter, 2, 2, c_purple, alpha) -> draw_text_glow_ext(x,
+ * y + font_yoffset * font_scale * 2, letter, 2, 2 * font_scale, c_purple, alpha): it saves the draw colour and alpha,
+ * sets c_purple (0x800080) and the alpha, draws the letter 12 times with draw_text_transformed at scale
+ * 2 * font_scale, angle 0, offset lengthdir(r, a) for r = 1 (a = 0, 45, ... 315) and r = 2 (a = 0, 90, 180, 270), and
+ * restores colour and alpha. All 12 quads already land in one vertex batch (same glyph texture), so the GPU side is
+ * one draw; the ~300 us per letter are the 12 runner text calls (argument getters, Split_TextBlock's heap buffer and
+ * line node, the font lookup, Draw_String_Transformed, CSprite::Draw).
+ *
+ * Here: the same colour/alpha handling and the same 12 positions (the runner's lengthdir, the same double adds), but
+ * only the first copy goes through the text path (glyph(), the native single-glyph call). Its 6 vertices are read
+ * back from the runner's vertex buffer, and the other 11 copies are written as translated copies of them with one
+ * Graphics::AllocVerts, in the game's order. Texture, UVs, colour, depth and blending are the runner's; positions
+ * can differ from the game's own computation by float rounding (exp_letterglowverify measures it). If the first
+ * copy's vertices can't be identified (nothing drawn, or the count check is ambiguous) the other copies go through
+ * glyph() one by one. At draw alpha 0 (a fading highlight's fx_scale reaching 0) nothing is drawn: 12 fully
+ * transparent quads. No variable is written and no random is called: the script didn't either.
+ *
+ * exp_letterglowverify: every glow is drawn the cheap way and also run through the game's script with its vertex
+ * submissions captured into scratch memory (not drawn); the vertex streams are compared (texture, primitive, format,
+ * count; colour, depth and UVs byte for byte; positions within 1/1024 px). exp_letterglowverifyfault: copy 5 drawn
+ * 1/64 px off (negative control). */
+static int *cur_count, *last_prim, *last_vsize;
+static void **last_tex;
+static uint8_t **src_verts;
+static alloc_verts_fn alloc_verts;
+typedef void ABI (*set_int_fn)(int);
+typedef void ABI (*set_float_fn)(float);
+static set_int_fn set_colour;
+static set_float_fn set_alpha;
+static double glow_dx[12], glow_dy[12];
+static int glow_installed;
+int letter_glow_verify, letter_glow_fault;
+unsigned letter_glow_cheap_n, letter_glow_cheap_slow, letter_glow_cheap_zero, letter_glow_cheap_fallback;
+unsigned letter_glow_verified, letter_glow_vmismatch, letter_glow_vunverified;
+float letter_glow_vmaxerr;
+#define VSTRIDE 0x18
+
+static RV real_rv(double v) { RV r = { v, 0, 0 }; return r; }
+
+/* 0: not handled, nothing drawn and the draw state unchanged. */
+static int glow_cheap(const RV *a, const RV *fs, const RV *yo, int skip_zero) {
+	for (int i = 0; i < 7; i++)
+		if (i != 2 && (a[i].kind & 0x00ffffff) != 0) return 0;
+	if ((a[2].kind & 0x00ffffff) != 1 || (fs->kind & 0x00ffffff) != 0 || (yo->kind & 0x00ffffff) != 0) return 0;
+	if (a[3].value != 2.0) return 0; /* the repeat count the offsets were computed for */
+	double c = a[5].value;
+	if (!(c >= 0 && c <= 0xffffff) || c != (double)(int)c) return 0;
+	/* draw_text_scaled_glow_ext's arguments to draw_text_glow_ext, in GML evaluation order */
+	double y = a[1].value + (yo->value * fs->value) * a[4].value;
+	double s = a[4].value * fs->value;
+	RV g[6] = { real_rv(a[0].value + glow_dx[0]), real_rv(y + glow_dy[0]), a[2], real_rv(s), real_rv(s), real_rv(0) };
+	unsigned old_colour = get_colour();
+	float old_alpha = get_alpha();
+	set_colour((int)c);
+	set_alpha((float)a[6].value);
+	if (skip_zero && get_alpha() == 0.0f) {
+		set_alpha(old_alpha); set_colour((int)old_colour);
+		letter_glow_cheap_zero++;
+		return 1;
+	}
+	int c0 = *cur_count;
+	if (!glyph(g, 0)) {
+		set_alpha(old_alpha); set_colour((int)old_colour);
+		return 0;
+	}
+	int c1 = *cur_count;
+	float x0 = (float)g[0].value, y0 = (float)g[1].value;
+	if (*last_prim == 4 && *last_vsize == VSTRIDE && c1 >= 6 && (c1 == c0 + 6 || (c1 == 6 && c0 != 6))) {
+		uint8_t quad[6 * VSTRIDE];
+		memcpy(quad, *src_verts + (c1 - 6) * VSTRIDE, sizeof(quad));
+		uint8_t *p = alloc_verts(4, *last_tex, VSTRIDE, 66);
+		for (int k = 1; k < 12; k++) {
+			float dx = (float)(a[0].value + glow_dx[k]) - x0, dy = (float)(y + glow_dy[k]) - y0;
+			if (letter_glow_fault && k == 5) dx += 1.0f / 64;
+			for (int v = 0; v < 6; v++, p += VSTRIDE) {
+				const uint8_t *q = quad + v * VSTRIDE;
+				float vx, vy;
+				memcpy(&vx, q, 4); memcpy(&vy, q + 4, 4);
+				vx += dx; vy += dy;
+				memcpy(p, &vx, 4); memcpy(p + 4, &vy, 4);
+				memcpy(p + 8, q + 8, VSTRIDE - 8);
+			}
+		}
+	} else {
+		for (int k = 1; k < 12; k++) {
+			g[0] = real_rv(a[0].value + glow_dx[k]); g[1] = real_rv(y + glow_dy[k]);
+			glyph(g, 0);
+		}
+		letter_glow_cheap_slow++;
+	}
+	set_alpha(old_alpha);
+	set_colour((int)old_colour);
+	letter_glow_cheap_n++;
+	return 1;
+}
+
+static int glow_compare(const Capture *a, const Capture *b, float *maxerr) {
+	if (a->overflow || b->overflow) return 0;
+	int ia = 0, ib = 0, va = 0, vb = 0;
+	for (;;) {
+		while (ia < a->n && va >= a->s[ia].count) { ia++; va = 0; }
+		while (ib < b->n && vb >= b->s[ib].count) { ib++; vb = 0; }
+		if (ia >= a->n || ib >= b->n) return ia >= a->n && ib >= b->n;
+		const Submit *x = &a->s[ia], *y = &b->s[ib];
+		if (x->prim != y->prim || x->tex != y->tex || x->stride != VSTRIDE || y->stride != VSTRIDE) return 0;
+		const uint8_t *p = x->bytes + va * VSTRIDE, *q = y->bytes + vb * VSTRIDE;
+		for (int i = 0; i < 2; i++) {
+			float u, v; memcpy(&u, p + 4 * i, 4); memcpy(&v, q + 4 * i, 4);
+			float e = fabsf(u - v);
+			if (!(e <= 1.0f / 1024)) return 0;
+			if (e > *maxerr) *maxerr = e;
+		}
+		if (memcmp(p + 8, q + 8, VSTRIDE - 8)) return 0;
+		va++; vb++;
+	}
+}
+
+/* letterGlow=2, called with draw_text_scaled_glow_ext's 7 arguments and global.font_scale / font_yoffset. 1: drawn
+ * (in verify mode: drawn the cheap way, and `original` run into scratch for the comparison). 0: the caller runs the
+ * game's script. */
+int letter_glow_cheap(const RV *args, const RV *font_scale, const RV *font_yoffset, void (*original)(void *), void *ctx) {
+	if (!installed || !glow_installed)
+		return 0;
+	if (!letter_glow_verify) {
+		if (glow_cheap(args, font_scale, font_yoffset, 1)) return 1;
+		letter_glow_cheap_fallback++;
+		return 0;
+	}
+	Capture *cheap = &capture_a, *gml = &capture_b;
+	memset(cheap, 0, sizeof(*cheap)); memset(gml, 0, sizeof(*gml));
+	void *font_before = *thefont;
+	unsigned colour_before = get_colour();
+	float alpha_before = get_alpha();
+	capturing = cheap; capture_scratch = 0;
+	int handled = glow_cheap(args, font_scale, font_yoffset, 0);
+	capture_close(cheap);
+	void *font_cheap = *thefont;
+	unsigned colour_cheap = get_colour();
+	float alpha_cheap = get_alpha();
+	*thefont = font_before;
+	capturing = gml; capture_scratch = 1;
+	original(ctx);
+	capture_close(gml);
+	capturing = NULL;
+	if (!handled) {
+		/* the original ran into scratch only: draw it for real */
+		original(ctx);
+		letter_glow_vunverified++;
+		return 1;
+	}
+	letter_glow_verified++;
+	float err = 0;
+	int same = glow_compare(cheap, gml, &err) && font_cheap == *thefont && colour_cheap == get_colour() &&
+		alpha_cheap == get_alpha() && colour_cheap == colour_before && alpha_cheap == alpha_before;
+	if (same) {
+		if (err > letter_glow_vmaxerr) letter_glow_vmaxerr = err;
+	} else if (letter_glow_vmismatch++ < 8) {
+		int na = 0, nb = 0;
+		for (int i = 0; i < cheap->n; i++) na += cheap->s[i].count;
+		for (int i = 0; i < gml->n; i++) nb += gml->s[i].count;
+		debugPrintf("[LETTERGLOW] verify mismatch: %d/%d submissions, %d/%d vertices, overflow %d/%d, colour %08x/%08x, "
+			"alpha %.3f/%.3f, font %p/%p\n", cheap->n, gml->n, na, nb, cheap->overflow, gml->overflow, colour_cheap,
+			get_colour(), alpha_cheap, get_alpha(), font_cheap, *thefont);
+	}
+	return 1;
+}
+
+static int glow_install(void) {
+#define GRESOLVE(v, t, n) do { v = (t)so_symbol(&yoyoloader_mod, n); if (!v) return 0; } while (0)
+	typedef float ABI (*lengthdir_fn)(float, float);
+	lengthdir_fn ldx, ldy;
+	GRESOLVE(ldx, lengthdir_fn, "_Z17YYGML_lengthdir_xff");
+	GRESOLVE(ldy, lengthdir_fn, "_Z17YYGML_lengthdir_yff");
+	GRESOLVE(set_colour, set_int_fn, "_Z21YYGML_draw_set_colouri");
+	GRESOLVE(set_alpha, set_float_fn, "_Z20YYGML_draw_set_alphaf");
+	GRESOLVE(alloc_verts, alloc_verts_fn, "_ZN8Graphics10AllocVertsE9ePrimTypePvii");
+	GRESOLVE(cur_count, int *, "g_CurrentVertexCount");
+	GRESOLVE(last_prim, int *, "g_LastPrimType");
+	GRESOLVE(last_vsize, int *, "g_LastVertexSize");
+	GRESOLVE(last_tex, void **, "g_pLastTexture");
+	GRESOLVE(src_verts, uint8_t **, "SrcVerts");
+#undef GRESOLVE
+	/* draw_text_glow_ext's loops: radius r = 1, 2; angle from 0 while < 360, step 45 * r */
+	int k = 0;
+	for (int r = 1; r <= 2; r++)
+		for (int angle = 0; angle < 360; angle += 45 * r, k++) {
+			glow_dx[k] = (double)ldx((float)r, (float)angle);
+			glow_dy[k] = (double)ldy((float)r, (float)angle);
+		}
+	letter_glow_verify = exp_flag("letterglowverify");
+	letter_glow_fault = letter_glow_verify && exp_flag("letterglowverifyfault");
+	glow_installed = k == 12;
+	return glow_installed;
 }
 
 /* exp_lettertime around the original text call */
@@ -338,11 +539,13 @@ int letter_glyph_install(void *(*entry_hook)(uintptr_t entry, void *replacement)
 	letter_glyph_verify = exp_flag("letterglyphverify");
 	letter_glyph_fault = letter_glyph_verify && exp_flag("letterglyphverifyfault");
 	int timing = exp_flag("lettertime"); // letter_timing itself is set later in the boot
-	if (letter_glyph_verify || timing) {
+	if (!glow_install())
+		debugPrintf("letter glow: cheap glow NOT installed\n");
+	if (letter_glyph_verify || timing || letter_glow_verify) {
 		uintptr_t av;
 		RESOLVE(av, uintptr_t, "_ZN8Graphics10AllocVertsE9ePrimTypePvii");
 		if (!(orig_alloc_verts = entry_hook(av, alloc_verts_hook))) {
-			letter_glyph_verify = 0;
+			letter_glyph_verify = letter_glow_verify = 0;
 			return 0;
 		}
 	}

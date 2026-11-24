@@ -85,14 +85,15 @@ static const int *builtin_count;
 static uintptr_t getters[5],setters[5];
 static getter_fn room_height;
 static int installed;
-/* letterGlow in yyl.cfg (default 0): the glow pass of glowing dialogue letters (the highlighted words) is skipped; 1
- * keeps it. That pass is draw_text_scaled_glow_ext -> draw_text_glow_ext, which redraws the letter around itself in
- * purple through the runner's text drawing: ~300 us per letter on the Vita, 2.7-3.7 ms per frame with 9-12 glowing
- * letters on screen (chinatown_10's nightmare dialogue: 23.9 -> 18.8 ms in an in-run A/B). Visual only: the scripts
- * read the draw alpha/colour, draw, and restore both; they call no random and write no instance or global variable.
- * The original user event (fallback path) still draws it. Debug: exp_letterglowab draws it in every other report
- * window, exp_letterglowprof times it ([LETTERGLOW] report line). */
-int letter_glow=0,letter_glow_ab,letter_glow_ab_on,letter_glow_prof;
+/* letterGlow in yyl.cfg: the glow pass of glowing dialogue letters (the highlighted words). That pass is
+ * draw_text_scaled_glow_ext -> draw_text_glow_ext, which redraws the letter 12 times around itself in purple through
+ * the runner's text drawing: ~300 us per letter on the Vita, 2.7-3.7 ms per frame with 9-12 glowing letters on screen
+ * (chinatown_10's nightmare dialogue: 23.9 -> 18.8 ms in an in-run A/B). 2 (default): the same 12 copies with one
+ * text call and one vertex batch (letter_glyph.c, letter_glow_cheap); 1: the game's script; 0: no glow. Visual only:
+ * the scripts read the draw alpha/colour, draw, and restore both; they call no random and write no instance or global
+ * variable. The original user event (fallback path) still draws the game's glow. Debug: exp_letterglowab cycles off,
+ * cheap, game per report window, exp_letterglowprof times it ([LETTERGLOW] report line). */
+int letter_glow=2,letter_glow_ab,letter_glow_ab_on,letter_glow_prof,letter_glow_compare;
 unsigned letter_glow_calls,letter_glow_zero,letter_glow_skipped; uint64_t letter_glow_us;
 unsigned letter_native_hits[5],letter_native_fallbacks[5],letter_native_draws,letter_native_rng_calls,letter_native_direct_user,letter_native_cached_slots;
 unsigned letter_native_reject_line[64],letter_native_reject_count[64],letter_native_reject_overflow;
@@ -480,6 +481,9 @@ static int user_admit(void *self,State *s) {
  REQUIRE(numeric(gpeek(&g,FONT_YOFFSET)));
  return 1;
 }
+typedef struct { void *self,*other; RV *out; RV **argv; } GlowCall;
+static void glow_original(void *p) { GlowCall *c=p; glow_script(c->self,c->other,c->out,7,c->argv); }
+int letter_glow_cheap(const RV *args,const RV *font_scale,const RV *font_yoffset,void (*original)(void *),void *ctx);
 static void user_call(void *self,void *other,State *s) {
  int type=cmp(number(s->v[TYPE]),0)==0?0:cmp(number(s->v[TYPE]),1)==0?1:cmp(number(s->v[TYPE]),2)==0?2:-1;
  if(type<0) return;
@@ -493,16 +497,33 @@ static void user_call(void *self,void *other,State *s) {
    a=random_value(1*number(s->v[FX_SCALE])); b=random_value(1*number(s->v[FX_SCALE])); y=(y+a)-b;
    letter_native_rng_calls+=4;
   } else if(type==2) y+=(number(s->v[OSC_Y])*3)*number(s->v[FX_SCALE]);
-  if(pass) { RV angle=real(0); scaled_call(self,other,x,y,slot(self,LETTER),s->v[SCALE],&angle); }
+  if(pass) {
+   RV angle=real(0); scaled_call(self,other,x,y,slot(self,LETTER),s->v[SCALE],&angle);
+   // exp_letterglowcompare (screenshots): every letter also one and two rows lower, see below
+   for(int r=1;letter_glow_compare&&r<3;++r) scaled_call(self,other,x,y+r*letter_glow_compare,slot(self,LETTER),s->v[SCALE],&angle);
+  }
+  else if(letter_glow_compare) {
+   /* the game's glow in place, the cheap one a row lower, none two rows lower: one frame, the same letter
+    * positions and shakes. Debug only (exp_letterglowcompare). */
+   RV alpha=real(0); builtin(GET_ALPHA,&alpha,self,other,0,NULL);
+   RV args[7]={real(x),real(y),*slot(self,LETTER),real(2),real(2),real(8388736),real(((value(s->parent,TXT_GLOW_ALPHA)*alpha.value)*.75)*number(s->v[FX_SCALE]))},out=real(0);
+   RV *argv[7]; for(int i=0;i<7;++i) argv[i]=args+i;
+   GlowCall call={self,other,&out,argv}; glow_original(&call);
+   args[1]=real(y+letter_glow_compare);
+   if(!letter_glow_cheap(args,slot(*global,FONT_SCALE),slot(*global,FONT_YOFFSET),glow_original,&call)) glow_original(&call);
+  }
   else {
    RV alpha=real(0); builtin(GET_ALPHA,&alpha,self,other,0,NULL);
    RV args[7]={real(x),real(y),*slot(self,LETTER),real(2),real(2),real(8388736),real(((value(s->parent,TXT_GLOW_ALPHA)*alpha.value)*.75)*number(s->v[FX_SCALE]))},out=real(0);
    RV *argv[7]; for(int i=0;i<7;++i) argv[i]=args+i;
    ++letter_glow_calls; if(args[6].value==0) ++letter_glow_zero;
-   // letterGlow=0 (the default): no purple glow behind glowing dialogue letters (visual only; see letter_glow)
-   if(letter_glow||letter_glow_ab_on) {
+   // letterGlow: 2 (the default) the cheap glow of letter_glyph.c, 1 the game's script, 0 none (see letter_glow)
+   int mode=letter_glow_ab?letter_glow_ab_on:letter_glow;
+   if(mode) {
     uint64_t t0=letter_glow_prof?sceKernelGetProcessTimeWide():0;
-    glow_script(self,other,&out,7,argv);
+    GlowCall call={self,other,&out,argv};
+    if(mode!=2||!letter_glow_cheap(args,slot(*global,FONT_SCALE),slot(*global,FONT_YOFFSET),glow_original,&call))
+     glow_original(&call);
     if(letter_glow_prof) letter_glow_us+=sceKernelGetProcessTimeWide()-t0;
    } else ++letter_glow_skipped;
   }
