@@ -118,15 +118,22 @@ static void texture_flush_drain(gml_rvalue *result, void *self, void *other, int
 static void forced_gc_report(void) {
 	extern volatile int vgl_forced_gc_runs, vgl_forced_gc_open_scene;
 	extern volatile size_t vgl_forced_gc_size;
+	// vitagl.patch: begun off the GL thread (no glFinish, no retire drain); stopped before the cycle that frees the
+	// current frame's purge slot (a scene with commands open, or off the GL thread)
+	extern uint32_t vgl_forced_gc_off_thread, vgl_forced_gc_capped;
 	static int seen, seen_open;
+	static uint32_t seen_off, seen_capped;
 	if (vgl_forced_gc_runs == seen)
 		return;
-	debugPrintf("[FORCEDGC] %d forced garbage collection(s) in the last frame, %d with a scene open, last for %uKB | room %d | "
-		"free vram %uKB ram %uKB phycont %uKB\n", vgl_forced_gc_runs - seen, vgl_forced_gc_open_scene - seen_open,
-		(unsigned)(vgl_forced_gc_size / 1024), current_room ? *current_room : -1, vglMemFree(VGL_MEM_VRAM) / 1024,
-		vglMemFree(VGL_MEM_RAM) / 1024, vglMemFree(VGL_MEM_PHYCONT) / 1024);
+	debugPrintf("[FORCEDGC] %d forced garbage collection(s) in the last frame, %d with a scene open, %u off the GL thread, "
+		"%u kept the current frame's slot, last for %uKB | room %d | free vram %uKB ram %uKB phycont %uKB\n",
+		vgl_forced_gc_runs - seen, vgl_forced_gc_open_scene - seen_open, vgl_forced_gc_off_thread - seen_off,
+		vgl_forced_gc_capped - seen_capped, (unsigned)(vgl_forced_gc_size / 1024), current_room ? *current_room : -1,
+		vglMemFree(VGL_MEM_VRAM) / 1024, vglMemFree(VGL_MEM_RAM) / 1024, vglMemFree(VGL_MEM_PHYCONT) / 1024);
 	seen = vgl_forced_gc_runs;
 	seen_open = vgl_forced_gc_open_scene;
+	seen_off = vgl_forced_gc_off_thread;
+	seen_capped = vgl_forced_gc_capped;
 }
 
 // Surface memory is freed once the GPU has finished the scenes that may use it (vitagl.patch: vgl_retire, the scene

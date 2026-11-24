@@ -11,6 +11,8 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Settled smoke and burning-corpse embers update every 4th frame | — |
 | Smoke is drawn with half the clouds, each one larger; the hidden ones still block sight and get pushed | `smokeClouds=1` (`smokeClouds=3`: a third, larger still; 1 to 3) |
 | Lighting updates 30 times a second | — |
+| Past the first 20 in a frame, effect particles are drawn every other frame | — |
+| With BLOOD SPRAY off, smoke clouds show no blood drops, and the hidden drops' lifetimes (they set how many other particles spawn) are approximated | — |
 | Roll dust is unlit, and afterimages have no light tint | `trailLights=1` (`fogTrailLights=1`: only in the foggy rooms) |
 | No glow around highlighted words in dialogue | `letterGlow=1` |
 | The wavy dialogue backgrounds sway in coarser steps | `waveStrips=1` (`waveStrips=2`: half as coarse) |
@@ -27,6 +29,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Club | No rim glow on the dancers | `dancerGlow=1` (in club_0 also `roomLighting=1`) |
 | club_0, haunted_cart2 | No lamp glow on walls and floors | `roomLighting=1` |
 | Clotheslines | No coloured light on them | `ropeLights=1` |
+| Clotheslines | Ropes and their cloth move every other frame, and stop while more than 512 px outside the view | — |
 | Cathedral | No dust in the window light | `cathedralDust=1` |
 | Prison | Thinner fog | `fogScale=1` |
 | Dossier burn | No small decorative burn circles; the burn spreads the same | `dossierCircles=1` |
