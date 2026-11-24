@@ -10,6 +10,10 @@ Most rooms run at 60 fps. Heavy rooms dip below it, to about 40 in the busiest f
 logic runs on one core and can't be split across more. A 500 MHz profile in PSVshell adds a few fps in heavy rooms
 (the loader runs at 444 MHz).
 
+To get there, the loader patches the game in over 50 places for performance, most of them by replacing hot game code
+with native code that gives identical results. It also fixes vitaGL, the port's OpenGL layer, which could free
+video memory the GPU was still using; that caused a freeze and a crash.
+
 ## Compromises
 
 To run near 60 fps, the port changes a few things:
