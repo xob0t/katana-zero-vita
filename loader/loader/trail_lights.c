@@ -154,6 +154,12 @@ static int reject(unsigned line) {
 }
 #define REJECT() return reject(__LINE__)
 
+// trailLights=0 (default): the light-tinted copies aren't drawn; everything else, the random() calls included, is
+extern int trail_lights, fog_trail_ab_off;
+unsigned trail_lights_tints_skipped;
+
+// The original inner loop's draw_sprite_ext call site (the GML body: native body off or rejected, verify mode): records
+// the draw in verify mode, then draws it unless trailLights=0 (the loop's random() calls and i run as before)
 static void ABI draw_capture(void *self, int sprite, float subimg, float x, float y, float xs, float ys, float rot,
 		int colour, float alpha) {
 	if (capturing) { // counted past MAX_DRAWS too: verify_finish treats an overflow as a mismatch
@@ -161,12 +167,11 @@ static void ABI draw_capture(void *self, int sprite, float subimg, float x, floa
 			gml_draws[gml_count] = (Draw){sprite, colour, subimg, x, y, xs, ys, rot, alpha};
 		gml_count++;
 	}
-	draw_sprite_ext(self, sprite, subimg, x, y, xs, ys, rot, colour, alpha);
+	if (trail_lights || fog_trail_ab_off)
+		draw_sprite_ext(self, sprite, subimg, x, y, xs, ys, rot, colour, alpha);
+	else
+		trail_lights_tints_skipped++;
 }
-
-// trailLights=0 (default): the light-tinted copies aren't drawn; everything else, the random() calls included, is
-extern int trail_lights, fog_trail_ab_off;
-unsigned trail_lights_tints_skipped;
 
 // self: the trail, other: the light (inside with (other) in the light's scope). Returns 0 to fall back to the original.
 static int native_body(void *self, void *other, int dry) {
@@ -383,7 +388,8 @@ int trail_lights_install(void) {
 	}
 	native = !exp_flag("traillightsnative0") && vars_ok && point_distance && lengthdir_x && lengthdir_y && random_fn_ &&
 		draw_sprite_ext && variable_get && real_value && global_obj && check_call(AT(INNER_NEW_SITE), AT(PLT_NEW), (uintptr_t)new_with);
-	verify = native && rng_state && rng_index && exp_flag("traillightsverify") && check_call(AT(DRAW_SITE), AT(PLT_DRAW), (uintptr_t)draw_sprite_ext);
+	int draw_site = draw_sprite_ext && check_call(AT(DRAW_SITE), AT(PLT_DRAW), (uintptr_t)draw_sprite_ext);
+	verify = native && rng_state && rng_index && exp_flag("traillightsverify") && draw_site;
 	// Both veneers first, so a failed allocation leaves neither site patched (both sites were checked above)
 	uint32_t *new_veneer = alloc_veneer(AT(NEW_SITE)), *next_veneer = alloc_veneer(AT(NEXT_SITE));
 	if (!new_veneer || !next_veneer ||
@@ -392,8 +398,12 @@ int trail_lights_install(void) {
 		return 0;
 	if (native && !patch_call(AT(INNER_NEW_SITE), AT(PLT_NEW), (uintptr_t)new_with, (uintptr_t)&trail_inner_new_with))
 		native = verify = 0;
-	if (verify && !patch_call(AT(DRAW_SITE), AT(PLT_DRAW), (uintptr_t)draw_sprite_ext, (uintptr_t)&draw_capture))
+	// The original body's tint draw goes through draw_capture whether or not the native body is on (trailLights=0 must
+	// hold for the GML fallback too)
+	if (!draw_site || !patch_call(AT(DRAW_SITE), AT(PLT_DRAW), (uintptr_t)draw_sprite_ext, (uintptr_t)&draw_capture)) {
 		verify = 0;
+		debugPrintf("trail lights: the original tint draw isn't gated (trailLights=0 holds for the native body only)\n");
+	}
 #undef AT
 	check = exp_flag("traillightscheck");
 	debugPrintf("trail lights: native inner body %s%s\n", native ? "on" : "off", verify ? " (verify mode)" : "");

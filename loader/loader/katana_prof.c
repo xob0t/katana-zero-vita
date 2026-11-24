@@ -631,22 +631,22 @@ void katana_prof_report(int frames) {
 		// exp_fogtrailsample, the clouds' average lit layer (colour weighted by light_alpha, light_alpha / raised alpha)
 		extern unsigned fog_trail_native, fog_trail_original, fog_trail_samples;
 		extern double fog_trail_sum[5];
-		static unsigned last_fog_native, last_fog_original;
-		if (frames > 0 && (fog_trail_native != last_fog_native || fog_trail_original != last_fog_original)) {
+		extern unsigned trail_lights_tints_skipped;
+		static unsigned last_fog_native, last_fog_original, last_tints;
+		if (frames > 0 && (fog_trail_native != last_fog_native || fog_trail_original != last_fog_original ||
+				trail_lights_tints_skipped != last_tints)) {
 			char sampled[160] = "";
 			if (fog_trail_samples && fog_trail_sum[3] > 0)
 				snprintf(sampled, sizeof(sampled), " | lit layer: rgb %.0f %.0f %.0f, light_alpha %.3f, light_alpha / raised alpha %.3f (%u samples)",
 					fog_trail_sum[0] / fog_trail_sum[3], fog_trail_sum[1] / fog_trail_sum[3], fog_trail_sum[2] / fog_trail_sum[3],
 					fog_trail_sum[3] / fog_trail_samples, fog_trail_sum[4] / fog_trail_samples, fog_trail_samples);
-			extern unsigned trail_lights_tints_skipped;
-			static unsigned last_tints;
 			debugPrintf("[FOGTRAIL] dust cloud draws per frame: %.1f unlit, %.1f lit | afterimage tints not drawn %.1f%s\n",
 				(float)(fog_trail_native - last_fog_native) / frames, (float)(fog_trail_original - last_fog_original) / frames,
 				(float)(trail_lights_tints_skipped - last_tints) / frames, sampled);
-			last_tints = trail_lights_tints_skipped;
 		}
 		last_fog_native = fog_trail_native;
 		last_fog_original = fog_trail_original;
+		last_tints = trail_lights_tints_skipped;
 		extern int fog_trail_ab, fog_trail_ab_off;
 		static unsigned fog_ab_windows;
 		if (fog_trail_ab && ++fog_ab_windows % 2 == 0)
