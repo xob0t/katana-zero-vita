@@ -649,8 +649,6 @@ static void circle_step(void *self, void *other) {
 // ---- Spawner Step ----
 
 static void spawner_step(void *self, void *other) {
-	extern void t30_dossier_burning(void);
-	t30_dossier_burning(); // the 30 fps modes switch to 30 ticks/s during the burn
 	burn_tick(0);
 	TSTART();
 

@@ -290,6 +290,8 @@ static int finish_quad(void) {
     ++virtual_capture_quads_recorded;
     return 1;
 }
+/* For title_pages.c: a capture waiting to be materialized (a runner barrier such as FlushTexture would draw it). */
+int virtual_capture_busy(void) { return installed && (virtual_target || pending); }
 static void materialize(unsigned reason, unsigned line) {
     int still_target;
     if (internal || (!virtual_target && !pending)) return;
