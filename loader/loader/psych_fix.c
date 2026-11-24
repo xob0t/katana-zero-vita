@@ -165,8 +165,8 @@ static gml_rvalue *ABI lazy_clear(lazy_pass *p, void *self, void *other, gml_rva
 }
 
 static void ABI lazy_event(lazy_pass *p, void *self, void *other, int n) {
-	if (p->active && !p->flushed)
-		p->events++;
+	if (in_battle_draw)
+		p->events++; // every user event the battle Draw runs, in its pass or not
 	lazy_flush(p);
 	real_event_user(self, other, n);
 }
@@ -278,6 +278,8 @@ static int ABI battle_reset(void) { return lazy_reset(&battle); }
 
 static uintptr_t *got_slot[4], got_saved[4], got_mine[4];
 static event_func orig_battle_draw;
+static builtin_fn bi_instance_number;
+static unsigned portal_frames;
 static int lazy_on;
 
 static void battle_draw(void *self, void *other) {
@@ -294,6 +296,14 @@ static void battle_draw(void *self, void *other) {
 	real_reset_target = (reset_target_fn)got_saved[1];
 	real_event_user = (event_user_fn)got_saved[2];
 	real_legacy = (legacy_fn)got_saved[3];
+	if (research && bi_instance_number) { // research: frames with a portal, whose pass can't be skipped
+		gml_rvalue r = {0, 0, 5}, arg;
+		uint32_t ref[4] = {828, 0x1000000, 0, 15}; // obj_psychboss_portal
+		memcpy(&arg, ref, sizeof(arg));
+		bi_instance_number(&r, self, other, 1, &arg);
+		if ((r.kind & 0xffffff) == 0 && r.val > 0)
+			portal_frames++;
+	}
 	in_battle_draw = 1;
 	battle_pass_done = 0;
 	orig_battle_draw(self, other);
@@ -544,7 +554,6 @@ static void effects_draw_res(void *self, void *other) {
 
 // Eyes Draw: how often a pass has no obj_psychboss_eye to draw (instance_number through the builtin)
 static event_func orig_eyes_draw;
-static builtin_fn bi_instance_number;
 static unsigned eyes_draws, eyes_empty;
 static void eyes_draw_res(void *self, void *other) {
 	eyes_draws++;
@@ -578,8 +587,9 @@ void psych_fix_report(int frames) {
 		lazy_pass *p = passes[i];
 		if (!p->passes)
 			continue;
-		debugPrintf("[PSYCHFIX] %s pass: %u passes, %u skipped, %u cleared, %u drawn (%u user events)%s", p->name, p->passes,
-			p->skips, p->clears, p->flushes, p->events, lazy_verify ? "" : "\n");
+		debugPrintf("[PSYCHFIX] %s pass: %u passes, %u skipped, %u cleared, %u drawn (%u user events, %u frames with a "
+			"portal)%s", p->name, p->passes, p->skips, p->clears, p->flushes, p->events, portal_frames, lazy_verify ? "" : "\n");
+		portal_frames = 0;
 		if (lazy_verify)
 			debugPrintf(" | verify %u checked, %u mismatches total (%u faults injected)\n", p->verified, p->mismatches,
 				lazy_faults);
