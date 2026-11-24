@@ -6,8 +6,12 @@
  * (dead, animation on its last frame, no fire left to spread, no explosion anywhere, not moved since the last tick)
  * the Step's writes all put back the values that are already there. What it still does that matters:
  *   - ground_meeting(x, y + 1): collision queries, which move the body to y + 1 and back (that marks it dirty for the
- *     collision tree) and can drain the tree's dirty list. It runs here too, through the real script, at the point
- *     of the event order where the Step would have called it;
+ *     collision tree, and the next query drains the dirty list, removing and re-inserting the body) and read the
+ *     blocks found. They run here too, at the point of the event order where the Step would have made them: the
+ *     script's own runner calls in its order (obj_firstframe.first, instance_place through YYGML_CallLegacyFunction,
+ *     hit.draw_layer, then the jumpthrough place_meeting pair), with the same arguments; bodies with is_player not
+ *     plainly false (the cable branch) or on the first frame call the script itself. This query is most of what a
+ *     resting body still costs (~20 us on the Vita, ~35 us on jumpthrough floors);
  *   - with its answer, begin_animation(ground_sprite or fly_sprite, 0.3, false) and, on the ground, bloodend_timer
  *     counting up to 100;
  *   - with time_out on, the countdown timeout_timer -= 1 * global.fr.
@@ -24,16 +28,19 @@
  * User event 14 for a body is chest_hit/roll_hit sounds at given frames of the hurt-ground and fall sprites (each test
  * needs animation_float == 0), animation_code() and ai_set_hair() when has_hair. When chest_hit and roll_hit are
  * already bool false and no sound frame is due (sprite, animation_index and animation_float == 0, the table below),
- * the event is only animation_code() and, with has_hair,
- * ai_set_hair(), which run here through the real scripts (any body, moving or not).
+ * the event is only animation_code() and, with has_hair, ai_set_hair(), which run here through the real scripts (any
+ * body, moving or not).
+ * Measured on the Vita (haunted_alien2 / bunker2_3, per-window A/B): a resting body cost Step ~44 us + user 14 ~13 us
+ * per frame; about 30 us of it is gone, so ~0.4 ms with 14 bodies, ~1 ms with 28, ~1.6 ms with 54.
  *
  * exp_corpserest0 runs the original events. Debug: exp_corpserestverify runs both versions of each skipped event on the
  * same starting state (the variables, CInstance fields 0x84-0x150 and the random number state put back in between)
  * and compares every instance variable (kind and value; flags of reals and bools aren't compared, the Step writes
  * stack garbage there), the fields, the random number state and room_maxid. The original runs second, so the game
- * keeps the original's result (the body's collision query then runs twice). exp_corpserestfault1 (Step) / exp_corpserestfault2 (user 14)
- * are negative controls. exp_corpserestab switches the skips off and on every report window; exp_corpserestclass
- * times the original events of bodies at rest and of the others (with the skips off). Report: [CORPSEREST].
+ * keeps the original's result (the body's collision query then runs twice). exp_corpserestfault1 (Step) and
+ * exp_corpserestfault2 (user 14) are negative controls. exp_corpserestab switches the skips off and on every report
+ * window; exp_corpserestclass times the original events of bodies at rest and of the others (with the skips off);
+ * exp_corpserestscript calls the ground_meeting script; exp_corpserestprof times the events. Report: [CORPSEREST].
  */
 
 #include <vitasdk.h>
@@ -213,8 +220,6 @@ static int resolve(void) {
 		return resolved > 0;
 	obj_explosion = object_find("obj_explosion");
 	spr_corpsemask = sprite_find("spr_corpsemask");
-	uint64_t speed_bits;
-	memcpy(&speed_bits, &const_speed->val, 8);
 	int consts = KIND(const_speed) == 0 && const_speed->val == 0.3 && KIND(const_false) == 13 && const_false->val == 0;
 	resolved = obj_explosion >= 0 && spr_corpsemask >= 0 && consts ? 1 : -1;
 	obj_firstframe = object_find("obj_firstframe");
