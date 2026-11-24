@@ -430,15 +430,28 @@ void katana_prof_report(int frames) {
 			extern int letter_glow, letter_glow_ab, letter_glow_ab_on, letter_glow_prof;
 			extern unsigned letter_glow_calls, letter_glow_zero, letter_glow_skipped;
 			extern uint64_t letter_glow_us;
+			extern unsigned letter_glow_cheap_n, letter_glow_cheap_slow, letter_glow_cheap_zero, letter_glow_cheap_fallback;
+			extern int letter_glow_verify, letter_glow_fault;
+			extern unsigned letter_glow_verified, letter_glow_vmismatch, letter_glow_vunverified;
+			extern float letter_glow_vmaxerr;
+			static const char *const glow_modes[3] = { "off", "game", "cheap" };
 			if (frames > 0 && letter_glow_calls)
 				debugPrintf("[LETTERGLOW] glow passes %.1f per frame (%.1f at alpha 0, %.1f skipped), %.3f ms/frame | "
-					"letterGlow %d | A/B: %s\n", (float)letter_glow_calls / frames, (float)letter_glow_zero / frames,
-					(float)letter_glow_skipped / frames, letter_glow_us / 1000.0f / frames, letter_glow,
-					letter_glow_ab ? (letter_glow_ab_on ? "on" : "off") : "-");
+					"cheap %.1f (slow %u, zero %u, fallback %u) | letterGlow %d | A/B: %s\n",
+					(float)letter_glow_calls / frames, (float)letter_glow_zero / frames,
+					(float)letter_glow_skipped / frames, letter_glow_us / 1000.0f / frames,
+					(float)letter_glow_cheap_n / frames, letter_glow_cheap_slow, letter_glow_cheap_zero,
+					letter_glow_cheap_fallback, letter_glow, letter_glow_ab ? glow_modes[letter_glow_ab_on % 3] : "-");
+			if (letter_glow_verify)
+				debugPrintf("[LETTERGLOW] verify: %u glows compared, %u mismatches, %u not handled, max position error "
+					"%.6f px (totals)%s\n", letter_glow_verified, letter_glow_vmismatch, letter_glow_vunverified,
+					(double)letter_glow_vmaxerr, letter_glow_fault ? " | fault on" : "");
 			letter_glow_calls = letter_glow_zero = letter_glow_skipped = 0;
+			letter_glow_cheap_n = letter_glow_cheap_slow = letter_glow_cheap_zero = letter_glow_cheap_fallback = 0;
 			letter_glow_us = 0;
+			// exp_letterglowab: letterGlow 0 (off), 1 (game), 2 (cheap) in turn, one report window each
 			if (letter_glow_ab)
-				letter_glow_ab_on = !letter_glow_ab_on;
+				letter_glow_ab_on = (letter_glow_ab_on + 1) % 3;
 		}
 		extern unsigned letter_native_direct_user, letter_native_cached_slots;
 		if (letter_native_direct_user || letter_native_cached_slots)

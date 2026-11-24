@@ -33,7 +33,7 @@ Defaults come from the variable definitions in the file listed. "Nonzero" means 
 | `smokeClouds` | 2 | 1 to 3; below 1 counts as 1, above 3 as 3 | One smoke cloud in N is drawn, larger. Needs the native smoke Draw: with `exp_smokedraw0` every cloud is drawn as in the original. | `smokedraw_native.c` |
 | `trailLights` | 0 | 0, nonzero | 1 keeps the light tint on roll dust and afterimages everywhere. | `fog_trail.c`, `trail_lights.c` |
 | `fogTrailLights` | 0 | 0, nonzero | 1 keeps the roll dust's light tint in the fog rooms only. Afterimages are not affected. | `fog_trail.c` |
-| `letterGlow` | 0 | 0, nonzero | 1 keeps the glow behind highlighted dialogue words. Needs the native letters: with `exp_letternative0` the glow is always drawn. | `letter_native.c` |
+| `letterGlow` | 2 | 0 to 2; other values are ignored | The glow behind highlighted dialogue words. 2: the same 12 purple copies of the letter as the game, with one text call and one vertex batch per letter (`letter_glyph.c`); 1: the game's own glow script; 0: no glow. Needs the native letters: with `exp_letternative0` the game's glow is always drawn; with `exp_letterglyph0`, 2 draws the game's glow. | `letter_native.c`, `letter_glyph.c` |
 | `waveStrips` | 4 | 1 to 8; below 2 counts as 1, above 8 as 8 | Strip height factor of the wavy dialogue backgrounds. 1 is the original. Needs the native `draw_sprite_wavy` (`exp_wavynative0` restores the original). | `wavy_native.c` |
 | `dissolveChunkScale` | 4 | 1 or less = original, N > 1 | Laser deaths cut the body into N times taller slices. | `katana.c` |
 | `sameSoundLimit` | 3 | 0 or less = no limit, 1 to 8; above 8 counts as 8 | Most copies of one sound that play at once. | `sound_limit.c` |
