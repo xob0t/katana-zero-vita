@@ -129,6 +129,25 @@ static void forced_gc_report(void) {
 	seen_open = vgl_forced_gc_open_scene;
 }
 
+// Surface memory is freed once the GPU has finished the scenes that may use it (vitagl.patch: vgl_retire, the scene
+// completion fence); totals in debug mode when they change, at most every 2 s
+static void rt_free_report(void) {
+	extern uint32_t vgl_rt_retired_now, vgl_rt_retired_later, vgl_open_scene_retires, vgl_rt_handle_retires,
+		vgl_retire_overflows;
+	extern int vgl_retire_pending(void);
+	static uint32_t seen, frames;
+	frames++;
+	uint32_t sum = vgl_rt_retired_now + vgl_rt_retired_later + vgl_open_scene_retires + vgl_rt_handle_retires +
+		vgl_retire_overflows;
+	if (!debugMode || frames < 120 || sum == seen)
+		return;
+	frames = 0;
+	seen = sum;
+	debugPrintf("[RTFREE] render-target frees: %u at once (GPU done), %u after their scene fence | open-scene texture frees "
+		"held back %u | render targets retired %u | not queued (no memory) %u | waiting now %d\n", vgl_rt_retired_now,
+		vgl_rt_retired_later, vgl_open_scene_retires, vgl_rt_handle_retires, vgl_retire_overflows, vgl_retire_pending());
+}
+
 // DoAStep_Draw hook: application surface size, then lighting at 30 Hz
 static void (*katana_orig_draw)(void);
 
@@ -145,7 +164,7 @@ static void DoAStep_Draw_katana(void) {
 		*app_height = *app_new_height = app_set_h = app_surf_h;
 		*app_new_size = 1;
 	}
-	if (lighting30 && !t30_active) {
+	if (lighting30) {
 		gml_rvalue *(*vwrite)(void *, int) = (*(void ***)*global_obj_ptr)[3];
 		gml_rvalue *timer = vwrite(*global_obj_ptr, var_recolor_timer[1]);
 		if (timer && timer->kind == 0) {
@@ -231,8 +250,7 @@ static void dynamic_res_update(uint32_t swap_us, uint32_t work_us) {
 		}
 		return;
 	}
-	// In 30 fps mode the swap also waits for the second vblank of each frame: not GPU load
-	if (dropped || t30_active || ++frames <= DYNRES_SETTLE_FRAMES)
+	if (dropped || ++frames <= DYNRES_SETTLE_FRAMES)
 		return;
 	bound += (period > DYNRES_MISS_US && work_us < DYNRES_CPU_US && swap_us > DYNRES_SWAP_US) || dynres_test;
 	if (++window < DYNRES_WINDOW)
@@ -251,7 +269,7 @@ static void dynamic_res_update(uint32_t swap_us, uint32_t work_us) {
 // Runs right after vglSwapBuffers, between frames: every scene of the frame has been submitted, so the GPU finish
 // and garbage collection below cannot free memory that commands still being recorded refer to
 
-uint32_t after_swap_step_us[2]; // debug: t30_update, dynamic_res_update of the last frame
+uint32_t after_swap_dynres_us; // debug: dynamic_res_update of the last frame
 static void after_swap(uint32_t swap_us, uint32_t work_us);
 void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
 	after_swap(swap_us, work_us);
@@ -261,12 +279,12 @@ void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
 }
 
 static void after_swap(uint32_t swap_us, uint32_t work_us) {
+	options_menu_sync();
+	enemy_half_rate_update();
 	uint32_t s0 = sceKernelGetProcessTimeLow();
-	t30_update(work_us);
-	uint32_t s1 = sceKernelGetProcessTimeLow();
 	dynamic_res_update(swap_us, work_us);
-	after_swap_step_us[0] = s1 - s0;
-	after_swap_step_us[1] = sceKernelGetProcessTimeLow() - s1;
+	after_swap_dynres_us = sceKernelGetProcessTimeLow() - s0;
+	rt_free_report();
 	// A frame that skipped its swap (frameSkip) may leave scenes open: no collection until a presented frame
 	if (vgl_scene_open)
 		return;
