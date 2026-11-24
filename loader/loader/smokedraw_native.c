@@ -822,8 +822,8 @@ static void ABI smokedraw_event(void *self, void *other) {
  * records. update_light_array rewrites close_light_array's entries with the same values each call, so a skipped call
  * shows in the records, not in the elements; the element compare catches different values written.
  * exp_smokeverifyfault1 (negative control) puts the collision lists back after the native pass, as a native that
- * skipped CollisionMarkDirty would leave them; exp_smokeverifyfault2 adds 1 to the first real element of an array variable. Every
- * event with a moved node or an array must then count as a mismatch.
+ * skipped CollisionMarkDirty would leave them; exp_smokeverifyfault2 flips a value bit of the first element of an
+ * array variable. Every event with a moved node, or with an array element, must then count as a mismatch.
  * Script calls and CSprite::Draw are recorded through entry hooks installed on the first verified event, after every
  * native has installed its own. An entry another native already hooked (ldr pc,[pc,#-4]; target: visibility,
  * light array) gets the recorder in front: the recorder calls that target, so the other native still runs. An unset or
@@ -958,6 +958,7 @@ static uintptr_t *coll_list[2]; // s_dirty_list, s_test_list
 #define SELF_LINKS 0x15c        // the cloud's test-list node (+0x15c) and dirty-list node (+0x168)
 #define SELF_LINKS_SIZE 24
 unsigned smokedraw_verify_lists_unchecked, smokedraw_verify_arrays_unchecked;
+unsigned smokedraw_verify_nodes, smokedraw_verify_arrays, smokedraw_verify_elements; // compared (session)
 static int verify_fault;
 
 // The list in order; 0 if it is longer than MAX_LIST or a link is NULL
@@ -1129,16 +1130,16 @@ static void verify_event(void *self, void *other) {
 		memcpy((uint8_t *)self + SELF_LINKS, links_before, sizeof(links_before));
 	}
 	int nn = snapshot_vars(self, after_native);
-	RV *faulted = NULL; // exp_smokeverifyfault2: a wrong element written, taken back after the compare
+	uint32_t *faulted = NULL; // exp_smokeverifyfault2: a wrong element written (one value bit), undone after the compare
 	if (verify_fault == 2 && nn > 0 && arrays_take(after_native, nn, &arrays_native))
 		for (int k = 0; k < arrays_native.n && !faulted; k++) {
 			RV *items = (RV *)(uintptr_t)word((const void *)arrays_native.a[k].header, 4);
 			for (uint32_t i = 0; i < arrays_native.a[k].n && !faulted; i++)
-				if (KIND(&items[i]) == 0)
-					faulted = &items[i];
+				if (!owning(&items[i]) && KIND(&items[i]) != 0xffffff && KIND(&items[i]) != 5)
+					faulted = (uint32_t *)&items[i].v;
 		}
 	if (faulted)
-		faulted->v.d += 1.0;
+		*faulted ^= 1;
 	int collision_ok = 1;
 	if (lists_ok) {
 		lists_ok = list_take(0, &lists_native[0]) && list_take(1, &lists_native[1]);
@@ -1157,7 +1158,7 @@ static void verify_event(void *self, void *other) {
 		arrays_ok = nn >= 0 && arrays_take(after_native, nn, &arrays_native);
 	int elements_ok = !arrays_ok || arrays_same(&arrays_gml, &arrays_native);
 	if (faulted)
-		faulted->v.d -= 1.0;
+		*faulted ^= 1;
 	if (!arrays_ok)
 		smokedraw_verify_arrays_unchecked++;
 	if (look_verify) // the look settings change only the light layer script call and the submissions
@@ -1187,6 +1188,12 @@ static void verify_event(void *self, void *other) {
 	if (records_ok && fields_ok && rng_ok && bad_slot == -1 && collision_ok && elements_ok) {
 		smokedraw_verified++;
 		smokedraw_verify_records += record_count[1];
+		if (lists_ok)
+			smokedraw_verify_nodes += lists_gml[0].n + lists_gml[1].n;
+		for (int k = 0; arrays_ok && k < arrays_gml.n; k++) {
+			smokedraw_verify_arrays++;
+			smokedraw_verify_elements += arrays_gml.a[k].n;
+		}
 		return;
 	}
 	if (smokedraw_mismatches++ < 8) {
@@ -1270,8 +1277,10 @@ void smokedraw_native_report(int frames) {
 			(float)smokedraw_prof_calls / frames);
 	if (smokedraw_verify)
 		debugPrintf("[SMOKEDRAW] verify: %u events compared (%u script calls and sprite draws), %u mismatches, "
-			"%u skipped%s\n", smokedraw_verified, smokedraw_verify_records, smokedraw_mismatches,
-			smokedraw_verify_skipped, smokedraw_verify_unrecorded ? ", some scripts not recorded" : "");
+			"%u skipped; %u list nodes, %u arrays with %u elements compared%s\n", smokedraw_verified,
+			smokedraw_verify_records, smokedraw_mismatches, smokedraw_verify_skipped, smokedraw_verify_nodes,
+			smokedraw_verify_arrays, smokedraw_verify_elements,
+			smokedraw_verify_unrecorded ? ", some scripts not recorded" : "");
 	if (smokedraw_verify && (smokedraw_verify_lists_unchecked || smokedraw_verify_arrays_unchecked))
 		debugPrintf("[SMOKEDRAW] verify: collision lists unchecked in %u events, array elements in %u\n",
 			smokedraw_verify_lists_unchecked, smokedraw_verify_arrays_unchecked);
