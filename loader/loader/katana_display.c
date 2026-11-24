@@ -110,6 +110,8 @@ int katana_texdrain_now(const char *what) {
 
 static void texture_flush_drain(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) {
 	orig_texture_flush(result, self, other, argc, args);
+	extern void page_restore_cancel(void);
+	page_restore_cancel(); // pages the loader's own recovery flush evicted stay unloaded after the game's flush
 	texdrain_pending = "the game's texture flush";
 	texdrain_run("at the call");
 }
@@ -301,6 +303,11 @@ static void after_swap(uint32_t swap_us, uint32_t work_us) {
 	size_t title_spill_seen;
 	if (title_pages_after_swap(&title_spill_seen))
 		texflush_spill_seen = title_spill_seen;
+	// The pages the game asked for that the last recovery flush evicted, loaded back now that the room has drawn
+	extern int page_restore_after_swap(size_t *spill_seen);
+	size_t restore_spill_seen;
+	if (page_restore_after_swap(&restore_spill_seen))
+		texflush_spill_seen = restore_spill_seen;
 	if (!texture_flush)
 		return;
 	const char *reason = NULL;
@@ -339,6 +346,8 @@ static void after_swap(uint32_t swap_us, uint32_t work_us) {
 		failure_pending = 0; // the flush reloads every page, including the one that failed
 		gml_rvalue result = {0};
 		hang_set_stage(HANG_STAGE_TEXFLUSH);
+		extern void page_restore_before_flush(void);
+		page_restore_before_flush(); // the requested pages it evicts are loaded back after the next frame
 		texture_flush(&result, NULL, NULL, 0, NULL);
 		// Free the flushed pages now: otherwise vitaGL releases them a few frames later and the reloads,
 		// still not fitting, land in RAM again. Only with no scene open: the flush call itself can open one
