@@ -479,11 +479,12 @@ void katana_prof_report(int frames) {
 		dossier_report(frames);
 		extern uint64_t letter_time[6];
 		extern unsigned letter_time_n[6];
-		if (letter_time_n[0]) {
-			static const char *names[5] = {"draw", "admit", "text", "font", "user"};
-			for (int i = 0; i < 5; i++)
-				debugPrintf("[LETTERTIME] %-5s %8u calls %6.2f us each\n", names[i], letter_time_n[i],
-					letter_time_n[i] ? (double)letter_time[i] / letter_time_n[i] : 0.0);
+		if (letter_time_n[0] || letter_time_n[5]) {
+			static const char *names[6] = {"draw", "admit", "text", "font", "user", "step"};
+			for (int i = 0; i < 6; i++)
+				debugPrintf("[LETTERTIME] %-5s %8u calls %6.2f us each %6.3f ms/frame\n", names[i], letter_time_n[i],
+					letter_time_n[i] ? (double)letter_time[i] / letter_time_n[i] : 0.0,
+					frames > 0 ? letter_time[i] / 1000.0 / frames : 0.0);
 			memset(letter_time, 0, sizeof(letter_time));
 			memset(letter_time_n, 0, sizeof(letter_time_n));
 		}
@@ -943,6 +944,8 @@ void katana_prof_report(int frames) {
 	lightback_native_report(frames);
 	extern void held_native_report(int frames);
 	held_native_report(frames);
+	extern void letter_glyph_report(int frames);
+	letter_glyph_report(frames);
 	extern void smokedraw_native_report(int frames);
 	smokedraw_native_report(frames);
 	extern void smoke_create_report(int frames);
