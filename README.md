@@ -43,8 +43,10 @@ back the original.
   refresh while the CPU has time to spare, drops to 640x360 until the next room. `dynamicRes=0`.
 - **Coarser laser deaths.** The body is cut into 4 times fewer, 4 times thicker slices. `dissolveChunkScale=1`.
 - **Thinner prison fog.** One puff in 4 is kept and drawn denser. `fogScale=1`.
-- **Unlit roll dust in fog.** In the foggy rooms (the prison, the neighbour's party) the dust clouds a roll kicks up
-  get one fixed pale tint instead of being lit by the lights around them. Rolling there: 57 -> 59 fps. `fogTrailLights=1`.
+- **Unlit roll dust and afterimages.** The dust clouds a roll kicks up aren't lit by the lights around them (in the
+  foggy prison rooms they get one fixed pale tint), and the afterimages leave out their light-tinted copies. Rolling:
+  prison 57 -> 59 fps, club and Chinatown about 0.5 ms per frame. `trailLights=1` (`fogTrailLights=1`: only the
+  foggy rooms).
 - **Sound limits.** At most 3 copies of one sound and 32 voices at once. Laser deaths start dozens of identical
   sounds and stalled the game mixing them. `sameSoundLimit=0` and `maxVoices=0`.
 - **Lighting updates 30 times a second** in rooms that run at 60. No setting.

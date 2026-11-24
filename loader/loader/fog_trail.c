@@ -1,9 +1,11 @@
 /*
  * fog_trail.c
  *
- * In the fog rooms (the prison levels and the neighbour's apartment party: rooms with an obj_fogspawner, which is
- * what makes the game's fog), the dust clouds the player kicks up when rolling (obj_dustcloud, an obj_particle) are
- * drawn without their light tint. obj_particle user event 15 (APK 1.1.10, GML lines 1-46) is:
+ * The dust clouds the player kicks up when rolling (obj_dustcloud, an obj_particle) are drawn without their light
+ * tint (trailLights=0, the default; trail_lights.c also leaves out the afterimages' light-tinted copies). In the fog
+ * rooms (the prison levels and the neighbour's apartment party: rooms with an obj_fogspawner, which is what makes the
+ * game's fog) they get a fixed tint in place of the lit layer; elsewhere none (there the clouds normally get no lit
+ * layer: no light is close enough). obj_particle user event 15 (APK 1.1.10, GML lines 1-46) is:
  *
  *     if (point_distance(x, y, xprevious, yprevious) > 1 || region == -1) update_region();      // lighting only
  *     if (color_me) {
@@ -37,9 +39,9 @@
  * None of the skipped code draws a random number (update_region, draw_sprite_recolored and the event have no random
  * calls), so gameplay and the RNG stream are unchanged.
  *
- * fogTrailLights=1 in yyl.cfg keeps the original. Debug ([FOGTRAIL] report line): exp_fogtrailsample averages the
- * lit clouds' light colour and light_alpha / raised image_alpha; exp_fogtrailab lights them in every other pair of
- * report windows (in-run A/B, ~4 s per state).
+ * trailLights=1 in yyl.cfg keeps the original everywhere, fogTrailLights=1 only in the fog rooms. Debug ([FOGTRAIL] report line, all rooms): exp_fogtrailsample averages the lit clouds' light colour and
+ * light_alpha / raised image_alpha; exp_fogtrailab lights them in every other pair of report windows (in-run A/B,
+ * ~4 s per state).
  */
 #include <stdint.h>
 #include <string.h>
@@ -65,7 +67,8 @@ typedef int ABI (*exists_fn)(void *self, void *other, int object);
 #define FOG_TRAIL_COLOUR 0xf9c5ca
 #define FOG_TRAIL_ALPHA 0.47f
 
-int fog_trail_lights = 0; // fogTrailLights in yyl.cfg: 1 keeps the clouds' original lighting
+int fog_trail_lights = 0; // fogTrailLights in yyl.cfg: 1 keeps the clouds' original lighting in the fog rooms
+int trail_lights = 0;     // trailLights in yyl.cfg: 1 keeps the lit dust and the afterimages' light tint everywhere
 unsigned fog_trail_native, fog_trail_original;
 int fog_trail_ab, fog_trail_ab_off; // exp_fogtrailab (debug): lit in every other pair of report windows
 static event_fn original;
@@ -114,7 +117,7 @@ static void set(void *self, int n, RV v) { variable_set(self, VAR_ID(n), (int)0x
 static RV real(double v) { RV r = {v, 0, 0}; return r; }
 
 // The event without its lighting, reading and writing in the original's order with the runner's own calls
-static void unlit(void *self) {
+static void unlit(void *self, int fog) {
 	RV *g_blackout = vget(*global_obj, BLACKOUT); // read at the event's start (a reference, tested later)
 	if (!bool_value(vget(self, COLOR_ME))) {
 		draw_self(self);
@@ -138,9 +141,11 @@ static void unlit(void *self) {
 	RV a = get(self, IMAGE_ALPHA);
 	a.value = a.value * 1.5; // operator*= of two reals (GV_ImageAlpha gives a real)
 	set(self, IMAGE_ALPHA, a);
-	// The plain lit layer: the instance's sprite, frame, position, scale and angle, a fixed colour
+	// The plain lit layer: the instance's sprite, frame, position, scale and angle, a fixed colour. Only in the fog
+	// rooms: elsewhere the clouds normally get no light layer at all (no light close enough: draw_sprite_recolored
+	// returns before drawing), so the unlit cloud is drawn without one.
 	RV frame = get(self, IMAGE_INDEX);
-	if ((frame.kind & 0xffffff) == 0)
+	if (fog && (frame.kind & 0xffffff) == 0)
 		draw_sprite_ext(self, (int)word(self, 0x88), (float)frame.value, field(self, 0xb8), field(self, 0xbc),
 			field(self, 0xa4), field(self, 0xa8), field(self, 0xac), FOG_TRAIL_COLOUR, FOG_TRAIL_ALPHA * field(self, 0xb0));
 	a = get(self, IMAGE_ALPHA);
@@ -171,9 +176,11 @@ static void fog_trail_event(void *self, void *other) {
 			dustcloud = -1;
 		debugPrintf("fog trail: obj_dustcloud %d, obj_fogspawner %d\n", dustcloud, fogspawner);
 	}
-	if (dustcloud >= 0 && (int)word(self, 0x84) == dustcloud && word(self, 0x50) == 1 && in_fog_room(self)) {
-		if (!fog_trail_lights && !fog_trail_ab_off) {
-			unlit(self);
+	if (dustcloud >= 0 && (int)word(self, 0x84) == dustcloud && word(self, 0x50) == 1) {
+		// Unlit in the fog rooms (fogTrailLights=0, default) and, with trailLights=0, in every room
+		int fog = in_fog_room(self);
+		if (!trail_lights && !(fog && fog_trail_lights) && !fog_trail_ab_off) {
+			unlit(self, fog);
 			fog_trail_native++;
 			return;
 		}
@@ -209,7 +216,8 @@ event_fn fog_trail_install(event_fn orig) {
 	original = orig;
 	sample = debugMode && exp_flag("fogtrailsample");
 	fog_trail_ab = debugMode && exp_flag("fogtrailab");
-	debugPrintf("fog trail: roll dust clouds in fog rooms drawn %s%s\n", fog_trail_lights ? "lit (fogTrailLights=1)" :
-		"without lighting", sample ? " (sampling their tint)" : "");
+	debugPrintf("fog trail: roll dust clouds and afterimage tint %s%s\n",
+		trail_lights ? "lit (trailLights=1)" : fog_trail_lights ? "unlit outside the fog rooms (fogTrailLights=1)" : "unlit",
+		sample ? " (sampling their tint)" : "");
 	return fog_trail_event;
 }
