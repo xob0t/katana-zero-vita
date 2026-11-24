@@ -9,7 +9,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 |---|---|
 | Enemies think and move every other frame; hits still land on the frame they would have | `enemyHalfRate=0`, or **GRAPHICS → ENEMY AI** |
 | Settled smoke and burning-corpse embers update every 4th frame | — |
-| Smoke is drawn with half the clouds, each one larger; the hidden ones still block sight and get pushed | `smokeClouds=1` |
+| Smoke is drawn with half the clouds, each one larger; the hidden ones still block sight and get pushed | `smokeClouds=1` (`smokeClouds=3`: a third, larger still; 1 to 3) |
 | Lighting updates 30 times a second | — |
 | Roll dust is unlit, and afterimages have no light tint | `trailLights=1` (`fogTrailLights=1`: only in the foggy rooms) |
 | No glow around highlighted words in dialogue | `letterGlow=1` |

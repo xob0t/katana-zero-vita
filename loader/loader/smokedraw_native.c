@@ -39,12 +39,13 @@
  * helper that is hooked (checked once per frame).
  *
  * Visual settings (yyl.cfg; they need this native, so exp_smokedraw0 also restores the original look):
- * - smokeClouds=N (default 2; 1 = original): only clouds whose instance id is a multiple of N submit sprites, at
- *   sqrt(N) times their size, so the smoke covers about the same area with 1/N of the sprites (a burst from a smoke
+ * - smokeClouds=N (1..3, default 2; 1 = original; larger values count as 3): only clouds whose instance id is a
+ *   multiple of N submit sprites, at sqrt(N) times their size, so the smoke covers about the same area with 1/N of the sprites (a burst from a smoke
  *   vial is 131 clouds). The other clouds still run the whole event except draw_sprite_recolored and the sprite
  *   submissions: update_light_array, inside_screen (in_screen gates the cloud's contacts in its Step), the
  *   x/y/image_index/image_angle/image_blend/image_alpha writes and every variable write happen as before (a skipped
- *   draw_self still clears the +0x9c frame offset, as draw_self does), and collision masks, positions, lifetimes and
+ *   draw_self still does what draw_self does besides submitting: if Sprite_Data(sprite_index) exists, the +0x9c
+ *   frame offset is consumed and ms_drawInstance ends at 0), and collision masks, positions, lifetimes and
  *   the random state are untouched. The drawn size goes through the draw arguments (draw_self: the instance's scale
  *   fields for the call, put back right after; raw field writes, so no bounding-box update). What it skips only
  *   writes draw_sprite_recolored's light variables on the cloud (light_col/r/g/b/alpha, prev_recolor_timer_val),
@@ -52,7 +53,8 @@
  *   (written before every read).
  * exp_smokelookab (debugMode) switches it off and on every report window ([SMOKELOOK] in the profiling report).
  * exp_smokeverify + exp_smokelookverify compares the original with the native at smokeClouds: everything above
- * except the submissions, draw_sprite_recolored's call and those light variables.
+ * except the submissions, draw_sprite_recolored's call and those light variables. smokeClouds is clamped to 1..3:
+ * a large divisor would hide almost every cloud.
  *
  * exp_smokedraw0 keeps the original event. Debug (profiling report, [SMOKEDRAW]): exp_smokeab switches the native
  * off and on every report window; exp_smokeprof times the event; exp_smokeverify (debug builds) runs the original with
@@ -232,9 +234,17 @@ static unsigned look_drawn, look_hidden;
 // draw_self for this cloud: nothing if hidden, else at draw_scale times the instance's size (its scale fields for
 // the call, then the same bits back)
 static int hidden;
+static void *(*sprite_data)(int sprite); // Sprite_Data, resolved at install when smokeClouds > 1
+static void **draw_instance;           // CSkeletonSprite::ms_drawInstance
 static void draw_cloud(void *self) {
-	if (hidden) { // what YYGML_draw_self leaves besides the submission: the frame offset at +0x9c consumed
-		memset((uint8_t *)self + 0x9c, 0, 4);
+	if (hidden) {
+		// What YYGML_draw_self leaves besides the submission: nothing if Sprite_Data(sprite_index) is NULL; otherwise
+		// the frame offset at +0x9c consumed (CInstance::GetImageIndex, called before that, only reads) and
+		// ms_drawInstance, set for the submission, back at 0
+		if (sprite_data(*(const int32_t *)((const uint8_t *)self + 0x88))) { // sprite_index
+			memset((uint8_t *)self + 0x9c, 0, 4);
+			*draw_instance = NULL;
+		}
 		return;
 	}
 	float k = draw_scale;
@@ -794,14 +804,26 @@ static void ABI smokedraw_event(void *self, void *other) {
  *    arguments and returned value) and every sprite submission (CSprite::Draw arguments and the instance it draws
  *    for) are recorded. Submissions are not rendered; draw_self/draw_sprite_ext still run down to CSprite::Draw, so
  *    their state effects (the +0x9c frame offset, ms_drawInstance) happen.
- * 3. The snapshot is put back (variable values that own nothing, the fields, the RNG).
+ *    Also snapshotted: the runner's collision lists (s_dirty_list, s_test_list: every node in order with its links,
+ *    the sentinels' first/last, the cloud's own links at +0x15c..+0x174) and the elements of the cloud's array
+ *    variables (close_light_array).
+ * 3. The snapshot is put back (variable values that own nothing, the fields, the RNG, array elements that own
+ *    nothing when the array is the same one at the same length). The collision lists go back too when the original
+ *    only moved the cloud's own nodes (the x/y and image_angle setters' CollisionMarkDirty takes the cloud out of each
+ *    list and pushes it to the front), so a native that skipped that update would leave them differing; otherwise
+ *    (another node added or removed, a list over MAX_LIST) they are left as the original left them and not compared
+ *    ("lists unchecked" in the report).
  * 4. The native runs with the same recording, rendered normally.
  * 5. Compared: the ordered records, every variable slot (the flags word of ay/ax/angle excepted: the original leaves
- *    stack bytes there), fields 0x7c..0xc0, RNG.
- * State outside the cloud that the original's scripts write (light rdist, close_light_array elements, room-seed
- * scratch fields) is not put back. The second pass can't depend on it: those scripts write each of these before
- * reading it, so the same calls with the same arguments (compared in 5) write the same values, and a script call the
- * native skips or adds shows up in the records.
+ *    stack bytes there), fields 0x7c..0xc0, RNG, the collision lists and the cloud's links, array elements.
+ * State outside the cloud that the original's scripts write (light rdist, room-seed scratch fields) is not put back.
+ * The second pass can't depend on it: those scripts write each of these before reading it, so the same calls with the
+ * same arguments (compared in 5) write the same values, and a script call the native skips or adds shows up in the
+ * records. update_light_array rewrites close_light_array's entries with the same values each call, so a skipped call
+ * shows in the records, not in the elements; the element compare catches different values written.
+ * exp_smokeverifyfault1 (negative control) puts the collision lists back after the native pass, as a native that
+ * skipped CollisionMarkDirty would leave them; exp_smokeverifyfault2 adds 1 to the first real element of an array variable. Every
+ * event with a moved node or an array must then count as a mismatch.
  * Script calls and CSprite::Draw are recorded through entry hooks installed on the first verified event, after every
  * native has installed its own. An entry another native already hooked (ldr pc,[pc,#-4]; target: visibility,
  * light array) gets the recorder in front: the recorder calls that target, so the other native still runs. An unset or
@@ -824,7 +846,6 @@ static const char *const script_names[4] = {
 };
 static script_fn script_orig[4];
 static sprite_draw_fn orig_sprite_draw;
-static void **draw_instance;
 static uint32_t *rng_state, *rng_index;
 static Record records[2][MAX_RECORDS];
 static int record_count[2], capture = -1, capture_skip;
@@ -928,8 +949,121 @@ static int is_light_var(uint32_t key) {
 			return 1;
 	return 0;
 }
+// The runner's collision lists, as CollisionMarkDirty keeps them: circular through the sentinel {first, last, node
+// offset in the instance}; a node is {next, prev, owning list (sentinel or 0)}
+#define MAX_LIST 512 // a longer list is reported as unchecked
+typedef struct { uintptr_t node, w[3]; } ListNode;
+typedef struct { uintptr_t head[2]; int n; ListNode nodes[MAX_LIST]; } ListSnap;
+static uintptr_t *coll_list[2]; // s_dirty_list, s_test_list
+#define SELF_LINKS 0x15c        // the cloud's test-list node (+0x15c) and dirty-list node (+0x168)
+#define SELF_LINKS_SIZE 24
+unsigned smokedraw_verify_lists_unchecked, smokedraw_verify_arrays_unchecked;
+static int verify_fault;
+
+// The list in order; 0 if it is longer than MAX_LIST or a link is NULL
+static int list_take(int l, ListSnap *s) {
+	const uintptr_t *sentinel = coll_list[l];
+	s->head[0] = sentinel[0];
+	s->head[1] = sentinel[1];
+	s->n = 0;
+	uintptr_t n = sentinel[0];
+	while (n != (uintptr_t)sentinel) {
+		if (!n || s->n == MAX_LIST)
+			return 0;
+		ListNode *e = &s->nodes[s->n++];
+		e->node = n;
+		memcpy(e->w, (const void *)n, sizeof(e->w));
+		n = e->w[0];
+	}
+	return 1;
+}
+// Whether a and b hold the same nodes in the same order once `skip` (the cloud's own node) is left out
+static int same_others(const ListSnap *a, const ListSnap *b, uintptr_t skip) {
+	int i = 0, j = 0;
+	for (;;) {
+		while (i < a->n && a->nodes[i].node == skip)
+			i++;
+		while (j < b->n && b->nodes[j].node == skip)
+			j++;
+		if (i == a->n || j == b->n)
+			return i == a->n && j == b->n;
+		if (a->nodes[i++].node != b->nodes[j++].node)
+			return 0;
+	}
+}
+static void list_restore(int l, const ListSnap *s) {
+	for (int i = 0; i < s->n; i++)
+		memcpy((void *)s->nodes[i].node, s->nodes[i].w, sizeof(s->nodes[i].w));
+	coll_list[l][0] = s->head[0];
+	coll_list[l][1] = s->head[1];
+}
+static int list_same(const ListSnap *a, const ListSnap *b) {
+	return a->n == b->n && a->head[0] == b->head[0] && a->head[1] == b->head[1] &&
+		!memcmp(a->nodes, b->nodes, sizeof(ListNode) * a->n);
+}
+
+// Elements of the cloud's array variables (a 1-D array: header +4 items, +0x1c length)
+#define MAX_ARRAYS 4
+#define MAX_ELEMS 64
+typedef struct { int slot; uintptr_t header; uint32_t n; RV e[MAX_ELEMS]; } ArrayCopy;
+typedef struct { int n; ArrayCopy a[MAX_ARRAYS]; } Arrays;
+// 0 if there are more arrays or elements than fit
+static int arrays_take(const Slot *slots, int count, Arrays *out) {
+	out->n = 0;
+	for (int i = 0; i < count; i++) {
+		if (KIND(&slots[i].value) != 2)
+			continue;
+		const void *header = (const void *)(uintptr_t)word(&slots[i].value, 0);
+		if (!header || out->n == MAX_ARRAYS)
+			return 0;
+		ArrayCopy *a = &out->a[out->n++];
+		a->slot = i;
+		a->header = (uintptr_t)header;
+		a->n = word(header, 0x1c);
+		const RV *items = (const RV *)(uintptr_t)word(header, 4);
+		if (a->n > MAX_ELEMS || (a->n && !items))
+			return 0;
+		memcpy(a->e, items, sizeof(RV) * a->n);
+	}
+	return 1;
+}
+// Put back elements that own nothing (in the snapshot and now), if the variable still holds the same array
+static void arrays_restore(const Slot *slots, const Arrays *s) {
+	for (int k = 0; k < s->n; k++) {
+		const ArrayCopy *a = &s->a[k];
+		const RV *v = slots[a->slot].slot;
+		if (KIND(v) != 2 || word(v, 0) != a->header || word((const void *)a->header, 0x1c) != a->n)
+			continue;
+		RV *items = (RV *)(uintptr_t)word((const void *)a->header, 4);
+		for (uint32_t i = 0; i < a->n; i++)
+			if (!owning(&a->e[i]) && !owning(&items[i]))
+				items[i] = a->e[i];
+	}
+}
+// Value and kind (an unset or undefined element by kind only), as the records compare them
+static int same_element(const RV *a, const RV *b) {
+	uint32_t kind = KIND(a);
+	return kind == KIND(b) && (kind == 0xffffff || kind == 5 || !memcmp(&a->v, &b->v, 8));
+}
+static int arrays_same(const Arrays *a, const Arrays *b) {
+	if (a->n != b->n)
+		return 0;
+	for (int k = 0; k < a->n; k++) {
+		const ArrayCopy *x = &a->a[k], *y = &b->a[k];
+		if (x->slot != y->slot || x->header != y->header || x->n != y->n)
+			return 0;
+		for (uint32_t i = 0; i < x->n; i++)
+			if (!same_element(&x->e[i], &y->e[i]))
+				return 0;
+	}
+	return 1;
+}
+
 static void verify_event(void *self, void *other) {
 	static Slot before[MAX_SLOTS], after_gml[MAX_SLOTS], after_native[MAX_SLOTS];
+	static ListSnap lists_before[2], lists_gml[2], lists_native[2], lists_real[2];
+	static Arrays arrays_before, arrays_gml, arrays_native;
+	uint8_t links_before[SELF_LINKS_SIZE], links_gml[SELF_LINKS_SIZE], links_real[SELF_LINKS_SIZE];
 	if (!verify_hooked && !(verify_hooked = verify_hooks())) {
 		smokedraw_verify = 0;
 		native_event(self, other);
@@ -946,6 +1080,9 @@ static void verify_event(void *self, void *other) {
 	memcpy(fields_before, (uint8_t *)self + FIELDS_FROM, sizeof(fields_before));
 	memcpy(rng_before, rng_state, 64);
 	rng_before[16] = *rng_index;
+	memcpy(links_before, (uint8_t *)self + SELF_LINKS, sizeof(links_before));
+	int lists_ok = list_take(0, &lists_before[0]) && list_take(1, &lists_before[1]);
+	int arrays_ok = arrays_take(before, nb, &arrays_before);
 
 	record_count[0] = record_count[1] = 0;
 	capture = 0;
@@ -957,6 +1094,13 @@ static void verify_event(void *self, void *other) {
 	memcpy(fields_gml, (uint8_t *)self + FIELDS_FROM, sizeof(fields_gml));
 	memcpy(rng_gml, rng_state, 64);
 	rng_gml[16] = *rng_index;
+	memcpy(links_gml, (uint8_t *)self + SELF_LINKS, sizeof(links_gml));
+	// The lists go back only if the original moved nothing but the cloud's own nodes
+	for (int l = 0; l < 2 && lists_ok; l++)
+		lists_ok = list_take(l, &lists_gml[l]) &&
+			same_others(&lists_before[l], &lists_gml[l], (uintptr_t)self + coll_list[l][2]);
+	if (ng < 0 || !arrays_take(after_gml, ng, &arrays_gml))
+		arrays_ok = 0;
 
 	for (int i = 0; i < nb; i++)
 		if (!owning(&before[i].value) && !owning(before[i].slot))
@@ -964,12 +1108,58 @@ static void verify_event(void *self, void *other) {
 	memcpy((uint8_t *)self + FIELDS_FROM, fields_before, sizeof(fields_before));
 	memcpy(rng_state, rng_before, 64);
 	*rng_index = rng_before[16];
+	if (lists_ok) {
+		list_restore(0, &lists_before[0]);
+		list_restore(1, &lists_before[1]);
+		memcpy((uint8_t *)self + SELF_LINKS, links_before, sizeof(links_before));
+	}
+	arrays_restore(before, &arrays_before);
 
 	capture = 1;
 	native_event(self, other);
 	capture = -1;
 
+	// exp_smokeverifyfault1: the lists as if the native had skipped CollisionMarkDirty; the real ones go back after
+	// the compare
+	int fault_lists = verify_fault == 1 && lists_ok && list_take(0, &lists_real[0]) && list_take(1, &lists_real[1]);
+	if (fault_lists) {
+		memcpy(links_real, (uint8_t *)self + SELF_LINKS, sizeof(links_real));
+		list_restore(0, &lists_before[0]);
+		list_restore(1, &lists_before[1]);
+		memcpy((uint8_t *)self + SELF_LINKS, links_before, sizeof(links_before));
+	}
 	int nn = snapshot_vars(self, after_native);
+	RV *faulted = NULL; // exp_smokeverifyfault2: a wrong element written, taken back after the compare
+	if (verify_fault == 2 && nn > 0 && arrays_take(after_native, nn, &arrays_native))
+		for (int k = 0; k < arrays_native.n && !faulted; k++) {
+			RV *items = (RV *)(uintptr_t)word((const void *)arrays_native.a[k].header, 4);
+			for (uint32_t i = 0; i < arrays_native.a[k].n && !faulted; i++)
+				if (KIND(&items[i]) == 0)
+					faulted = &items[i];
+		}
+	if (faulted)
+		faulted->v.d += 1.0;
+	int collision_ok = 1;
+	if (lists_ok) {
+		lists_ok = list_take(0, &lists_native[0]) && list_take(1, &lists_native[1]);
+		collision_ok = lists_ok && list_same(&lists_gml[0], &lists_native[0]) &&
+			list_same(&lists_gml[1], &lists_native[1]) &&
+			!memcmp((uint8_t *)self + SELF_LINKS, links_gml, sizeof(links_gml));
+	}
+	if (fault_lists) {
+		list_restore(0, &lists_real[0]);
+		list_restore(1, &lists_real[1]);
+		memcpy((uint8_t *)self + SELF_LINKS, links_real, sizeof(links_real));
+	}
+	if (!lists_ok)
+		smokedraw_verify_lists_unchecked++;
+	if (arrays_ok)
+		arrays_ok = nn >= 0 && arrays_take(after_native, nn, &arrays_native);
+	int elements_ok = !arrays_ok || arrays_same(&arrays_gml, &arrays_native);
+	if (faulted)
+		faulted->v.d -= 1.0;
+	if (!arrays_ok)
+		smokedraw_verify_arrays_unchecked++;
 	if (look_verify) // the look settings change only the light layer script call and the submissions
 		for (int c = 0; c < 2; c++) {
 			int n = 0, total = record_count[c] < MAX_RECORDS ? record_count[c] : MAX_RECORDS;
@@ -994,16 +1184,18 @@ static void verify_event(void *self, void *other) {
 				memcmp(&a->value.v, &n->value.v, 8) || (!loose && a->value.flags != n->value.flags))
 			bad_slot = i;
 	}
-	if (records_ok && fields_ok && rng_ok && bad_slot == -1) {
+	if (records_ok && fields_ok && rng_ok && bad_slot == -1 && collision_ok && elements_ok) {
 		smokedraw_verified++;
 		smokedraw_verify_records += record_count[1];
 		return;
 	}
 	if (smokedraw_mismatches++ < 8) {
-		debugPrintf("[SMOKEDRAW] mismatch: records %d/%d %s, fields %s, rng %s, variables %s (slot %d key %u)\n",
+		debugPrintf("[SMOKEDRAW] mismatch: records %d/%d %s, fields %s, rng %s, variables %s (slot %d key %u), "
+			"collision lists %s, array elements %s\n",
 			record_count[0], record_count[1], records_ok ? "same" : "differ", fields_ok ? "same" : "differ",
 			rng_ok ? "same" : "differs", bad_slot == -1 ? "same" : "differ", bad_slot,
-			bad_slot >= 0 ? after_gml[bad_slot].key : 0);
+			bad_slot >= 0 ? after_gml[bad_slot].key : 0, collision_ok ? "same" : "differ",
+			elements_ok ? "same" : "differ");
 		for (int k = 0; k < record_count[0] && k < record_count[1] && k < MAX_RECORDS; k++)
 			if (memcmp(&records[0][k], &records[1][k], sizeof(Record)))
 				debugPrintf("[SMOKEDRAW]   record %d (kind %u/%u) differs\n", k, records[0][k].kind, records[1][k].kind);
@@ -1037,7 +1229,12 @@ static int verify_install(void) {
 	rng_state = (uint32_t *)so_symbol(&yoyoloader_mod, "state");
 	rng_index = (uint32_t *)so_symbol(&yoyoloader_mod, "g_RndIndex");
 	draw_instance = (void **)so_symbol(&yoyoloader_mod, "_ZN15CSkeletonSprite15ms_drawInstanceE");
-	return rng_state && rng_index && draw_instance && so_symbol(&yoyoloader_mod, "_ZN7CSprite4DrawEffffffjf");
+	coll_list[0] = (uintptr_t *)so_symbol(&yoyoloader_mod, "s_dirty_list");
+	coll_list[1] = (uintptr_t *)so_symbol(&yoyoloader_mod, "s_test_list");
+	verify_fault = exp_flag("smokeverifyfault1") ? 1 : exp_flag("smokeverifyfault2") ? 2 : 0;
+	return rng_state && rng_index && draw_instance && coll_list[0] && coll_list[1] &&
+		coll_list[0][2] == 0x168 && coll_list[1][2] == SELF_LINKS &&
+		so_symbol(&yoyoloader_mod, "_ZN7CSprite4DrawEffffffjf");
 }
 
 // On the first verified event: the recording hooks. 0 (verify off) if CSprite::Draw can't be hooked.
@@ -1075,6 +1272,9 @@ void smokedraw_native_report(int frames) {
 		debugPrintf("[SMOKEDRAW] verify: %u events compared (%u script calls and sprite draws), %u mismatches, "
 			"%u skipped%s\n", smokedraw_verified, smokedraw_verify_records, smokedraw_mismatches,
 			smokedraw_verify_skipped, smokedraw_verify_unrecorded ? ", some scripts not recorded" : "");
+	if (smokedraw_verify && (smokedraw_verify_lists_unchecked || smokedraw_verify_arrays_unchecked))
+		debugPrintf("[SMOKEDRAW] verify: collision lists unchecked in %u events, array elements in %u\n",
+			smokedraw_verify_lists_unchecked, smokedraw_verify_arrays_unchecked);
 	if (smoke_clouds != 1 || look_ab)
 		debugPrintf("[SMOKELOOK] smokeClouds %d: drawn %.1f hidden %.1f per frame%s\n", smoke_clouds,
 			(float)look_drawn / frames, (float)look_hidden / frames,
@@ -1184,6 +1384,12 @@ int smokedraw_native_install(void *(*rx_alloc)(size_t)) {
 	smokedraw_prof = debugMode && exp_flag("smokeprof");
 	look_ab = debugMode && exp_flag("smokelookab");
 	if (smoke_clouds < 1)
+		smoke_clouds = 1;
+	if (smoke_clouds > 3)
+		smoke_clouds = 3;
+	draw_instance = (void **)so_symbol(&yoyoloader_mod, "_ZN15CSkeletonSprite15ms_drawInstanceE");
+	sprite_data = (void *(*)(int))so_symbol(&yoyoloader_mod, "_Z11Sprite_Datai");
+	if (!draw_instance || !sprite_data) // a hidden cloud's draw_self couldn't be matched: the original look
 		smoke_clouds = 1;
 	cloud_scale = (float)smoke_clouds; // sqrt by Newton steps (no libm call)
 	for (int i = 0; i < 20; i++)

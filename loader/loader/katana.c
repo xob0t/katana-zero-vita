@@ -587,18 +587,34 @@ void katana_goto_check(void) {
 		}
 		if (!strncmp(text, "smoke", 5)) {
 			// "smoke [view]": a smoke vial's burst there, create_smokescreen(x, y, 260) as obj_throwable's Destroy calls
-			// it (260 is its gs_constArg8), from an obj_throwable_smoke_vial (1015) created there
+			// it (260 is its gs_constArg8), with an obj_throwable_smoke_vial (1015) created there as self. The burst's
+			// placement depends on that carrier: create_smokescreen tests its cloud positions with place_meeting on
+			// self, i.e. with the vial's mask at those points. The vial is an obj_pickup child and would stay in the room
+			// as a collectible, so it is destroyed right after the burst, without its Destroy event (that would burst
+			// again): instance_destroy(id, false).
 			typedef void (*script_fn)(void *self, void *other, gml_rvalue *result, int argc, gml_rvalue **args);
 			script_fn smokescreen = (script_fn)so_symbol(&yoyoloader_mod,
 				"_Z29gml_Script_create_smokescreenP9CInstanceS0_R8YYRValueiPPS1_");
+			void (*instance_destroy)(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) =
+				(void *)so_symbol(&yoyoloader_mod, "_Z17F_InstanceDestroyR6RValueP9CInstanceS2_iPS_");
 			const gml_rvalue *count = (const gml_rvalue *)so_symbol(&yoyoloader_mod, "gs_constArg8_387073A9");
-			void *vial = command_create && smokescreen && count ? command_create(1015, x, y) : NULL;
+			void *vial = command_create && smokescreen && instance_destroy && count ? command_create(1015, x, y) : NULL;
 			if (vial) {
 				gml_rvalue result = {0, 0, 5}, a[3] = {{x, 0, 0}, {y, 0, 0}, *count};
 				gml_rvalue *args[3] = {&a[0], &a[1], &a[2]};
 				uint32_t t0 = sceKernelGetProcessTimeLow();
 				smokescreen(vial, vial, &result, 3, args);
-				debugPrintf("create_object: smoke burst at %.0f,%.0f took %u us\n", x, y, sceKernelGetProcessTimeLow() - t0);
+				uint32_t us = sceKernelGetProcessTimeLow() - t0;
+				gml_rvalue destroy_result = {0, 0, 5}, destroy_args[2] = {{(double)*(uint32_t *)((char *)vial + 0x80), 0, 0},
+					{0, 0, 0}};
+				instance_destroy(&destroy_result, NULL, NULL, 2, destroy_args);
+				void (*instance_exists)(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) =
+					(void *)so_symbol(&yoyoloader_mod, "_Z16F_InstanceExistsR6RValueP9CInstanceS2_iPS_");
+				gml_rvalue exists = {-1, 0, 0};
+				if (instance_exists)
+					instance_exists(&exists, NULL, NULL, 1, destroy_args);
+				debugPrintf("create_object: smoke burst at %.0f,%.0f took %u us; carrier vial %s\n", x, y, us,
+					exists.val == 0 ? "destroyed" : exists.val > 0 ? "STILL EXISTS" : "(instance_exists missing)");
 			}
 		} else {
 			debugPrintf("create_object: object %d at %.0f,%.0f\n", atoi(text), x, y);
