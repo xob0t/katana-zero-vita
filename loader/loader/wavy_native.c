@@ -21,12 +21,21 @@
  * builtins through the function registry (so builtin profiling still sees them), in the same order with the same
  * arguments. Comparisons use g_GMLMathEpsilon like YYCompareVal; cos and degtorad are the runner's own. Anything
  * other than ten arguments (a sprite reference and numbers) and real view globals runs the original. exp_wavynative0 turns it off.
+ *
+ * Visual compromise, waveStrips=N in yyl.cfg (default 4; 1 is the original, at most 8): strips N times taller, and the
+ * sway phase advances N steps per strip, so the wave keeps its shape in coarser steps with N times fewer draws. At
+ * N = 4 the nightmare starfield sways in 16-pixel bands instead of 4-pixel ones (neighbouring bands differ by under
+ * 3 px). Only the drawing changes: the script draws no random numbers and writes no game state. Measured in the
+ * chinatown_10 nightmare dialogue (in-run A/B): 354 strips and 2.14 ms per frame at N = 1, 183 / 1.15 ms at 2,
+ * 93 / 0.61 ms at 4; process 23.9 -> 22.4 ms. Debug: exp_waveab cycles N = 1, 2, 4 through the report windows
+ * ([WAVY] report line, "A/B: kN"); exp_waveprof times the script ([WAVYPROF]).
  */
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
 #include <math.h>
 #include <kubridge.h>
+#include <psp2/kernel/processmgr.h>
 #include "main.h"
 #include "so_util.h"
 
@@ -60,6 +69,10 @@ static void **global_obj;
 static int *var_yview, *var_hview;
 
 unsigned wavy_native_fast, wavy_native_slow, wavy_native_strips;
+int wave_strips = 4;      // waveStrips in yyl.cfg: strip height factor (1 = the original)
+int wave_ab, wave_ab_k;   // exp_waveab: factor 1, 2, 4 in turn, one report window each (wave_ab_k, 0 = off)
+int wave_prof;            // exp_waveprof
+uint32_t wave_prof_us, wave_prof_calls;
 unsigned wavy_reject[16], wavy_reject_kind; // argc, const, yview, hview, argument 0-9; the last rejected kind
 
 // exp_wavyverify: the original script draws; the native loop only records its draw_sprite_part_ext arguments, and
@@ -116,7 +129,7 @@ static rv real(double x) {
 	return v;
 }
 
-static rv *wavy(void *self, void *other, rv *result, int argc, rv **argv) {
+static rv *wavy_body(void *self, void *other, rv *result, int argc, rv **argv) {
 	const rv *yview = NULL, *hview = NULL;
 	int ok = argc == 10 && const_zero->kind == KIND_REAL && (yview = global_real(var_yview)) &&
 		(hview = global_real(var_hview));
@@ -147,7 +160,11 @@ static rv *wavy(void *self, void *other, rv *result, int argc, rv **argv) {
 	result->flags = 0;
 	result->kind = 5;
 	const double x = argv[2]->val, y = argv[3]->val, xs = argv[4]->val, ys = argv[5]->val;
-	const double strip = argv[6]->val, amp = argv[7]->val, step = argv[9]->val;
+	// waveStrips: N times taller strips, the phase N steps per strip (not while verifying against the original)
+	const int n = wave_ab_k ? wave_ab_k : wave_strips;
+	const int k = verify || n < 2 ? 1 : n > 8 ? 8 : n;
+	const double strip = argv[6]->val * k, amp = argv[7]->val, step = argv[9]->val * k;
+	const rv strip_rv = k == 1 ? *argv[6] : real(strip);
 	double off = fmod(argv[8]->val, 360.0);
 	double i = 0, wx = yy_cos(yy_degtorad(off)) * amp;
 	rv args[12];
@@ -161,7 +178,7 @@ static rv *wavy(void *self, void *other, rv *result, int argc, rv **argv) {
 			args[2] = *const_zero;
 			args[3] = real(i);
 			args[4] = w;
-			args[5] = rest < strip ? real(rest) : *argv[6]; // YYGML_min keeps the first unless a later one is smaller
+			args[5] = rest < strip ? real(rest) : strip_rv; // YYGML_min keeps the first unless a later one is smaller
 			args[6] = real(x + (wx - xo.val) * xs);
 			args[7] = real(y + (i - yo.val) * ys);
 			args[8] = *argv[4];
@@ -199,6 +216,16 @@ static rv *wavy(void *self, void *other, rv *result, int argc, rv **argv) {
 	return result;
 }
 
+static rv *wavy(void *self, void *other, rv *result, int argc, rv **argv) {
+	if (!wave_prof)
+		return wavy_body(self, other, result, argc, argv);
+	uint32_t t = sceKernelGetProcessTimeLow();
+	rv *r = wavy_body(self, other, result, argc, argv);
+	wave_prof_us += sceKernelGetProcessTimeLow() - t;
+	wave_prof_calls++;
+	return r;
+}
+
 int wavy_native_install(void *(*entry_hook)(uintptr_t entry, void *replacement)) {
 #define SYM(name) so_symbol(&yoyoloader_mod, name)
 	uintptr_t entry = SYM("_Z27gml_Script_draw_sprite_wavyP9CInstanceS0_R8YYRValueiPPS1_");
@@ -225,5 +252,9 @@ int wavy_native_install(void *(*entry_hook)(uintptr_t entry, void *replacement))
 			return 0;
 	}
 	verify = exp_flag("wavyverify");
+	extern int debugMode;
+	wave_ab = debugMode && exp_flag("waveab");
+	wave_ab_k = wave_ab ? 1 : 0;
+	wave_prof = debugMode && exp_flag("waveprof");
 	return (orig_wavy = entry_hook(entry, wavy)) != NULL;
 }
