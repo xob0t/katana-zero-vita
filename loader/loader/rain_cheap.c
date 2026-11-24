@@ -23,7 +23,7 @@
  * bounding boxes of obj_block (or obj_block_background, per the drop's draw_layer), obj_outdoors_shadow and, for half
  * of the drops as in the game, obj_jumpthrough (with children; refreshed every 30 frames). A drop is one black
  * whitepixel streak (no fading trail, no light tint); where it lands it plays one of the game's three splash sprites
- * in a fixed light grey instead of lit (black while global.blackout is on, as lit sprites go). Drops leave 30 px
+ * in a fixed light grey instead of lit, and not while time is frozen (see rain_cheap_draw). Drops leave 30 px
  * outside the view, as in the game. Nothing here touches the game's RNG or variables (one xorshift of its own).
  *
  * rain=2 keeps the game's rain (each drop drawn every other frame, katana.c), rain=0 none.
@@ -76,7 +76,7 @@ static destroy_fn instance_destroy;
 static draw_ext_fn draw_sprite_ext;
 static uint32_t *id_hash;
 static void **object_hash;
-static int *var_fr, *var_xview, *var_yview, *var_wview, *var_hview, *var_hsp, *var_vsp, *var_draw_layer, *var_blackout;
+static int *var_fr, *var_xview, *var_yview, *var_wview, *var_hview, *var_hsp, *var_vsp, *var_draw_layer;
 
 static void *carrier;
 static uint32_t carrier_id;
@@ -338,8 +338,9 @@ static void rain_cheap_draw(void *self, void *other) {
 		trail_fr = (float)fr;
 	float vsp = (float)self_num(self, var_vsp, 30), hsp = (float)self_num(self, var_hsp, 0);
 	float speed = sqrtf(hsp * hsp + vsp * vsp) * trail_fr;
-	// The splashes are lit sprites: dark silhouettes while global.blackout is true, like every lit sprite
-	int splash_colour = global_num(var_blackout, 0) > 0.5 ? 0 : SPLASH_COLOUR;
+	// The kill-flash freezes (global.fr 0) black out the scene around the characters; the game's lit splashes go dark
+	// with it, a fixed-grey one would stay visible: no splashes while time stands still
+	int splashes_on = fr > 0;
 	// The whitepixel stretched along local +y, rotated so that +y points back along the motion (180 for falling rain)
 	float angle = atan2f(-hsp, -vsp) * (180.0f / (float)M_PI);
 	for (int i = 0; i < ndrops; i++) {
@@ -351,11 +352,11 @@ static void rain_cheap_draw(void *self, void *other) {
 			draw_sprite_ext(self, SPR_WHITEPIXEL, 0, d->x, d->y, 1.0f, len, angle, DROP_COLOUR, d->alpha);
 		}
 	}
-	for (int i = 0; i < nsplashes; i++) {
+	for (int i = 0; splashes_on && i < nsplashes; i++) {
 		const splash_t *s = &splashes[i];
-		draw_sprite_ext(self, s->sprite, floorf(s->age), s->x, s->y, s->xs, 1.0f, 0, splash_colour, 1.0f);
+		draw_sprite_ext(self, s->sprite, floorf(s->age), s->x, s->y, s->xs, 1.0f, 0, SPLASH_COLOUR, 1.0f);
 	}
-	rain_cheap_draws += ndrops + nsplashes;
+	rain_cheap_draws += ndrops + (splashes_on ? nsplashes : 0);
 	rain_cheap_frames++;
 	if (prof)
 		rain_cheap_us += (unsigned)(sceKernelGetProcessTimeWide() - t0);
@@ -395,9 +396,8 @@ int rain_cheap_install(gml_func_entry *table, void *destroy) {
 	var_hsp = VAR("hsp");
 	var_vsp = VAR("vsp");
 	var_draw_layer = VAR("draw_layer");
-	var_blackout = VAR("blackout");
 	if (!instance_destroy || !draw_sprite_ext || !id_hash || !object_hash || !frame_count || !global_obj_ptr ||
-		!var_fr || !var_xview || !var_yview || !var_wview || !var_hview || !var_hsp || !var_vsp || !var_draw_layer || !var_blackout) {
+		!var_fr || !var_xview || !var_yview || !var_wview || !var_hview || !var_hsp || !var_vsp || !var_draw_layer) {
 		debugPrintf("cheap rain: symbols missing, rain off\n");
 		return 0;
 	}
