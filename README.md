@@ -33,7 +33,6 @@ Some of the speedups change what you see or play:
 
 - Enemies think every other frame. Hits still land on time. **GRAPHICS → ENEMY AI** turns it off.
 - No end-of-level replay and no death rewind.
-- Simpler rain: plain streaks and splashes.
 - Simpler effects in heavy scenes: less lighting, lighter smoke, fog and explosions.
 
 Each can be undone in `ux0:data/gms/katanazero/yyl.cfg`; [docs/compromises.md](docs/compromises.md) lists them all.
