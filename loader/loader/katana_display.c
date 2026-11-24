@@ -199,6 +199,9 @@ static void DoAStep_Draw_katana(void) {
  * + garbage collection), so the current room's pages reload into VRAM. After a failed allocation this runs at most
  * every 5 s and three times per room; after an allocation outside VRAM at most once per room, so a room whose
  * pages really don't fit doesn't thrash. Costs the reload time (~1 s at a room load). exp_texflush0 disables.
+ * Since page eviction (page_evict.c) both are rarer: before an allocation leaves VRAM, the pages not drawn for 2 s
+ * are unloaded until it fits, so this flush runs only when that wasn't enough, and only for a texture page outside
+ * VRAM (a surface outside VRAM isn't flushed for).
  * Both of those react after a page missed VRAM, which can be too late: after ~5 minutes of level hopping VRAM had
  * 11 MB free (6 MB largest) in room_folder, main RAM 6.6 MB, and loading room_club_0's pages crashed in the
  * allocator. So pages are also flushed ahead of need at a room change: when the frame just presented asked for
@@ -297,6 +300,8 @@ static void after_swap(uint32_t swap_us, uint32_t work_us) {
 	dynamic_res_update(swap_us, work_us);
 	after_swap_dynres_us = sceKernelGetProcessTimeLow() - s0;
 	rt_free_report();
+	extern void page_evict_frame(void);
+	page_evict_frame();
 	// A frame that skipped its swap (frameSkip) may leave scenes open: no collection until a presented frame
 	if (vgl_scene_open)
 		return;
@@ -337,8 +342,16 @@ static void after_swap(uint32_t swap_us, uint32_t work_us) {
 		reason = "allocation failure";
 	}
 	if (vgl_gpu_fallback_bytes - texflush_spill_seen >= TEXFLUSH_SPILL_BYTES) {
+		// With page eviction on (page_evict.c), data outside VRAM that isn't a texture page (a surface) isn't flushed
+		// for: the flush leaves it where it is and only reloads every page (1.3 s at the psychiatrist's intro
+		// transformation); eviction makes room for the next allocations instead
+		extern int page_evict_page_outside_vram(void);
+		int page = page_evict_page_outside_vram();
 		texflush_spill_seen = vgl_gpu_fallback_bytes;
-		if (room != texflush_spill_room) {
+		if (!page)
+			debugPrintf("[TEXFLUSH] no flush: the data outside VRAM is not a texture page (free vram %uKB)\n",
+				vglMemFree(VGL_MEM_VRAM) / 1024);
+		else if (room != texflush_spill_room) {
 			texflush_spill_room = room;
 			reason = "texture data outside VRAM";
 		}

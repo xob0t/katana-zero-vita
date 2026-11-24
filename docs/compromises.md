@@ -35,5 +35,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Dossier burn | No small decorative burn circles; the burn spreads the same | `dossierCircles=1` |
 | Motorcycle chase | No cone shadows; distant rockets unlit; explosions with a third of the particles | `coneShadows=1`, `farRocketLights=1`, `fullExplosions=1` |
 
-Over a long session video memory fills up. When it does, the next room load pauses for about a second while the
-textures reload.
+Over a long session video memory fills up. Texture pages the current room hasn't drawn are then unloaded to make
+room, so most room loads only load their own pages. Some rooms need more than fits next to the earlier rooms' pages
+(club_1, chinatown_3, tiedup, club_7 and a few more, and the psychiatrist's turn into the giant): there the load
+still pauses for about a second while every page reloads.

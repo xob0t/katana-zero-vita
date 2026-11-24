@@ -347,7 +347,7 @@ index 167e4f2..c1ae5d3 100644
  
  // Memory file cache settings
 diff --git a/source/textures.c b/source/textures.c
-index 7b5d704..f5710dd 100644
+index 7b5d704..7903963 100644
 --- a/source/textures.c
 +++ b/source/textures.c
 @@ -1734,6 +1734,7 @@ inline __attribute__((always_inline)) void glGenTextures(GLsizei n, GLuint *res)
@@ -358,19 +358,71 @@ index 7b5d704..f5710dd 100644
  #ifndef TEXTURES_SPEEDHACK
  			texture_slots[i].last_frame = OBJ_NOT_USED;
  #endif
+@@ -2775,3 +2776,44 @@ SceGxmTexture *vglGetGxmTexture(GLenum target) {
+ 		SET_GL_ERROR_WITH_RET(GL_INVALID_ENUM, NULL)
+ 	}
+ }
++
++// Host API (katana-vita page eviction): a texture's storage and the frame it was last sampled in (vgl_framecount at
++// the draw; OBJ_NOT_USED if no draw sampled it since its upload). NULL for a name without texture data, and for
++// textures drawn into as render targets (their GPU use isn't tracked by last_frame).
++void *vgl_tex_usage(GLuint name, uint32_t *last_frame) {
++	if (name == 0 || name >= TEXTURES_NUM)
++		return NULL;
++	texture *tex = &texture_slots[name];
++	if (tex->status != TEX_VALID || tex->rt_written || tex->ref_counter)
++		return NULL;
++#ifndef TEXTURES_SPEEDHACK
++	*last_frame = tex->last_frame;
++#else
++	*last_frame = vgl_framecount;
++#endif
++	return tex->data;
++}
++
++// Host API (katana-vita page eviction): lets the next glDeleteTextures of this texture free its storage at once even
++// if a recent frame sampled it, by waiting for the GPU to finish every submitted scene (once per frame). Refuses (0) a
++// texture sampled in the current frame (the open scene or a scene of this frame may use it) or drawn into.
++int vgl_tex_idle(GLuint name) {
++#ifdef TEXTURES_SPEEDHACK
++	return 0;
++#else
++	static uint32_t finished_frame = OBJ_NOT_USED;
++	if (name == 0 || name >= TEXTURES_NUM)
++		return 0;
++	texture *tex = &texture_slots[name];
++	if (tex->status != TEX_VALID || tex->rt_written || tex->ref_counter || tex->last_frame == vgl_framecount)
++		return 0;
++	if (tex->last_frame == OBJ_NOT_USED || vgl_framecount - tex->last_frame > FRAME_PURGE_FREQ)
++		return 1;
++	if (finished_frame != vgl_framecount) {
++		sceGxmFinish(gxm_context);
++		finished_frame = vgl_framecount;
++	}
++	tex->last_frame = vgl_framecount - FRAME_PURGE_FREQ - 1;
++	return 1;
++#endif
++}
 diff --git a/source/utils/gpu_utils.c b/source/utils/gpu_utils.c
-index 4464db5..7657380 100644
+index 4464db5..f6a4cac 100644
 --- a/source/utils/gpu_utils.c
 +++ b/source/utils/gpu_utils.c
-@@ -100,9 +100,15 @@ static inline __attribute__((always_inline)) void *gpu_alloc_mapped_aligned_for_
+@@ -100,9 +100,22 @@ static inline __attribute__((always_inline)) void *gpu_alloc_mapped_aligned_for_
  	return res;
  }
  
 +size_t vgl_gpu_fallback_bytes = 0; // stats for the host: GPU allocations that did not fit in VRAM
 +unsigned vgl_gpu_fallback_allocs = 0;
++// Host hook, called on the GL thread when a GPU allocation doesn't fit in VRAM, before it falls back to slower pools:
++// the host may release textures nothing will sample again soon (vitaGL's own free rules apply) and return non-zero to
++// have VRAM tried again
++int (*vgl_vram_evict_cb)(size_t size, size_t alignment) = NULL;
  static inline __attribute__((always_inline)) void *gpu_alloc_mapped_aligned_for_gpu_inner(size_t alignment, size_t size) {
  	void *res;
  	vgl_alloc_attempt(alignment, size, VGL_MEM_VRAM)
++	if (vgl_vram_evict_cb && vgl_vram_evict_cb(size, alignment)) {
++		vgl_alloc_attempt(alignment, size, VGL_MEM_VRAM)
++	}
 +	// Anything below lives outside VRAM, where the GPU reads and writes far more slowly (a texture page in RAM
 +	// can make a room GPU-bound); the host can react to these counters
 +	vgl_gpu_fallback_allocs++;
@@ -378,7 +430,7 @@ index 4464db5..7657380 100644
  	vgl_alloc_attempt(alignment, size, VGL_MEM_RAM)
  	vgl_alloc_attempt(alignment, size, VGL_MEM_PHYCONT)
  	vgl_alloc_attempt(alignment, size, VGL_MEM_BUDGET)
-@@ -153,25 +159,201 @@ static inline __attribute__((always_inline)) uint32_t vgl_cache_old_textures(siz
+@@ -153,25 +166,201 @@ static inline __attribute__((always_inline)) uint32_t vgl_cache_old_textures(siz
  #endif
  
  int unsafe_allocator_counter = 0;
@@ -583,7 +635,7 @@ index 4464db5..7657380 100644
  		res = gpu_alloc_mapped_aligned_unsafe_for_cpu(alignment, size);
  	}
  
-@@ -182,22 +364,35 @@ void *gpu_alloc_mapped_aligned_unsafe_for_gpu(size_t alignment, size_t size) {
+@@ -182,22 +371,35 @@ void *gpu_alloc_mapped_aligned_unsafe_for_gpu(size_t alignment, size_t size) {
  	// Performing a garbage collection cycle prior to attempting to allocate the memory again
  	unsafe_allocator_counter++;
  	if (unsafe_allocator_counter == 1) {
@@ -621,7 +673,7 @@ index 4464db5..7657380 100644
  		res = gpu_alloc_mapped_aligned_unsafe_for_gpu(alignment, size);
  	}
  
-@@ -221,6 +416,14 @@ void *gpu_alloc_mapped_aligned_for_cpu(size_t alignment, size_t size) {
+@@ -221,6 +423,14 @@ void *gpu_alloc_mapped_aligned_for_cpu(size_t alignment, size_t size) {
  #endif
  	unsafe_allocator_counter = 0;
  	res = gpu_alloc_mapped_aligned_unsafe_for_cpu(alignment, size);
@@ -636,7 +688,7 @@ index 4464db5..7657380 100644
  
  #ifdef LOG_ERRORS
  	if (!res) {
-@@ -250,6 +453,14 @@ void *gpu_alloc_mapped_aligned_for_gpu(size_t alignment, size_t size) {
+@@ -250,6 +460,14 @@ void *gpu_alloc_mapped_aligned_for_gpu(size_t alignment, size_t size) {
  #endif
  	unsafe_allocator_counter = 0;
  	res = gpu_alloc_mapped_aligned_unsafe_for_gpu(alignment, size);

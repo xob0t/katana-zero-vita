@@ -134,6 +134,16 @@ static void prefetch_hook(void *tex) {
 	orig_prefetch(tex);
 }
 
+// For page eviction (page_evict.c): 2 if the game asked for this page in the current room, 1 if in another room (the
+// pages level select asks for, the UI and the button glyphs, are drawn in every level), 0 if not
+int page_restore_requested(void *tex) {
+	int room = current_room ? *current_room : -1;
+	for (int i = 0; i < nrequests; i++)
+		if (requests[i].tex == tex)
+			return requests[i].room == room ? 2 : 1;
+	return 0;
+}
+
 static int is_texture(void *tex) {
 	for (void *t = *texture_first; t; t = (void *)TEX_U32(t, T_NEXT))
 		if (t == tex)
