@@ -1,6 +1,6 @@
 """Takes a screenshot of the running Katana ZERO app over FTP (debugMode=1 required).
 
-Usage: python scripts/vita_screenshot.py [out.png] [--host 192.168.1.151]
+Usage: python scripts/vita_screenshot.py [out.png] [--host HOST]   (default host: VITA_HOST, see vita_common.py)
 """
 import argparse
 import ftplib
@@ -10,20 +10,20 @@ import time
 
 from PIL import Image
 
+from vita_common import FTP_PORT, HOST, ftp_connect
+
 SHARED = "ux0:/data/gms/shared"
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out", nargs="?", default="work/screenshot.png")
-    ap.add_argument("--host", default="192.168.1.151")
-    ap.add_argument("--port", type=int, default=1337)
+    ap.add_argument("--host", default=HOST)
+    ap.add_argument("--port", type=int, default=FTP_PORT)
     ap.add_argument("--timeout", type=float, default=15)
     args = ap.parse_args()
 
-    ftp = ftplib.FTP()
-    ftp.connect(args.host, args.port, timeout=10)
-    ftp.login()
+    ftp = ftp_connect(args.host, args.port, timeout=10)
     ftp.cwd(SHARED)
     try:
         ftp.delete("screenshot.raw")

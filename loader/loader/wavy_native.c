@@ -1,6 +1,6 @@
 /*
  * gml_Script_draw_sprite_wavy, native. APK 1.10 libyoyo SHA256 ab7014c19c449858c8ea53c75b2c7cd3d78642d6aad60297aa0d7db456bd4701.
- * Lift: work/decomp/lifted/_Z27gml_Script_draw_sprite_wavy*.gml, Ghidra work/decomp/ghidra_wavy/.
+ * Lift: work/decomp/lifted/_Z27gml_Script_draw_sprite_wavy*.gml, Ghidra work/decomp/ghidra_wavy/ (untracked).
  *
  * The nightmare backgrounds (obj_nightmare_background, obj_psychboss_background(_nightmare)) tile a sprite and draw
  * each tile in thin horizontal strips with a cosine sway:

@@ -1,6 +1,6 @@
 /* APK 1.10, SHA256 ab7014c19c449858c8ea53c75b2c7cd3d78642d6aad60297aa0d7db456bd4701.
  * Inlined-helper variant of light_fast.c: the "static recompiler kill test" of
- * work/cpu_research/big_win.md section 3. Same admission and the same event
+ * the untracked work/cpu_research/big_win.md, section 3. Same admission and the same event
  * bodies as light_fast.c; the differences are:
  *   - YYCompareVal is replaced by cmp(): kind check, then the runner's REAL/BOOL
  *     path (e3ee1c..e3ee30, e3f31c..e3f338) in C; every other case calls the

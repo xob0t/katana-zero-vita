@@ -1,5 +1,5 @@
 /* APK 1.0.10 ARM runner only. Install after Run_Start initializes the registry.
- * See virtual_capture.md. Keep the original GML script and event dispatch. */
+ * Keep the original GML script and event dispatch. Host test build: tools/verify/collision_stub.h. */
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>

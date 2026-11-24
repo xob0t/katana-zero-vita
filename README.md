@@ -91,8 +91,8 @@ requests only build it, as an artifact to test first. To try the page locally, c
 - JNI object arrays hold real element pointers, so extension functions can take several strings.
 - `loader/loader/netflix.c` replaces the `NetflixIntegration` extension offline. Cloud save slots are stored in
   `ux0:data/gms/<game>/assets/netflix/<slot>.sav`. Leaderboards and telemetry do nothing.
-- `loader/loader/katana.c` holds the game-specific speedups. Its comments have the measurements and the `exp_*`
-  flags that turn each change off for comparison.
+- The game-specific speedups are in `loader/loader/`, mostly one file each; [docs/DEVELOPING.md](docs/DEVELOPING.md)
+  maps them to their files, settings and the `exp_*` flags that turn each change off for comparison.
 
 ## Acknowledgements
 

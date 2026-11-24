@@ -40,30 +40,11 @@ static int FileExists_hook(const char *path) {
 
 void **global_obj_ptr;
 
-// Replaces a function at its entry with a native wrapper, returns a trampoline to the original
-// (NULL if the prologue isn't the relocatable push {..., lr}; add fp, sp, #imm or mov fp, sp).
-void *entry_hook(uintptr_t entry, void *replacement) {
-	uint32_t *w = (uint32_t *)entry;
-	if (!entry || (entry & 3) || (w[0] & 0xffff4000) != 0xe92d4000 ||
-			((w[1] & 0xfffff000) != 0xe28db000 && w[1] != 0xe1a0b00d))
-		return NULL;
-	uint32_t *tramp = katana_rx_alloc(16);
-	if (!tramp)
-		return NULL;
-	uint32_t code[4] = { w[0], w[1], 0xe51ff004, (uint32_t)(entry + 8) };
-	kuKernelCpuUnrestrictedMemcpy(tramp, code, sizeof(code));
-	kuKernelFlushCaches(tramp, sizeof(code));
-	hook_addr(entry, (uintptr_t)replacement);
-	kuKernelFlushCaches((void *)entry, 8);
-	return tramp;
-}
-
 /*
  * Performance throttles for cosmetic effects that are too heavy for the Vita CPU.
  * Implemented by swapping compiled event functions in the runner's g_GMLFuncs table.
  */
 
-#define GML_FUNCS_SIZE 79992
 #define PARTICLES_ALWAYS_DRAWN 20
 
 uint32_t *frame_count;
@@ -390,51 +371,6 @@ static void DoAStep_Draw_frameskip(void) {
 // Queried by the main loop to avoid presenting a frame that wasn't drawn
 int katana_frame_skipped() {
 	return draw_skipped;
-}
-
-// Executable memory for trampolines of native replacements (entry hooks that still call the
-// original): a small bump allocator over one RX block below the runner
-#define RX_ARENA_ADDRESS (LOAD_ADDRESS + 0xE00000)
-#define RX_ARENA_SIZE 0x10000
-static uint8_t *rx_arena;
-static size_t rx_arena_used;
-
-void *katana_rx_alloc(size_t size) {
-	if (!rx_arena) {
-		SceKernelAllocMemBlockKernelOpt opt;
-		memset(&opt, 0, sizeof(opt));
-		opt.size = sizeof(opt);
-		opt.attr = 0x1;
-		opt.field_C = RX_ARENA_ADDRESS;
-		SceUID block = kuKernelAllocMemBlock("katana rx", 0x0C20D050 /* USER_RX */, RX_ARENA_SIZE, &opt);
-		// Only if the fixed address is taken, as in the Vita3K emulator, which puts a 9 MB block of uncached
-		// memory at 0x985C6000-0x98E8C000 (on the Vita the fixed address always succeeds): right under the
-		// runner's patch block, in bl range of the same code, else anywhere. Any address does for the
-		// trampolines (absolute jumps); the veneer users check their range.
-		if (block < 0) {
-			SceUID fixed = block;
-			opt.field_C = yoyoloader_mod.patch_base - RX_ARENA_SIZE;
-			block = kuKernelAllocMemBlock("katana rx", 0x0C20D050 /* USER_RX */, RX_ARENA_SIZE, &opt);
-			if (block < 0) {
-				opt.attr = 0;
-				opt.field_C = 0;
-				block = kuKernelAllocMemBlock("katana rx", 0x0C20D050 /* USER_RX */, RX_ARENA_SIZE, &opt);
-			}
-			if (block >= 0 && sceKernelGetMemBlockBase(block, (void **)&rx_arena) >= 0)
-				debugPrintf("rx arena: fixed address taken (0x%08X), at %p instead\n", fixed, rx_arena);
-		}
-		if (block < 0 || sceKernelGetMemBlockBase(block, (void **)&rx_arena) < 0) {
-			debugPrintf("rx arena: allocation failed (0x%08X)\n", block);
-			rx_arena = NULL;
-			return NULL;
-		}
-	}
-	size = (size + 15) & ~15;
-	if (rx_arena_used + size > RX_ARENA_SIZE)
-		return NULL;
-	void *p = rx_arena + rx_arena_used;
-	rx_arena_used += size;
-	return p;
 }
 
 // NurseryAlloc (the runner's per-frame bump allocator) returns cur and advances by exactly the
@@ -951,6 +887,7 @@ void katana_late_install(void) {
 			}
 		}
 	}
+	hooks_report();
 }
 
 // Decodes a small LZ4 payload through the exact call ReadQOIFFile makes for "2zoq" pages
@@ -1155,18 +1092,6 @@ static void record_draw_noreplay(void *self, void *other) {
 	orig_record_draw(self, other);
 	if (r && (r = global_var(var_skip_rewind)))
 		*r = sr;
-}
-
-event_func gml_replace(gml_func_entry *table, const char *name, event_func wrapper) {
-	for (int i = 0; i < GML_FUNCS_SIZE / sizeof(gml_func_entry); i++) {
-		if (table[i].name && !strcmp(table[i].name, name)) {
-			event_func orig = table[i].func;
-			table[i].func = wrapper;
-			return orig;
-		}
-	}
-	debugPrintf("Katana: %s not found in g_GMLFuncs\n", name);
-	return NULL;
 }
 
 static void patch_performance() {
@@ -1386,12 +1311,7 @@ static void patch_performance() {
 	// keeps it, with an exact native version of the event (exp_clubbernative0: the original GML).
 	extern int dancer_glow;
 	if (!dancer_glow) {
-		static const uint32_t bx_lr = 0xe12fff1e;
-		uintptr_t entry = so_symbol(&yoyoloader_mod, "_Z31gml_Object_obj_clubber_Other_16P9CInstanceS0_");
-		if (entry) {
-			kuKernelCpuUnrestrictedMemcpy((void *)entry, &bx_lr, 4);
-			kuKernelFlushCaches((void *)entry, 4);
-		}
+		stub_event("_Z31gml_Object_obj_clubber_Other_16P9CInstanceS0_");
 		debugPrintf("dancer rim glow: off\n");
 	} else if (!exp_flag("clubbernative0")) {
 		extern int clubber_native_install(void *(*rx_alloc)(size_t));
@@ -1461,15 +1381,10 @@ static void patch_performance() {
 	// keeps it, with an exact native version of the Draw loop (46 fps; exp_dustnative0: the original GML).
 	extern int cathedral_dust;
 	if (!cathedral_dust) {
-		static const uint32_t bx_lr = 0xe12fff1e;
 		static const char *const events[] = {"_Z43gml_Object_obj_cathedral_dustspawner_Step_0P9CInstanceS0_",
 			"_Z43gml_Object_obj_cathedral_dustspawner_Draw_0P9CInstanceS0_"};
 		for (int i = 0; i < 2; i++) {
-			uintptr_t entry = so_symbol(&yoyoloader_mod, events[i]);
-			if (entry) {
-				kuKernelCpuUnrestrictedMemcpy((void *)entry, &bx_lr, 4);
-				kuKernelFlushCaches((void *)entry, 4);
-			}
+			uintptr_t entry = stub_event(events[i]);
 			debugPrintf("cathedral dust: off, %s %s\n", events[i], entry ? "stubbed" : "NOT found");
 		}
 	} else if (!exp_flag("dustnative0")) {
@@ -1480,18 +1395,13 @@ static void patch_performance() {
 	// once, to measure what an event costs
 	FILE *stubs = debugMode ? fopen("ux0:data/gms/shared/stub_events", "r") : NULL;
 	if (stubs) {
-		static const uint32_t bx_lr = 0xe12fff1e;
 		char line[96], symbol[160];
 		while (fgets(line, sizeof(line), stubs)) {
 			line[strcspn(line, "\r\n ")] = 0;
 			if (!line[0])
 				continue;
 			snprintf(symbol, sizeof(symbol), "_Z%dgml_Object_%sP9CInstanceS0_", (int)strlen(line) + 11, line);
-			uintptr_t entry = so_symbol(&yoyoloader_mod, symbol);
-			if (entry) {
-				kuKernelCpuUnrestrictedMemcpy((void *)entry, &bx_lr, 4);
-				kuKernelFlushCaches((void *)entry, 4);
-			}
+			uintptr_t entry = stub_event(symbol);
 			debugPrintf("stub_events: %s %s\n", line, entry ? "stubbed" : "NOT found");
 		}
 		fclose(stubs);

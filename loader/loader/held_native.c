@@ -3,7 +3,7 @@
  *
  * The script runs 2-4 times per frame in every gameplay room (player_input, player_idle_ground) and cost
  * ~145 us per call: for each binding it scans the on-screen keyboard's key list through generic variable getters
- * (array length, element, assignedKey, isHeld per key). Lift: work/decomp/out/controller_check.gml.
+ * (array length, element, assignedKey, isHeld per key). Lift: work/decomp/out/controller_check.gml (untracked).
  *
  * The native reads the same state once per call (global.mode, global.controller_threshold, the controller's
  * control_override / control / controller_slot, the keyboard's vKeyList with each key's isHeld and assignedKey,
@@ -25,7 +25,7 @@
  * other than real / int32 / bool, list or binding counts outside 1..64 / 0..64, pending instance changes, a
  * result slot that overlaps an input, a managed result value.
  *
- * Differential test against the original ARM body: work/held/held_verify.py (main checkout).
+ * Differential test against the original ARM body: work/held/held_verify.py (untracked).
  * exp_heldnative0 keeps the original. exp_heldverify runs the original after every native call and counts
  * results that differ ([HELD] report line). exp_heldab (measurement) switches the native off and on every report
  * window.

@@ -29,7 +29,7 @@
  * the system UI on top.
  *
  * exp_hangdump (opt-in): after HANG_DUMP_S seconds the watchdog executes a trap instruction, so the system writes a
- * core dump with every thread's registers (a .psp2dmp file in ux0:data; parse it with work/tools-vpc, runner at
+ * core dump with every thread's registers (a .psp2dmp file in ux0:data; parse it with xyzz/vita-parse-core, runner at
  * 0x99000000). It doesn't while save I/O is in progress or ended under HANG_IO_QUIET_US ago, and it re-reads the
  * heartbeat right before the trap, so a frame that finally arrives cancels it. Off entirely with exp_hangwatch0.
  * A frame that takes 8 s is a freeze in all but name: room loads take up to ~1.3 s.
