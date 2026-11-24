@@ -1400,7 +1400,13 @@ static void patch_performance() {
 	} else if (!exp_flag("lightfast0")) {
 		extern int light_fast_inline_install(void *(*rx_alloc)(size_t));
 		light_fast_mode = light_fast_inline_install(katana_rx_alloc) ? 2 : 0;
-		debugPrintf("light fast: %s (inline)\n", light_fast_mode ? "installed" : "NOT installed");
+		// Lamp sway at 1/lampSway rate (in light_fast_inline.c): exp_swayab alternates it with the original per
+		// report window, exp_lightparts times the event's parts ([LAMPSWAY] / [LIGHTPARTS] lines)
+		extern int lamp_sway, lamp_sway_ab, light_parts;
+		lamp_sway_ab = exp_flag("swayab");
+		light_parts = exp_flag("lightparts");
+		debugPrintf("light fast: %s (inline), lampSway %d%s\n", light_fast_mode ? "installed" : "NOT installed", lamp_sway,
+			lamp_sway_ab ? " (A/B)" : "");
 	}
 	// Exact native of the off-screen path of obj_lightback user event 0, the lighting pass's per-light event
 	// (lightback_native.c): visible lights run the original. In-run A/B (exp_lbab): haunted_cart2 (111 of 129
