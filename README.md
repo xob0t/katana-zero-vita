@@ -19,11 +19,6 @@ new VPK and install it over the old one. Saves are kept.
 
 With `debugMode=1` in `yyl.cfg` the log goes to `ux0:data/gms/shared/yyl.log`.
 
-### Controls
-
-The game's own controller layout. L and R act as the triggers: L is slow motion, R is roll. The rear touch
-panel is unused.
-
 ## About the port
 
 The game's Android runner (`libyoyo.so`) runs on the Vita through
