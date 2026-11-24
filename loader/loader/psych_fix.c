@@ -24,7 +24,8 @@
  * set_target, copy, free, create or resize touched it since). The rest of the event runs unchanged, including the
  * draw of the surface (with its random numbers). Part 3: 12 -> 10 scenes per frame, 49.2 -> 51.9 fps.
  * exp_psychlazy0 turns this off; exp_psychlazyverify (debug) replays every skipped pass after reading the surface back
- * and checking every pixel against the clear.
+ * and checking every pixel against the clear (exp_psychlazyfault: a negative control that paints the surface white
+ * untracked before every 60th check).
  *
  * Not done: obj_psychboss_draw_eyes draws the eyes through a screen-size surface the same way, but part 3 always has
  * eyes (never an empty pass), and drawing them directly would subtract the lids (blend mode 3) from the background
@@ -43,7 +44,8 @@
  *
  * Measurement (debug): exp_psychab switches all of the above off in every other 2 s report window ([PSYCHAB] A/B lines
  * for work-tree ab scripts); exp_psychskip=<mask> with exp_psychskipab does the same for cuts that would be VISIBLE
- * (1: no obj_psychboss_effects Draw, 2: half the rose petals, Step and Draw), to size them; exp_psychres logs the
+ * (1: no obj_psychboss_effects Draw, 2: half the rose petals, Step and Draw), to size them (without exp_psychskipab
+ * they stay on, for screenshots); exp_psychres logs the
  * effects type, eye counts and surface_create timings ([PSYCHFIX] lines).
  */
 #include <vitasdk.h>
@@ -75,7 +77,8 @@ static surf_int_fn surf_width, surf_height, surf_texture;
 static surf_get_fn surf_get;
 static int fid_draw_clear_alpha = -1;
 
-static int lazy_verify, research;
+static int lazy_verify, lazy_fault, research;
+static unsigned lazy_faults; // negative control: passes painted white
 static int ab, ab_off; // exp_psychab: everything off in every other report window
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -174,6 +177,8 @@ static uint32_t read_pixel_check(int w, int h, uint32_t ref, int *bad) {
 	*bad = 0;
 	if (!px)
 		return 0;
+	// End the open scene and wait for the GPU: glReadPixels only does that when the read target is the scene's
+	glFinish();
 	glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
 	first = px[0];
 	for (int i = 0; i < w * h; i++)
@@ -202,9 +207,25 @@ static int ABI lazy_reset(lazy_pass *p) {
 		p->skips++;
 		if (lazy_verify) { // replay the pass as the original does, checking what the surface held first
 			p->active = 0;
+			if (lazy_fault && p->skips % 60 == 1) {
+				// Negative control: paint the surface white behind the tracking's back (no forget)
+				gml_rvalue r = {0, 0, 5}, white[2] = {{16777215.0, 0, 0}, {1.0, 0, 0}};
+				gml_rvalue *wargv[2] = {&white[0], &white[1]};
+				orig_set_target_ext(0, surf, surf); // as YYGML_surface_set_target(surf, -1) calls it
+				real_legacy(p->cself, p->cother, &r, 2, fid_draw_clear_alpha, wargv);
+				int b0;
+				uint32_t painted = read_pixel_check(1, 1, 0, &b0);
+				real_reset_target();
+				if (lazy_faults++ < 3)
+					debugPrintf("[PSYCHFIX] fault: surface %d painted, pixel now %08x\n", surf, (unsigned)painted);
+			}
 			real_set_target(surf, p->depth);
 			int bad;
-			read_pixel_check(surf_width(surf), surf_height(surf), p->known_pixel, &bad);
+			uint32_t first = read_pixel_check(surf_width(surf), surf_height(surf), p->known_pixel, &bad);
+			static unsigned shown;
+			if (shown++ < 3)
+				debugPrintf("[PSYCHFIX] verify: surface %d %dx%d first pixel %08x, clear %08x\n", surf, surf_width(surf),
+					surf_height(surf), (unsigned)first, (unsigned)p->known_pixel);
 			p->verified++;
 			if (bad) {
 				if (p->mismatches++ < 5)
@@ -553,7 +574,8 @@ void psych_fix_report(int frames) {
 		debugPrintf("[PSYCHFIX] %s pass: %u passes, %u skipped, %u cleared, %u drawn (%u user events)%s", p->name, p->passes,
 			p->skips, p->clears, p->flushes, p->events, lazy_verify ? "" : "\n");
 		if (lazy_verify)
-			debugPrintf(" | verify %u checked, %u mismatches total\n", p->verified, p->mismatches);
+			debugPrintf(" | verify %u checked, %u mismatches total (%u faults injected)\n", p->verified, p->mismatches,
+				lazy_faults);
 		p->passes = p->skips = p->clears = p->flushes = p->events = p->verified = 0;
 	}
 	if (pool_parked || pool_reused || pool_expired) {
@@ -586,7 +608,8 @@ void psych_fix_install(gml_func_entry *table) {
 		petal ? "installed" : "NOT installed");
 	research = debugMode && exp_flag("psychres");
 	skip_ab = debugMode && exp_flag("psychskipab");
-	if (skip_ab) {
+	if (skip_ab || (debugMode && exp_flag("psychskip"))) { // without psychskipab: always skipped (screenshots)
+		psych_skip_on = !skip_ab;
 		FILE *f = fopen("ux0:data/gms/shared/exp_psychskip", "r");
 		char t[8] = {0};
 		if (f) {
@@ -626,6 +649,7 @@ void psych_fix_late_install(void) {
 	if (fclear)
 		fid_draw_clear_alpha = fclear[1];
 	lazy_verify = debugMode && exp_flag("psychlazyverify");
+	lazy_fault = lazy_verify && exp_flag("psychlazyfault");
 	ab = debugMode && exp_flag("psychab");
 
 	runner_function **functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
