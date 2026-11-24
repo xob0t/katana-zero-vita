@@ -34,9 +34,9 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 
 **Changed back to the PC version**
 
-| Where | Change | Undo with |
-|---|---|---|
-| First room's tutorial | The gunman fires on the PC version's timing, so his bullet hangs visibly in front of Zero during the slow-mo. The Android release delays every enemy's shot by 6 frames (`sec_attack_timer`); here that puts the shot so late in the slow-down that the bullet stops inside the muzzle flash. Other rooms keep the Android timing | `pcTutorialShot=0` |
+| Change | Undo with |
+|---|---|
+| Enemies attack on the PC version's timing: the first attack 15 frames sooner and every shot (gunmen, the Headhunter, drones) 5-6 frames sooner than in the Android release. In the first room's tutorial this shows the bullet in the slow-mo; with the Android timing it stays hidden in the muzzle flash | **GRAPHICS → ENEMY TIMING: ANDROID**, or `enemyTiming=1` |
 
 Over a long session video memory fills up. When it does, the next room load pauses for about a second while the
 textures reload.
