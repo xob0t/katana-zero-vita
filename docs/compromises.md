@@ -41,15 +41,13 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Psychiatrist fight, black void | No screen-copy effect pass; it changes nothing you can see there, except colours where the screen is partly transparent | `psychEffects=1` |
 | Psychiatrist fight, giant | Only half the rose petals are drawn; all of them still fall and settle | `psychPetals=1` (`psychPetals=3`: a third; 1 to 4) |
 
-Over a long session video memory fills up. Texture pages the current room hasn't drawn are then unloaded to make
-room, so most room loads only load their own pages. Some rooms need more than fits next to the earlier rooms' pages
-(club_1, chinatown_3, tiedup, club_7 and a few more, and the psychiatrist's turn into the giant): there the load
-still pauses for about a second while every page reloads.
 **Changed back to the PC version**
 
 | Change | Undo with |
 |---|---|
 | Enemies attack on the PC version's timing: the first attack 15 frames sooner and every shot (gunmen, the Headhunter, drones) 5-6 frames sooner than in the Android release. In the first room's tutorial this shows the bullet in the slow-mo; with the Android timing it stays hidden in the muzzle flash | **GRAPHICS → ENEMY TIMING: ANDROID**, or `enemyTiming=1` |
 
-Over a long session video memory fills up. When it does, the next room load pauses for about a second while the
-textures reload.
+Over a long session video memory fills up. Texture pages the current room hasn't drawn are then unloaded to make
+room, so most room loads only load their own pages. Some rooms need more than fits next to the earlier rooms' pages
+(club_1, chinatown_3, tiedup, club_7 and a few more, and the psychiatrist's turn into the giant): there the load
+still pauses for about a second while every page reloads.
