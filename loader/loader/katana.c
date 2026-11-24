@@ -1208,8 +1208,9 @@ static void patch_performance() {
 		extern int bike_draw_install(void);
 		debugPrintf("bike draw loops: %s\n", bike_draw_install() ? "installed" : "NOT installed");
 	}
-	// Burning corpses' embers: every corpse's ember with-loop in obj_drawactors steps over the other corpses' embers
-	// (exact; ember_draw.c)
+	// Burning corpses' embers: obj_drawactors' per-corpse ember with-loops visit only that corpse's embers, from a
+	// per-frame ember list (exact; ember_draw.c). haunted_alien2 fire bursts: 6.4 -> 2.0 ms per frame.
+	// exp_emberdraw0: the original loops.
 	if (!exp_flag("emberdraw0")) {
 		extern int ember_draw_install(void);
 		debugPrintf("ember draw loops: %s\n", ember_draw_install() ? "installed" : "NOT installed");
