@@ -93,10 +93,9 @@ optional.
 
 `--game-apk` also makes `build/game.apk` (step 2 below). `--sdk` and `--deps-dir` choose other locations. `--deps`
 forces a dependency rebuild, `--no-deps` leaves the installed ones alone (e.g. an experimental vitaGL), and `--check`
-only reports what a run would do. On Linux, set `VITASDK` (or `--sdk`) to
-a softfp VitaSDK, such as the `atamanenko/vitasdk-softfp` container CI uses, and have `make` instead of
-`mingw32-make`. In Git Bash, `. scripts/env.sh` sets up the same environment to run `cmake --build build/app` or the
-toolchain by hand.
+only reports what a run would do. On Linux, set `VITASDK` (or `--sdk`) to a softfp VitaSDK, such as the
+`atamanenko/vitasdk-softfp` container CI uses, and have `make` instead of `mingw32-make`. In Git Bash,
+`. scripts/env.sh` sets up the same environment to run `cmake --build build/app` or the toolchain by hand.
 
 To install a source build without the web builder:
 
