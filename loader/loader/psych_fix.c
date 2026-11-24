@@ -43,10 +43,18 @@
  *
  * The native ground and rose petal Draws are in psych_ground.c and psych_petal.c (exp_psychground0, exp_psychpetal0).
  *
- * Measurement (debug): exp_psychab switches all of the above off in every other 2 s report window ([PSYCHAB] A/B lines
- * for work-tree ab scripts); exp_psychskip=<mask> with exp_psychskipab does the same for cuts that would be VISIBLE
- * (1: no obj_psychboss_effects Draw, 2: half the rose petals, Step and Draw), to size them (without exp_psychskipab
- * they stay on, for screenshots); exp_psychres logs the
+ * Visible cuts (compromises.md):
+ * - psychEffects=0 (default; 1 = the original): obj_psychboss_effects draws nothing while its effect is type -1, the
+ *   one it has all through part 3 (the black void). That pass fills a screen-size copy, adds it, copies the screen into
+ *   it and draws it back over a black rectangle: 4 more render passes per frame, and the picture looks the same
+ *   without it (it only drops colour where the screen's alpha is below 1). The Draw's variable writes stay: it still
+ *   counts update_timer down and resets it, and creates its copy surface when that is missing (by running the
+ *   original). The Draw draws no random numbers, creates nothing and plays no sound. Other effect types (the colour
+ *   effects of the other parts) are drawn as before.
+ * - psychPetals (psych_petal.c).
+ *
+ * Measurement (debug): exp_psychab switches all of the exact ones above off in every other 2 s report window
+ * ([PSYCHAB] A/B lines for work-tree ab scripts), exp_psychcutab the visible ones ([PSYCHCUT]); exp_psychres logs the
  * effects type, eye counts and surface_create timings ([PSYCHFIX] lines).
  */
 #include <vitasdk.h>
@@ -533,13 +541,53 @@ void psych_fix_frame(void) {
 static event_func orig_effects_draw;
 static int *var_type, *var_update_timer;
 static unsigned fx_types[12], fx_draws, fx_refresh;
-// exp_psychskip=<mask> with exp_psychskipab (measurements of VISIBLE cuts, research only): every other report window
-// 1 skips the effects object's Draw, 2 skips half the rose petals (Step and Draw), [PSYCHSKIP] A/B lines
-int psych_skip_mask, psych_skip_on;
-static int skip_ab;
+int psych_effects = 0; // psychEffects in yyl.cfg
+int psych_cut_off;     // exp_psychcutab: the visible cuts are off in this report window
+static int cut_ab;
+static int *var_fr, *var_screencopy;
+typedef int ABI (*compare_fn)(const gml_rvalue *a, const gml_rvalue *b, double eps, int throw_error);
+static compare_fn compare;
+static double *epsilon;
+static builtin_fn bi_surface_exists;
+static unsigned fx_skipped;
+
+// psychEffects=0: the type -1 pass's variable writes without its drawing. 1 if done, 0 to run the original.
+static int effects_skip(void *self) {
+	gml_rvalue *t = gml_vget(self, var_type[1]);
+	if (!t || (t->kind & 0xffffff) != 0 || t->val != -1.0)
+		return 0;
+	// if (!surface_exists(screencopy)) screencopy = surface_create(...): the original does that
+	gml_rvalue *sc = gml_vget(self, var_screencopy[1]);
+	if (!sc || !bi_surface_exists)
+		return 0;
+	gml_rvalue ex = {0, 0, 5};
+	bi_surface_exists(&ex, self, NULL, 1, sc);
+	if ((ex.kind & 0xffffff) != 0 || ex.val == 0.0)
+		return 0;
+	gml_rvalue *fr = gml_vget(*global_obj_ptr, var_fr[1]);
+	gml_rvalue *(*vwrite)(void *, int) = (*(void ***)self)[3]; // the writable getter, as the event's write uses
+	gml_rvalue *u = vwrite(self, var_update_timer[1]);
+	if (!fr || (fr->kind & 0xffffff) != 0 || !u || (u->kind & 0xffffff) != 0)
+		return 0;
+	// update_timer -= 1 * global.fr; if (update_timer <= 0) update_timer = (type == 1) ? 5 : 0;
+	u->val = u->val - 1.0 * fr->val;
+	gml_rvalue zero = {0, 0, 0};
+	int c = compare(u, &zero, *epsilon, 1);
+	if (c != -2 && c <= 0) {
+		u->val = 0.0;
+		u->kind = 0;
+	}
+	fx_skipped++;
+	return 1;
+}
+
 static void effects_draw_res(void *self, void *other) {
-	if (psych_skip_on && (psych_skip_mask & 1))
+	if (!psych_effects && !psych_cut_off && effects_skip(self))
 		return;
+	if (!research) {
+		orig_effects_draw(self, other);
+		return;
+	}
 	gml_rvalue *t = var_type ? gml_vget(self, var_type[1]) : NULL;
 	gml_rvalue *u = var_update_timer ? gml_vget(self, var_update_timer[1]) : NULL;
 	fx_draws++;
@@ -575,9 +623,13 @@ void psych_fix_report(int frames) {
 	psych_ground_report(frames, ab && !ab_off); // the next window's state (toggled below)
 	extern void psych_petal_report(int frames, int ab_off);
 	psych_petal_report(frames, ab && !ab_off);
-	if (skip_ab) {
-		debugPrintf("[PSYCHSKIP] mask %d A/B: %s\n", psych_skip_mask, psych_skip_on ? "on" : "off");
-		psych_skip_on = !psych_skip_on;
+	if (research && fx_skipped) {
+		debugPrintf("[PSYCHFIX] effects passes not drawn (psychEffects=0): %u\n", fx_skipped);
+		fx_skipped = 0;
+	}
+	if (cut_ab) {
+		debugPrintf("[PSYCHCUT] A/B: %s\n", psych_cut_off ? "off" : "on");
+		psych_cut_off = !psych_cut_off;
 	}
 	if (ab) { // the state of the window just reported, then the other one
 		debugPrintf("[PSYCHAB] A/B: %s\n", ab_off ? "off" : "on");
@@ -619,31 +671,34 @@ void psych_fix_report(int frames) {
 void psych_fix_install(gml_func_entry *table) {
 	extern int psych_ground_install(gml_func_entry *table);
 	int ground = !exp_flag("psychground0") && psych_ground_install(table);
-	extern int psych_petal_install(gml_func_entry *table);
-	int petal = !exp_flag("psychpetal0") && psych_petal_install(table);
+	extern int psych_petal_install(gml_func_entry *table, int native);
+	extern int psych_petals;
+	int petal_native = !exp_flag("psychpetal0");
+	int petal = (petal_native || psych_petals != 1) && psych_petal_install(table, petal_native) && petal_native;
 	debugPrintf("psychiatrist fight: native ground Draw %s, native rose petal Draw %s\n", ground ? "installed" : "NOT installed",
 		petal ? "installed" : "NOT installed");
 	lazy_ok = !exp_flag("psychlazy0") && lazy_install(table);
 	research = debugMode && exp_flag("psychres");
-	skip_ab = debugMode && exp_flag("psychskipab");
-	if (skip_ab || (debugMode && exp_flag("psychskip"))) { // without psychskipab: always skipped (screenshots)
-		psych_skip_on = !skip_ab;
-		FILE *f = fopen("ux0:data/gms/shared/exp_psychskip", "r");
-		char t[8] = {0};
-		if (f) {
-			fread(t, 1, sizeof(t) - 1, f);
-			fclose(f);
-		}
-		psych_skip_mask = atoi(t);
-		research = 1;
-	}
-	if (research) {
-		var_type = (int *)so_symbol(&yoyoloader_mod, "g_VAR_type");
-		var_update_timer = (int *)so_symbol(&yoyoloader_mod, "g_VAR_update_timer");
+	cut_ab = debugMode && exp_flag("psychcutab");
+	var_type = (int *)so_symbol(&yoyoloader_mod, "g_VAR_type");
+	var_update_timer = (int *)so_symbol(&yoyoloader_mod, "g_VAR_update_timer");
+	var_fr = (int *)so_symbol(&yoyoloader_mod, "g_VAR_fr");
+	var_screencopy = (int *)so_symbol(&yoyoloader_mod, "g_VAR_screencopy");
+	compare = (compare_fn)so_symbol(&yoyoloader_mod, "_Z12YYCompareValRK6RValueS1_db");
+	epsilon = (double *)so_symbol(&yoyoloader_mod, "g_GMLMathEpsilon");
+	if (!var_type || !var_update_timer || !var_fr || !var_screencopy || !compare || !epsilon || !global_obj_ptr)
+		psych_effects = 1;
+	if (!psych_effects || research) {
 		event_func o = gml_replace(table, "gml_Object_obj_psychboss_effects_Draw_0", effects_draw_res);
 		if (o)
 			orig_effects_draw = o;
-		o = gml_replace(table, "gml_Object_obj_psychboss_draw_eyes_Draw_0", eyes_draw_res);
+		else
+			psych_effects = 1;
+	}
+	debugPrintf("psychiatrist fight: effects pass in part 3 %s, rose petals drawn 1 in %d\n",
+		psych_effects ? "drawn" : "NOT drawn (psychEffects=0)", psych_petals);
+	if (research) {
+		event_func o = gml_replace(table, "gml_Object_obj_psychboss_draw_eyes_Draw_0", eyes_draw_res);
 		if (o)
 			orig_eyes_draw = o;
 	}
@@ -706,6 +761,7 @@ void psych_fix_late_install(void) {
 	orig_surface_free = f_free->func; f_free->func = surface_free_pool;
 	orig_surface_create = f_create->func; f_create->func = surface_create_pool;
 	orig_surface_exists = f_exists->func; f_exists->func = surface_exists_pool;
+	bi_surface_exists = f_exists->func;
 	orig_surface_resize = f_resize->func; f_resize->func = surface_resize_forget;
 	orig_surface_copy = f_copy->func; f_copy->func = surface_copy_forget;
 	orig_surface_copy_part = f_copy_part->func; f_copy_part->func = surface_copy_part_forget;

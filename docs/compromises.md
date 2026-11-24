@@ -31,6 +31,8 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Prison | Thinner fog | `fogScale=1` |
 | Dossier burn | No small decorative burn circles; the burn spreads the same | `dossierCircles=1` |
 | Motorcycle chase | No cone shadows; distant rockets unlit; explosions with a third of the particles | `coneShadows=1`, `farRocketLights=1`, `fullExplosions=1` |
+| Psychiatrist fight, black void | No screen-copy effect pass; it changes nothing you can see there, except colours where the screen is partly transparent | `psychEffects=1` |
+| Psychiatrist fight, giant | Only half the rose petals are drawn; all of them still fall and settle | `psychPetals=1` (`psychPetals=3`: a third; 1 to 4) |
 
 Over a long session video memory fills up. When it does, the next room load pauses for about a second while the
 textures reload.
