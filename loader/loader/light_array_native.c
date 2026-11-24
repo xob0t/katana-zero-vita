@@ -34,6 +34,11 @@
  * exp_lightarray0 keeps the original. exp_lightarrayverify runs every call twice, the original and then the native
  * body writing for real, and compares what the two passes left: visited lights, rdist, close_lights and the
  * close_light_array entries (see compare_passes; [LIGHTARRAY] report, mismatches must stay 0).
+ *
+ * lightArrayFast (yyl.cfg, default 1): a light's distance, rdist store and compare inline instead of through
+ * F_PointDistance, InternalGetYYVarRefL/InternalGetYYVarRef and YYCompareVal (see body; exact, checked by the verify
+ * above; exp_lightarrayfastfault breaks it on purpose). A smoke vial's new clouds each build their list on their first
+ * two Draws: 131 calls of ~96 us on the Vita in each of those frames, ~78 us with this.
  */
 #include <stdint.h>
 #include <stddef.h>
@@ -186,6 +191,30 @@ static int call_ok(void) {
 
 typedef struct { int distance, close; RV rdist; } Outcome;
 
+// other.close_light_array[other.close_lights] = id; other.close_lights += 1 (the original's runner calls)
+static void close_light(void *light, void *caller) {
+	RV *count = standard_get(caller, VAR_ID(CLOSE_LIGHTS));
+	RV inst = {0, 0, 6}, id = {0, 0, 5}, res = {0, 0, 5};
+	memcpy(&inst.value, &light, sizeof(light));
+	variable_get(&inst, VAR_ID(ID), (int)0x80000000, &id, 0, 0);
+	RV *target = legacy_call(light, caller, &res, 0, fn_desc[OTHER][1], NULL);
+	variable_set(target, VAR_ID(CLOSE_LIGHT_ARRAY), int32_value(count), &id);
+	add_eq(standard_ref(caller, VAR_ID(CLOSE_LIGHTS)), 1);
+	if (refcounted(&id))
+		release(&id);
+	if (refcounted(&res))
+		release(&res);
+}
+
+/*
+ * lightArrayFast (yyl.cfg, default 1; 0 = every step through the runner as before): the distance, the rdist store and
+ * the compare of a light done inline (see body). F_PointDistance's code is checked at install (the inline copy is of
+ * that code). exp_lightarrayfastab flips it every report window ([LIGHTARRAY] fast count).
+ */
+int light_array_fast_on = 1;
+static int fast, fast_ab, fast_fault; // exp_lightarrayfastfault (negative control for exp_lightarrayverify): rdist + 0.5
+unsigned light_array_fast;
+
 // The loop body for one light (self) and the caller (other). dry: compute without writing (unused since the
 // two-pass verifier).
 // Returns 0, having called nothing, if the original body has to run it.
@@ -232,6 +261,36 @@ static int body(void *light, void *caller, int dry, Outcome *o) {
 	}
 	if (!o->distance)
 		return 1;
+	if (fast && !dry) {
+		// The same steps without the runner calls (lightArrayFast): point_distance as F_PointDistance computes it
+		// (YYGetFloat of each argument, float dx = x2 - x1, dy = y2 - y1, dy * dy + dx * dx rounded after each step,
+		// vsqrt.f32, widened; kind 0, flags as builtin() leaves them), the store into rdist's existing slot (what
+		// InternalGetYYVarRefL returns for it), the getters' slots for rdist and radius, and YYCompareVal of two reals
+		// (d = a - b; equal within epsilon). A missing rdist slot or a NaN difference takes the steps below.
+		RV *slot = peek(&tl, RDIST);
+		if (slot) {
+			float dx = cx - lx, dy = cy - ly, s = dy * dy;
+			s = s + dx * dx;
+			float r;
+			__asm__("vsqrt.f32 %0, %1" : "=t"(r) : "t"(s));
+			o->rdist.value = (double)r + (fast_fault ? 0.5 : 0.0);
+			o->rdist.flags = 0;
+			o->rdist.kind = 0;
+			push_context(light);
+			if (refcounted(slot))
+				release(slot);
+			*slot = o->rdist;
+			pop_context(1);
+			RV limit = real(radius->value * 1.25);
+			double d = slot->value - limit.value;
+			int c = d == d ? (fabs(d) <= *epsilon ? 0 : d < 0 ? -1 : 1) : compare(slot, &limit, *epsilon, 1);
+			o->close = c != -2 && c < 0;
+			light_array_fast++;
+			if (o->close)
+				close_light(light, caller);
+			return 1;
+		}
+	}
 	RV *slot = dry ? NULL : standard_ref(light, VAR_ID(RDIST));
 	RV args[4] = {real(lx), real(ly), real(cx), real(cy)};
 	builtin(DISTANCE, &o->rdist, light, caller, 4, args);
@@ -250,20 +309,8 @@ static int body(void *light, void *caller, int dry, Outcome *o) {
 	RV limit = real(radius->value * 1.25); // operator*(YYRValue const&, double) of a plain real
 	int c = compare(rdist, &limit, *epsilon, 1);
 	o->close = c != -2 && c < 0;
-	if (o->close && !dry) {
-		// other.close_light_array[other.close_lights] = id; other.close_lights += 1 (the original's runner calls)
-		RV *count = standard_get(caller, VAR_ID(CLOSE_LIGHTS));
-		RV inst = {0, 0, 6}, id = {0, 0, 5}, res = {0, 0, 5};
-		memcpy(&inst.value, &light, sizeof(light));
-		variable_get(&inst, VAR_ID(ID), (int)0x80000000, &id, 0, 0);
-		RV *target = legacy_call(light, caller, &res, 0, fn_desc[OTHER][1], NULL);
-		variable_set(target, VAR_ID(CLOSE_LIGHT_ARRAY), int32_value(count), &id);
-		add_eq(standard_ref(caller, VAR_ID(CLOSE_LIGHTS)), 1);
-		if (refcounted(&id))
-			release(&id);
-		if (refcounted(&res))
-			release(&res);
-	}
+	if (o->close && !dry)
+		close_light(light, caller);
 	return 1;
 }
 
@@ -516,6 +563,19 @@ int light_array_install(void *(*rx_alloc)(size_t)) {
 	kuKernelFlushCaches(rx, sizeof(code));
 	original_script = (script_fn)rx;
 	verify = exp_flag("lightarrayverify");
+	// lightArrayFast: F_PointDistance must be the code the inline distance copies (its bl words, to YYGetFloat, vary
+	// with patch_plt_calls and are not compared)
+	static const uint32_t pd[34] = {0xe92d48f0, 0xe28db010, 0xed2d8b02, 0xe59b5008, 0xe1a04000, 0xe3a00000, 0xe3a01002,
+		0xe584000c, 0xe1a00005, 0, 0xe1a06000, 0xe1a00005, 0xe3a01000, 0, 0xe1a07000, 0xe1a00005, 0xe3a01003, 0,
+		0xee080a10, 0xe1a00005, 0xe3a01001, 0, 0xee000a10, 0xee016a10, 0xee380a40, 0xee027a10, 0xee311a42, 0xee200a00,
+		0xee010a01, 0xeeb10ac0, 0xeef70ac0, 0xedc40b00, 0xecbd8b02, 0xe8bd88f0};
+	const uint32_t *pdc = (const uint32_t *)(uintptr_t)builtins[DISTANCE];
+	fast = light_array_fast_on;
+	for (int i = 0; i < 34 && fast; i++)
+		if (pd[i] ? pdc[i] != pd[i] : (pdc[i] >> 24) != 0xeb)
+			fast = 0;
+	fast_ab = fast && exp_flag("lightarrayfastab");
+	fast_fault = fast && verify && exp_flag("lightarrayfastfault");
 	uint32_t *new_veneer = veneer_for(AT(NEW_SITE)), *next_veneer = new_veneer ? veneer_for(AT(NEXT_SITE)) : NULL;
 	if (!next_veneer) {
 		debugPrintf("light array: no room for the iterator veneers\n");
@@ -528,4 +588,13 @@ int light_array_install(void *(*rx_alloc)(size_t)) {
 #undef AT
 	debugPrintf("light array: native loop body%s\n", verify ? " (verify mode)" : "");
 	return 1;
+}
+
+void light_array_fast_report(int frames) {
+	if (light_array_fast || fast_ab)
+		debugPrintf("[LIGHTARRAYFAST] lightArrayFast %d: %.1f lights inline per frame%s\n", fast,
+			(float)light_array_fast / (frames > 0 ? frames : 1), fast_ab ? (fast ? " | A/B: on" : " | A/B: off") : "");
+	light_array_fast = 0;
+	if (fast_ab)
+		fast = !fast;
 }
