@@ -60,7 +60,7 @@ static volatile int hang_io_depth;
 static volatile uint32_t hang_io_end_us;
 
 static const char *const stage_names[] = {
-	"input", "runner Process", "vglSwapBuffers", "after swap (t30/dynres)", "texture flush", "GPU garbage collection",
+	"input", "runner Process", "vglSwapBuffers", "after swap (dynres)", "texture flush", "GPU garbage collection",
 	"screenshot check", "frame report", "other",
 };
 
