@@ -41,10 +41,11 @@ static int FileExists_hook(const char *path) {
 void **global_obj_ptr;
 
 // Replaces a function at its entry with a native wrapper, returns a trampoline to the original
-// (NULL if the prologue isn't the relocatable push {..., lr}; add fp, sp, #imm).
+// (NULL if the prologue isn't the relocatable push {..., lr}; add fp, sp, #imm or mov fp, sp).
 void *entry_hook(uintptr_t entry, void *replacement) {
 	uint32_t *w = (uint32_t *)entry;
-	if (!entry || (entry & 3) || (w[0] & 0xffff4000) != 0xe92d4000 || (w[1] & 0xfffff000) != 0xe28db000)
+	if (!entry || (entry & 3) || (w[0] & 0xffff4000) != 0xe92d4000 ||
+			((w[1] & 0xfffff000) != 0xe28db000 && w[1] != 0xe1a0b00d))
 		return NULL;
 	uint32_t *tramp = katana_rx_alloc(16);
 	if (!tramp)
@@ -75,11 +76,8 @@ static event_func orig_particle_draw;
 // Instance pointers are 16-byte aligned; use them for a stable per-instance parity bit
 #define INSTANCE_PARITY(self) (((uintptr_t)(self) >> 4) & 1)
 
-// 30 fps mode (see t30_install) is active: ticks run at 30 Hz, so every-other-tick work runs on every tick
-int t30_active;
-
 static inline int half_rate_tick(void) {
-	return t30_active || !(*frame_count & 1);
+	return !(*frame_count & 1);
 }
 
 // Cloth simulation (clothesline + its softbody nodes) runs at 30Hz, and not at all while the
@@ -195,7 +193,7 @@ void katana_cloth_report(int frames) {
 
 // Each rain emitter is drawn every other frame, alternating between emitters
 static void rain_draw(void *self, void *other) {
-	if (t30_active || (INSTANCE_PARITY(self) ^ (*frame_count & 1)))
+	if (INSTANCE_PARITY(self) ^ (*frame_count & 1))
 		orig_rain_draw(self, other);
 }
 
@@ -233,7 +231,7 @@ static void particle_draw(void *self, void *other) {
 		if (heavy_profiling)
 			sample_recolor_timer();
 	}
-	if (t30_active || drawn++ < PARTICLES_ALWAYS_DRAWN || (INSTANCE_PARITY(self) ^ (*frame_count & 1)))
+	if (drawn++ < PARTICLES_ALWAYS_DRAWN || (INSTANCE_PARITY(self) ^ (*frame_count & 1)))
 		orig_particle_draw(self, other);
 }
 
@@ -1037,6 +1035,13 @@ gml_rvalue *global_var(int *var) {
 	return v && (v->kind == 0 || v->kind == 13) ? v : NULL;
 }
 
+// A real instance variable (through the write getter, as global_var)
+gml_rvalue *instance_var(void *self, int *var) {
+	gml_rvalue *(*vwrite)(void *, int) = (*(void ***)self)[3];
+	gml_rvalue *v = var ? vwrite(self, var[1]) : NULL;
+	return v && v->kind == 0 ? v : NULL;
+}
+
 static void level_complete_create_noreplay(void *self, void *other) {
 	gml_rvalue *a = global_var(var_speedrun), *b = global_var(var_speedrun_skip_replay);
 	gml_rvalue sa, sb;
@@ -1181,6 +1186,8 @@ static void patch_performance() {
 
 	// Texture pages repacked by prepare_apk.py as LZ4 inside the runner's "2zoq" container
 	install_lz4_pages();
+	extern void title_pages_install(void);
+	title_pages_install();
 	install_nursery_align();
 	if (!exp_flag("letternative0")) {
 		extern int letter_native_install(void *(*rx_alloc)(size_t));
@@ -1208,6 +1215,40 @@ static void patch_performance() {
 	if (!exp_flag("bikedraw0")) {
 		extern int bike_draw_install(void);
 		debugPrintf("bike draw loops: %s\n", bike_draw_install() ? "installed" : "NOT installed");
+	}
+	// update_region natively (exact; region_native.c): moving particles and every explosion particle call it from their
+	// draw event, 120-270 calls per frame in the bike chase's helicopter volleys at ~21 us each
+	if (!exp_flag("regionnative0")) {
+		extern int region_native_install(void *(*hook)(uintptr_t entry, void *replacement));
+		debugPrintf("native update_region: %s\n", region_native_install(entry_hook) ? "installed" : "NOT installed");
+	}
+	// Explosion particles skip update_light_array in their inherited Create: they never read the light list (exact;
+	// particle_lights.c). Bike chase volleys: 60-90 particles per explosion frame, ~40 us each.
+	if (!exp_flag("particlelights0")) {
+		extern int particle_lights_install(void *(*hook)(uintptr_t entry, void *replacement));
+		debugPrintf("explosion particle lights: %s\n", particle_lights_install(entry_hook) ? "installed" : "NOT installed");
+	}
+	// Bike chase helicopter fight: fewer explosion particles per mortar, same random draws (explosion_lite.c).
+	// fullExplosions=1 keeps all 30.
+	extern int full_explosions;
+	if (!full_explosions || debugMode) { // with fullExplosions=1 only for the debug screenshot trigger (all particles)
+		extern int explosion_lite_install(void);
+		debugPrintf("lighter explosions: %s%c", explosion_lite_install() ? "installed" : "NOT installed", 10);
+	}
+	// Bike chase traffic cones: drawn without their draw_shadow (cone_shadow.c), 4.5-6 ms per frame with ~100 cones even
+	// with the native shadow. coneShadows=1 keeps them.
+	extern int cone_shadows;
+	if (!cone_shadows) {
+		extern int cone_shadow_install(void);
+		debugPrintf("cone shadows off: %s%c", cone_shadow_install() ? "installed" : "NOT installed", 10);
+	}
+	// Bike chase helicopter fight: the rockets rising in the background (obj_heli_mortar_far) are drawn unlit; their
+	// light list, light tint and rim shading cost 15-37 ms of render-target flushes per frame while 15-25 are on
+	// screen (far_rocket.c). farRocketLights=1 keeps them lit.
+	extern int far_rocket_lights;
+	if (!far_rocket_lights) {
+		extern int far_rocket_install(void);
+		debugPrintf("far rockets unlit: %s\n", far_rocket_install() ? "installed" : "NOT installed");
 	}
 	// update_light_array's loop body runs natively per light (exact; light_array_native.c): particles' Create events
 	if (!exp_flag("lightarray0")) {
@@ -1256,6 +1297,13 @@ static void patch_performance() {
 	if (!exp_flag("smokedraw0")) {
 		extern int smokedraw_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native smoke cloud Draw: %s\n", smokedraw_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
+	// move_contact_solid without the redundant collision-tree work (move_contact_native.c, exact): the Dragon's dash
+	// aim calls it every frame and it walked the player pixel by pixel with tree updates and searches (1.2-3.6 ms/frame
+	// in room_dragon_3, more on long aims). exp_movecontact0 keeps the runner's Command_MoveContact.
+	if (!exp_flag("movecontact0")) {
+		extern int move_contact_native_install(void *(*hook)(uintptr_t entry, void *replacement));
+		debugPrintf("native move_contact_solid: %s\n", move_contact_native_install(entry_hook) ? "installed" : "NOT installed");
 	}
 	// Exact natives of obj_orangelight Step and obj_lightback Step, from the static recompiler kill test
 	// (work/cpu_research/kill_test/REPORT.md): the events with the runner's compare/truth/variable helpers inlined
@@ -1332,17 +1380,21 @@ static void patch_performance() {
 	orig_timing_sleep = entry_hook(so_symbol(&yoyoloader_mod, "Timing_Sleep"), timing_sleep_vsync);
 	debugPrintf("frame limiter spin: %s\n", orig_timing_sleep ? "skipped with vblank pacing" : "NOT hooked");
 
-	// Whatever yyl.cfg says: the GRAPHICS menu can turn 30 fps mode on, and it needs the time doubling then
-	t30_install(table);
-	fps_menu_install(table);
+	extern int fps_mode_ignored;
+	if (fps_mode_ignored)
+		debugPrintf("yyl.cfg fpsMode/fps30: no longer supported (the 30 fps mode was removed), ignored\n");
+	enemy_half_rate_install(table);
+	options_menu_install(table);
 	extern void fx_rate_install(gml_func_entry *table);
-	fx_rate_install(table); // after t30_install: uses its animation_code hook
+	fx_rate_install(table);
 	extern void glow_rest_install(gml_func_entry *table);
 	glow_rest_install(table);
 	extern void wobble_rest_install(gml_func_entry *table);
 	wobble_rest_install(table);
 	extern void blood_drops_install(gml_func_entry *table);
 	blood_drops_install(table);
+	extern void room_lighting_install(gml_func_entry *table);
+	room_lighting_install(table); // after blood_drops_install: chains its opto_master Room Start
 
 	// Frame skipping (and its guard stubs) only when opted in with frameSkip=1
 	uintptr_t *draw_slot = frame_skip ? so_got_slot(&yoyoloader_mod, "_Z12DoAStep_Drawv") : NULL;

@@ -58,6 +58,7 @@ static uint32_t stage_calls[S_COUNT];
 
 // Called once per frame by the main loop: with log set (a slow frame under exp_spikes) prints the stages that took
 // over 0.3 ms in that frame. The totals are reset at each report, so a total below the previous one restarts.
+static void katana_spike_scripts(int log);
 void katana_stage_frame(int log) {
 	static uint32_t prev[S_COUNT];
 	if (log) {
@@ -72,6 +73,7 @@ void katana_stage_frame(int log) {
 	}
 	gc_frame_gen = -1;
 	memcpy(prev, stage_time, sizeof(prev));
+	katana_spike_scripts(log);
 }
 
 #define STAGE_BEGIN uint32_t stage_start = sceKernelGetProcessTimeLow()
@@ -277,6 +279,34 @@ static void userprof_hooks(void) {
 	debugPrintf("userprof: timing %d events\n", userprof_num);
 }
 
+// Slow frame (exp_spikes): this frame's time and calls of each scriptprof/runner pass-through and userprof event
+// over 0.2 ms, next to the stage and event lines
+static void katana_spike_scripts(int log) {
+	static uint32_t prev_pt[PASSTHRU_MAX], prev_pc[PASSTHRU_MAX], prev_ut[USERPROF_MAX], prev_uc[USERPROF_MAX];
+	if (log && (passthru_num || userprof_num)) {
+		char line[768];
+		int n = 0;
+		for (int i = 0; i < passthru_num && n < (int)sizeof(line) - 64; i++) {
+			uint32_t d = passthru_time[i] >= prev_pt[i] ? passthru_time[i] - prev_pt[i] : passthru_time[i];
+			uint32_t c = passthru_calls[i] >= prev_pc[i] ? passthru_calls[i] - prev_pc[i] : passthru_calls[i];
+			if (d >= 200)
+				n += snprintf(line + n, sizeof(line) - n, " %s %.2f x%u", passthru_names[i], d / 1000.0f, c);
+		}
+		for (int i = 0; i < userprof_num && n < (int)sizeof(line) - 80; i++) {
+			uint32_t d = userprof_time[i] >= prev_ut[i] ? userprof_time[i] - prev_ut[i] : userprof_time[i];
+			uint32_t c = userprof_calls[i] >= prev_uc[i] ? userprof_calls[i] - prev_uc[i] : userprof_calls[i];
+			if (d >= 200)
+				n += snprintf(line + n, sizeof(line) - n, " %s %.2f x%u", userprof_names[i] + 11, d / 1000.0f, c);
+		}
+		if (n)
+			debugPrintf("[SPIKE]   scripts:%s\n", line);
+	}
+	memcpy(prev_pt, passthru_time, sizeof(prev_pt));
+	memcpy(prev_pc, passthru_calls, sizeof(prev_pc));
+	memcpy(prev_ut, userprof_time, sizeof(prev_ut));
+	memcpy(prev_uc, userprof_calls, sizeof(prev_uc));
+}
+
 static void stage_hook(const char *symbol, void **orig, void *wrapper) {
 	// Entry hook first: the deployed runner calls most functions directly (patch_plt_calls.py), past the GOT
 	void *tramp = entry_hook(so_symbol(&yoyoloader_mod, symbol), wrapper);
@@ -358,29 +388,21 @@ static void light_fast_report(int frames) {
 }
 
 void katana_prof_report(int frames) {
-	extern unsigned t30_letter_skips, t30_search_ticks, t30_enemy_steps, t30_textbox_ticks[2];
-	if (t30_letter_skips)
-		debugPrintf("[FPS30] %u letter steps skipped on frozen ticks\n", t30_letter_skips);
-	if (t30_enemy_steps)
-		debugPrintf("[FPS30] enemy steps at 30 ticks/s %u, search ticks added %u\n", t30_enemy_steps, t30_search_ticks);
 	{
 		// Half-rate enemies, per frame of this report window
-		extern unsigned enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced, enemyhalf_probes, enemyhalf_kills[4];
+		extern unsigned enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced, enemyhalf_probes,
+			enemyhalf_search_ticks, enemyhalf_kills[4];
 		static unsigned last[5];
 		unsigned now[5] = { enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced, enemyhalf_probes };
 		if (debugMode && frames > 0 && (now[0] != last[0] || now[2] != last[2]))
-			debugPrintf("[FPS30] half-rate enemies per tick: %.1f steps run (%.1f covering 2 ticks), %.1f skipped, %.2f run "
+			debugPrintf("[ENEMYHALF] half-rate enemies per tick: %.1f steps run (%.1f covering 2 ticks), %.1f skipped, %.2f run "
 				"for a hurt source near (%.2f probed) | search ticks added %u | deaths: other event %u, near run %u, 2-tick %u, "
 				"1-tick %u\n",
 				(float)(now[0] - last[0]) / frames, (float)(now[1] - last[1]) / frames, (float)(now[2] - last[2]) / frames,
-				(float)(now[3] - last[3]) / frames, (float)(now[4] - last[4]) / frames, t30_search_ticks, enemyhalf_kills[0],
+				(float)(now[3] - last[3]) / frames, (float)(now[4] - last[4]) / frames, enemyhalf_search_ticks, enemyhalf_kills[0],
 				enemyhalf_kills[1], enemyhalf_kills[2], enemyhalf_kills[3]);
 		memcpy(last, now, sizeof(last));
 	}
-	extern unsigned t30_textbox_doubled;
-	if (t30_textbox_ticks[0] || t30_textbox_ticks[1])
-		debugPrintf("[FPS30] textbox ticks at 30 ticks/s: %u, passive %u (typing x2 %u)\n", t30_textbox_ticks[0],
-			t30_textbox_ticks[1], t30_textbox_doubled);
 	extern uint32_t sound_limit_skipped;
 	if (sound_limit_skipped)
 		debugPrintf("[AUDIO] same-sound copies skipped: %u\n", sound_limit_skipped);
@@ -583,12 +605,104 @@ void katana_prof_report(int frames) {
 		last_fallback = trail_lights_fallback;
 	}
 	{
+		extern unsigned explosion_particles_created, explosion_particles_skipped, explosion_regions_skipped;
+		static unsigned last_c, last_s, last_r;
+		if (frames > 0 && (explosion_particles_created != last_c || explosion_particles_skipped != last_s))
+			debugPrintf("[EXPLOSION] particles per frame: %.1f created, %.1f skipped | %.1f update_region skipped%c",
+				(float)(explosion_particles_created - last_c) / frames, (float)(explosion_particles_skipped - last_s) / frames,
+				(float)(explosion_regions_skipped - last_r) / frames, 10);
+		extern unsigned loop_draws_explosions, loop_draws_bad;
+		if (frames > 0 && loop_draws_explosions && explosion_particles_created != last_c)
+			debugPrintf("[EXPLORNG] explosion loops checked %u, with a draw count other than 120: %u%c", loop_draws_explosions,
+				loop_draws_bad, 10);
+		last_c = explosion_particles_created;
+		last_s = explosion_particles_skipped;
+		last_r = explosion_regions_skipped;
+	}
+	{
+		extern unsigned cone_shadows_skipped, cone_shadows_drawn;
+		static unsigned last_s, last_d;
+		if (frames > 0 && (cone_shadows_skipped != last_s || cone_shadows_drawn != last_d))
+			debugPrintf("[CONESHADOW] per frame: %.1f cone shadows skipped, %.1f other obstacle shadows drawn%c",
+				(float)(cone_shadows_skipped - last_s) / frames, (float)(cone_shadows_drawn - last_d) / frames, 10);
+		last_s = cone_shadows_skipped;
+		last_d = cone_shadows_drawn;
+	}
+	{
+		extern unsigned region_native_calls, region_native_fallback, region_verify_ok, region_verify_mismatch,
+			region_verify_skipped, region_fallback_reason[8];
+		static unsigned last_c, last_f;
+		if (frames > 0 && region_native_calls != last_c)
+			debugPrintf("[REGION] update_region %.1f calls/frame, %.1f original | verify ok %u mismatch %u not native %u | "
+				"reasons %u %u %u %u %u %u %u\n", (float)(region_native_calls - last_c) / frames,
+				(float)(region_native_fallback - last_f) / frames, region_verify_ok, region_verify_mismatch,
+				region_verify_skipped, region_fallback_reason[0], region_fallback_reason[1], region_fallback_reason[2],
+				region_fallback_reason[3], region_fallback_reason[4], region_fallback_reason[5], region_fallback_reason[6]);
+		extern unsigned region_verify_paths[32];
+		if (frames > 0 && region_verify_ok + region_verify_mismatch && region_native_calls != last_c) {
+			char line[400];
+			int n = 0;
+			for (int k = 0; k < 32 && n < (int)sizeof(line) - 24; k++)
+				if (region_verify_paths[k])
+					n += snprintf(line + n, sizeof(line) - n, " %02x:%u", k, region_verify_paths[k]);
+			debugPrintf("[REGION] verify paths (written slots: oth_x 1 oth_y 2 chq 4 region 8 timer 10):%s%c", line, 10);
+		}
+		extern unsigned region_native_us, region_fast_seed;
+		if (frames > 0 && region_native_us && region_native_calls != last_c)
+			debugPrintf("[REGION] %.2f ms per frame, %.1f us per call, seed read directly %u (total)%c", region_native_us / 1000.0f / frames,
+				(float)region_native_us / (region_native_calls - last_c), region_fast_seed, 10);
+		region_native_us = 0;
+		last_c = region_native_calls;
+		last_f = region_native_fallback;
+	}
+	{
+		extern unsigned particle_lights_skipped, particle_lights_run, particle_lights_reader_hits, particle_lights_reader_calls;
+		static unsigned last_s, last_r;
+		if (frames > 0 && (particle_lights_skipped != last_s || particle_lights_run != last_r || particle_lights_reader_calls))
+			debugPrintf("[PARTLIGHTS] particle Create light lists per frame: %.1f skipped, %.1f run | verify: readers on "
+				"explosion particles %u of %u calls (total)\n", (float)(particle_lights_skipped - last_s) / frames,
+				(float)(particle_lights_run - last_r) / frames, particle_lights_reader_hits, particle_lights_reader_calls);
+		last_s = particle_lights_skipped;
+		last_r = particle_lights_run;
+	}
+	{
+		extern unsigned far_rocket_skipped, far_rocket_original, far_rocket_would_skip;
+		static unsigned last_s, last_o, last_w;
+		if (frames > 0 && (far_rocket_skipped != last_s || far_rocket_original != last_o || far_rocket_would_skip != last_w))
+			debugPrintf("[FARROCKET] light calls per frame: %.1f skipped, %.1f original | verify would skip %u (total)\n",
+				(float)(far_rocket_skipped - last_s) / frames, (float)(far_rocket_original - last_o) / frames,
+				far_rocket_would_skip);
+		last_s = far_rocket_skipped;
+		last_o = far_rocket_original;
+		last_w = far_rocket_would_skip;
+	}
+	{
 		static unsigned last_kept, last_skipped;
 		extern unsigned bike_draw_kept, bike_draw_skipped, bike_draw_verified, bike_draw_mismatch, bike_draw_odd;
 		if (frames > 0 && (bike_draw_kept != last_kept || bike_draw_skipped != last_skipped))
 			debugPrintf("[BIKEDRAW] particle/trail loop instances per frame: %.1f run, %.1f stepped over | other kinds %u "
 				"| verify ok %u mismatch %u\n", (float)(bike_draw_kept - last_kept) / frames,
 				(float)(bike_draw_skipped - last_skipped) / frames, bike_draw_odd, bike_draw_verified, bike_draw_mismatch);
+		extern unsigned bike_pcache_hits, bike_pcache_reads, bike_pcache_odd, bike_pcache_verified, bike_pcache_mismatch,
+			bike_pcache_conservative;
+		static unsigned last_hits, last_reads;
+		if (frames > 0 && (bike_pcache_hits != last_hits || bike_pcache_reads != last_reads))
+			debugPrintf("[BIKEDRAW] particle parents per frame: %.1f cached, %.1f read | undecided kinds %u | verify ok %u "
+				"mismatch %u kept-extra %u\n", (float)(bike_pcache_hits - last_hits) / frames,
+				(float)(bike_pcache_reads - last_reads) / frames, bike_pcache_odd, bike_pcache_verified,
+				bike_pcache_mismatch, bike_pcache_conservative);
+		last_hits = bike_pcache_hits;
+		last_reads = bike_pcache_reads;
+		extern unsigned bike_draw_skip_us, bike_draw_newwith_us, bike_sort_us;
+		if (frames > 0 && bike_sort_us)
+			debugPrintf("[BIKEDRAW] actor sort %.2f ms per frame%c", bike_sort_us / 1000.0f / frames, 10);
+		bike_sort_us = 0;
+		if (frames > 0 && bike_draw_newwith_us)
+			debugPrintf("[BIKEDRAW] particle loop NewWithIterator %.2f ms per frame%c", bike_draw_newwith_us / 1000.0f / frames, 10);
+		bike_draw_newwith_us = 0;
+		if (frames > 0 && bike_draw_skip_us)
+			debugPrintf("[BIKEDRAW] stepping %.2f ms per frame\n", bike_draw_skip_us / 1000.0f / frames);
+		bike_draw_skip_us = 0;
 		last_kept = bike_draw_kept;
 		last_skipped = bike_draw_skipped;
 		static unsigned last_native, last_layer, last_fallback;
@@ -704,6 +818,34 @@ void katana_prof_report(int frames) {
 		}
 		if (laser_ab)
 			laser_ab_off = !laser_ab_off;
+	}
+	{
+		// move_contact_native.c, per frame: tested positions (steps); searches run/skipped; UpdateTree's tree update of
+		// the player run/skipped; tested boxes the tree move was deferred for, and flushes. Totals: candidate lists
+		// unusable (overflow / count mismatch); exp_mcverify checks of skipped work and of the insertion model;
+		// exp_mcdiff calls whose native result (on a copy of the tree) matched the original's.
+		// exp_mcab: native off in every other window.
+		extern int mc_ab, mc_ab_off, mc_prof;
+		extern unsigned mc_calls, mc_fallbacks, mc_steps, mc_search_real, mc_search_skipped, mc_tree_skipped, mc_tree_real;
+		extern unsigned mc_verify_ok, mc_verify_bad, mc_prof_us, mc_cand_overflow, mc_cand_mismatch;
+		extern unsigned mc_deferred_steps, mc_flushes, mc_model_ok, mc_model_bad, mc_diff_ok, mc_diff_bad, mc_diff_skipped;
+		if ((mc_calls || mc_fallbacks) && frames > 0) {
+			float f = (float)frames;
+			debugPrintf("[MOVECONTACT] native %.1f fallback %.1f calls, %.1f steps | search %.1f run %.1f skipped | tree "
+				"update %.1f run %.1f skipped | deferred %.1f flushes %.1f | candidates overflow %u mismatch %u | verify "
+				"ok %u mismatch %u, model ok %u mismatch %u, diff ok %u mismatch %u skipped %u%s\n",
+				mc_calls / f, mc_fallbacks / f, mc_steps / f, mc_search_real / f, mc_search_skipped / f, mc_tree_real / f,
+				mc_tree_skipped / f, mc_deferred_steps / f, mc_flushes / f, mc_cand_overflow, mc_cand_mismatch,
+				mc_verify_ok, mc_verify_bad, mc_model_ok, mc_model_bad, mc_diff_ok, mc_diff_bad, mc_diff_skipped,
+				mc_ab ? (mc_ab_off ? " | A/B: off" : " | A/B: on") : "");
+			if (mc_prof)
+				debugPrintf("[MOVECONTACT] native time %.3f ms/frame\n", mc_prof_us / 1000.0f / f);
+		}
+		mc_calls = mc_fallbacks = mc_steps = mc_search_real = mc_search_skipped = mc_tree_skipped = mc_tree_real = 0;
+		mc_deferred_steps = mc_flushes = 0;
+		mc_prof_us = 0;
+		if (mc_ab)
+			mc_ab_off = !mc_ab_off;
 	}
 	if (debugMode && light_fast_mode)
 		light_fast_report(frames);

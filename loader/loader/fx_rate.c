@@ -14,7 +14,7 @@
  *   each of them. animation_code (the cloud's frame counter) drops the excess of its accumulator, so fr x N would not
  *   be N ticks of animation (dissolve would last up to 50% longer at N=3, and clouds block enemy sight until they are
  *   gone): while the wrapped Step runs, animation_code runs once per tick covered with the real fr instead
- *   (fx_animation_code, called from the 30 fps mode's hook on it). Clouds that are still flying to their place
+ *   (fx_animation_code, an entry hook on it). Clouds that are still flying to their place
  *   (in_place false: a new cloud and its first Steps) run every tick, so they appear and spread smoothly.
  * - Contacts stay at full rate. A settled cloud on screen (in_screen, set by its Draw) tests the original Step's three
  *   gates every tick: place_meeting(x, y, obj_enemy) (the touched enemy gets first_attack_timer >= 20 and
@@ -30,8 +30,6 @@
  *   Animation End destroys the ember): image_speed is divided by N. Its own motion (x += hsp * fr) would move in
  *   jumps every N ticks; the jump is spread over the N ticks with built-in hspeed/vspeed, which the runner applies
  *   after the Step (the ember doesn't use built-in motion otherwise).
- * In 30 fps mode a tick already covers two 60 Hz ticks (fr doubled), so the period there is N/2 rounded up: the same
- * update rate in real time (exp_fxkeep30 keeps N, fr up to 2N).
  * Debug counters print with the profiler as [FXRATE].
  */
 
@@ -48,23 +46,16 @@
 typedef int (*builtin_var_fn)(void *inst, int index, gml_rvalue *value);
 
 int fx_rate_n;           // N: 4, or from exp_fx0 / exp_fx2 / exp_fx3
-static int fx_keep30;    // exp_fxkeep30: N also at 30 ticks/s
 static int *var_fr, *var_in_place, *var_animation_finished;
 static builtin_var_fn gv_speed, sv_speed, gv_image_speed, sv_image_speed, gv_x, gv_y, sv_x, sv_y, sv_hspeed, sv_vspeed;
 static event_func orig_smoke_step, orig_corpsefire_step;
 
 // animation_code repeat request (fx_animation_code): times, and the real fr to run it with
-int fx_anim_repeat;
+static int fx_anim_repeat;
 static double fx_anim_fr;
+static gml_script_fn orig_animation_code;
 
 unsigned fx_smoke_full, fx_smoke_update, fx_smoke_skip, fx_smoke_contacts, fx_anim_calls, fx_ember_update, fx_ember_skip;
-
-static int fx_period(void) {
-	int n = fx_rate_n;
-	if (t30_active && !fx_keep30)
-		n = (n + 1) / 2;
-	return n;
-}
 
 static int fx_due(void *self, int n) {
 	uint32_t id = *(uint32_t *)((char *)self + 0x80);
@@ -104,9 +95,12 @@ static void fx_restore_fr(double real, int n) {
 		fr->val = real;
 }
 
-// From the 30 fps mode's animation_code hook while fx_anim_repeat > 1: the script runs fx_anim_repeat times with the
-// real fr, and animation_finished is true if any run finished
-void *fx_animation_code(gml_script_fn orig, void *self, void *other, void *result, int argc, void **args) {
+// Entry hook on animation_code: while fx_anim_repeat > 1 the script runs fx_anim_repeat times with the real fr, and
+// animation_finished is true if any run finished
+static void *fx_animation_code(void *self, void *other, void *result, int argc, void **args) {
+	gml_script_fn orig = orig_animation_code;
+	if (fx_anim_repeat <= 1)
+		return orig(self, other, result, argc, args);
 	int n = fx_anim_repeat;
 	fx_anim_repeat = 0; // nothing inside runs a wrapped Step, but don't recurse either way
 	gml_rvalue *fr = global_var(var_fr);
@@ -240,7 +234,7 @@ static void smoke_run(void *self, void *other, int k, int no_contacts) {
 }
 
 static void smoke_step(void *self, void *other) {
-	int n = fx_period();
+	int n = fx_rate_n;
 	uint32_t tick = *frame_count, *last = NULL;
 	gml_rvalue *v;
 	if (n <= 1 || !(v = fx_var(self, var_in_place)) || v->val == 0 || !(last = smoke_last(self, tick))) {
@@ -285,7 +279,7 @@ static void smoke_step(void *self, void *other) {
 }
 
 static void corpsefire_step(void *self, void *other) {
-	int n = fx_period();
+	int n = fx_rate_n;
 	if (n <= 1) {
 		orig_corpsefire_step(self, other);
 		return;
@@ -318,8 +312,8 @@ void fx_rate_report(int frames) {
 	if (!fx_rate_n)
 		return;
 	if (fx_smoke_full || fx_smoke_update || fx_smoke_skip)
-		debugPrintf("[FXRATE] N %d (now %d): smoke steps full %.1f updated %.1f skipped %.1f per tick, contact runs %u, "
-			"animation_code runs %.1f per tick\n", fx_rate_n, fx_period(), (float)fx_smoke_full / frames,
+		debugPrintf("[FXRATE] N %d: smoke steps full %.1f updated %.1f skipped %.1f per tick, contact runs %u, "
+			"animation_code runs %.1f per tick\n", fx_rate_n, (float)fx_smoke_full / frames,
 			(float)fx_smoke_update / frames, (float)fx_smoke_skip / frames, fx_smoke_contacts, (float)fx_anim_calls / frames);
 	if (fx_ember_update || fx_ember_skip)
 		debugPrintf("[FXRATE] embers updated %.1f skipped %.1f per tick\n", (float)fx_ember_update / frames,
@@ -328,11 +322,9 @@ void fx_rate_report(int frames) {
 }
 
 void fx_rate_install(gml_func_entry *table) {
-	extern int t30_animation_code_hooked;
 	fx_rate_n = exp_flag("fx0") ? 0 : exp_flag("fx2") ? 2 : exp_flag("fx3") ? 3 : 4;
 	if (!fx_rate_n)
 		return;
-	fx_keep30 = exp_flag("fxkeep30");
 	var_fr = (int *)so_symbol(&yoyoloader_mod, "g_VAR_fr");
 	var_in_place = (int *)so_symbol(&yoyoloader_mod, "g_VAR_in_place");
 	var_in_screen = (int *)so_symbol(&yoyoloader_mod, "g_VAR_in_screen");
@@ -354,13 +346,16 @@ void fx_rate_install(gml_func_entry *table) {
 	FX_RESOLVE(sv_vspeed, "_Z9SV_VSpeedP9CInstanceiP6RValue");
 #undef FX_RESOLVE
 	int smoke = 0, embers = 0;
-	// The smoke needs the animation_code repeat (the 30 fps mode's entry hook on it, installed earlier)
+	// The smoke needs the animation_code repeat
 	if (var_fr && var_in_place && var_in_screen && var_animation_finished && gv_speed && sv_speed && fx_functions &&
-			fx_current_function && fx_fn_place_meeting && fx_object_find && current_room && t30_animation_code_hooked)
+			fx_current_function && fx_fn_place_meeting && fx_object_find && current_room)
+		orig_animation_code = entry_hook(so_symbol(&yoyoloader_mod,
+			"_Z25gml_Script_animation_codeP9CInstanceS0_R8YYRValueiPPS1_"), fx_animation_code);
+	if (orig_animation_code)
 		smoke = !!(orig_smoke_step = gml_replace(table, "gml_Object_obj_smokecloud_Step_0", smoke_step));
 	if (var_fr && gv_image_speed && sv_image_speed && gv_x && gv_y && sv_x && sv_y && sv_hspeed && sv_vspeed &&
 			!exp_flag("fxembers0"))
 		embers = !!(orig_corpsefire_step = gml_replace(table, "gml_Object_obj_corpsefire_Step_0", corpsefire_step));
-	debugPrintf("effects at 1/%d rate (%s at 30 ticks/s): smoke %s, embers %s\n", fx_rate_n,
-		fx_keep30 ? "same" : "half", smoke ? "hooked" : "NOT hooked", embers ? "hooked" : "NOT hooked");
+	debugPrintf("effects at 1/%d rate: smoke %s, embers %s\n", fx_rate_n,
+		smoke ? "hooked" : "NOT hooked", embers ? "hooked" : "NOT hooked");
 }

@@ -47,10 +47,112 @@ static int app_full_w = 640, app_full_h = 360; // size outside GPU-bound rooms (
 static int app_set_w, app_set_h; // size last written by us
 static int app_game_w, app_game_h; // size the game set, before the override
 
+/*
+ * Drain after the game's own texture page flush. Many rooms call draw_texture_flush at room start, and the room
+ * switch and the new room's first frame run in the same Process call. vitaGL keeps the released pages for a few frames
+ * (garbage collector purge lists), so the first frame's page loads didn't fit, and the allocator fell back to its forced
+ * collection: 34 of the 35 forced collections in a 29-minute playtest were on such frames. The forced collection's
+ * last cycle frees what the current frame released, which a scene still being recorded may use; a hang there (an fbo
+ * deleted right after drawing to it, its render target destroyed under its open scene) froze the game for good on a
+ * device test, the same way the playtest froze entering room_prison_1 right after the game's flush.
+ * So the released memory is freed (vgl_collect_garbage_now: GPU finish, every purge cycle) right after the flush
+ * returns, once no scene holds unsubmitted commands, so nothing still to run refers to it. It has to be right there:
+ * the flush mostly runs inside a Step event (obj_level_complete, room start), and the new room's pages start loading
+ * before its Draw phase. On device soaks a drain at the start of Draw came too late for 17 of 21 game flushes (a new
+ * page already in PHYCONT), and waiting for the swap was later still (the room switch and the first frame follow in
+ * the same Process call). At the call a scene is usually open: the builtin first submits the runner's pending batch
+ * (Graphics::Flush) into it. It is ended first (vgl_end_scene_no_depth_stencil) when no draw or clear in it wrote
+ * depth or stencil values and both tests are off: the next draw begins a new scene and redraws the scissor mask, and
+ * the split drops no depth/stencil contents. Otherwise the drain retries at the start of Draw and after the next
+ * presented frame; each wait is logged with its reason.
+ * The new room then loads its pages into free VRAM, and the forced collection stays a rare last resort, reported by
+ * [FORCEDGC]. The loader's own page recovery after the swap (below) drains the same way. exp_texdrain0 disables.
+ */
+extern GLboolean vgl_scene_open;
+static builtin_fn orig_texture_flush;
+static const char *texdrain_pending; // what released the memory, until the drain runs
+unsigned texdrain_count;
+
+static void texdrain_run(const char *where) {
+	if (!texdrain_pending)
+		return;
+	extern int vgl_end_scene_no_depth_stencil(void);
+	int scene = vgl_end_scene_no_depth_stencil();
+	if (scene == 2) {
+		extern GLboolean vgl_scene_depth_stencil, depth_test_state, stencil_test_state;
+		static const char *const causes[] = { "", "a draw with depth writes", "a draw with the stencil test",
+			"a depth clear", "a stencil clear" };
+		debugPrintf("[TEXDRAIN] waiting (%s): the open scene %s%s\n", where, vgl_scene_depth_stencil ?
+			"wrote depth or stencil values: " : depth_test_state || stencil_test_state ? "has a depth or stencil test on" :
+			"could not be ended", vgl_scene_depth_stencil <= 4 ? causes[vgl_scene_depth_stencil] : "");
+		return;
+	}
+	const char *what = texdrain_pending;
+	texdrain_pending = NULL;
+	uint32_t t0 = sceKernelGetProcessTimeLow();
+	size_t before = vglMemFree(VGL_MEM_VRAM);
+	extern void vgl_collect_garbage_now(void);
+	vgl_collect_garbage_now();
+	texdrain_count++;
+	debugPrintf("[TEXDRAIN] freed after %s (%s%s, %.1f ms): free vram %uKB -> %uKB, phycont %uKB\n", what, where,
+		scene == 1 ? ", ended an empty scene" : scene == 3 ? ", ended the open scene" : "",
+		(sceKernelGetProcessTimeLow() - t0) / 1000.0f, before / 1024, vglMemFree(VGL_MEM_VRAM) / 1024,
+		vglMemFree(VGL_MEM_PHYCONT) / 1024);
+}
+
+// For title_pages.c: frees what was just released, the same way (scene-aware). Returns 1 if it was freed now, 0 if
+// it waits for the start of Draw or the next presented frame.
+int katana_texdrain_now(const char *what) {
+	texdrain_pending = what;
+	texdrain_run("after the swap");
+	return !texdrain_pending;
+}
+
+static void texture_flush_drain(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) {
+	orig_texture_flush(result, self, other, argc, args);
+	texdrain_pending = "the game's texture flush";
+	texdrain_run("at the call");
+}
+
+// Forced collections since the last presented frame: rare once the drain runs, so each one is logged
+static void forced_gc_report(void) {
+	extern volatile int vgl_forced_gc_runs, vgl_forced_gc_open_scene;
+	extern volatile size_t vgl_forced_gc_size;
+	static int seen, seen_open;
+	if (vgl_forced_gc_runs == seen)
+		return;
+	debugPrintf("[FORCEDGC] %d forced garbage collection(s) in the last frame, %d with a scene open, last for %uKB | room %d | "
+		"free vram %uKB ram %uKB phycont %uKB\n", vgl_forced_gc_runs - seen, vgl_forced_gc_open_scene - seen_open,
+		(unsigned)(vgl_forced_gc_size / 1024), current_room ? *current_room : -1, vglMemFree(VGL_MEM_VRAM) / 1024,
+		vglMemFree(VGL_MEM_RAM) / 1024, vglMemFree(VGL_MEM_PHYCONT) / 1024);
+	seen = vgl_forced_gc_runs;
+	seen_open = vgl_forced_gc_open_scene;
+}
+
+// Surface memory is freed once the GPU has finished the scenes that may use it (vitagl.patch: vgl_retire, the scene
+// completion fence); totals in debug mode when they change, at most every 2 s
+static void rt_free_report(void) {
+	extern uint32_t vgl_rt_retired_now, vgl_rt_retired_later, vgl_open_scene_retires, vgl_rt_handle_retires,
+		vgl_retire_overflows;
+	extern int vgl_retire_pending(void);
+	static uint32_t seen, frames;
+	frames++;
+	uint32_t sum = vgl_rt_retired_now + vgl_rt_retired_later + vgl_open_scene_retires + vgl_rt_handle_retires +
+		vgl_retire_overflows;
+	if (!debugMode || frames < 120 || sum == seen)
+		return;
+	frames = 0;
+	seen = sum;
+	debugPrintf("[RTFREE] render-target frees: %u at once (GPU done), %u after their scene fence | open-scene texture frees "
+		"held back %u | render targets retired %u | not queued (no memory) %u | waiting now %d\n", vgl_rt_retired_now,
+		vgl_rt_retired_later, vgl_open_scene_retires, vgl_rt_handle_retires, vgl_retire_overflows, vgl_retire_pending());
+}
+
 // DoAStep_Draw hook: application surface size, then lighting at 30 Hz
 static void (*katana_orig_draw)(void);
 
 static void DoAStep_Draw_katana(void) {
+	texdrain_run("at Draw");
 	if (app_surf_native && app_width && !*app_new_size && (*app_width != app_surf_w || *app_height != app_surf_h)) {
 		debugPrintf("app surface %dx%d -> %dx%d\n", *app_width, *app_height, app_surf_w, app_surf_h);
 		if (*app_width != app_set_w || *app_height != app_set_h) {
@@ -62,7 +164,7 @@ static void DoAStep_Draw_katana(void) {
 		*app_height = *app_new_height = app_set_h = app_surf_h;
 		*app_new_size = 1;
 	}
-	if (lighting30 && !t30_active) {
+	if (lighting30) {
 		gml_rvalue *(*vwrite)(void *, int) = (*(void ***)*global_obj_ptr)[3];
 		gml_rvalue *timer = vwrite(*global_obj_ptr, var_recolor_timer[1]);
 		if (timer && timer->kind == 0) {
@@ -94,6 +196,9 @@ static void DoAStep_Draw_katana(void) {
  * another room (New_Room, applied at the start of the next frame) and free VRAM is under TEXFLUSH_LOW_VRAM, the new
  * room loads its pages into an emptied VRAM, during the transition. Never mid-room: room_chinatown_3 needs more
  * than VRAM, and a mid-room flush there froze play for 1.4 s and filled VRAM again right after.
+ * Note: the runner switches rooms inside Process, so New_Room is usually back to -1 by the time this runs; it never
+ * fired in a 29-minute playtest (157 room changes). The drain after the game's own flush (texdrain above) is what
+ * frees memory at room changes now.
  */
 #define TEXFLUSH_MIN_INTERVAL_US 5000000
 #define TEXFLUSH_FAILURE_FLUSHES 3
@@ -145,8 +250,7 @@ static void dynamic_res_update(uint32_t swap_us, uint32_t work_us) {
 		}
 		return;
 	}
-	// In 30 fps mode the swap also waits for the second vblank of each frame: not GPU load
-	if (dropped || t30_active || ++frames <= DYNRES_SETTLE_FRAMES)
+	if (dropped || ++frames <= DYNRES_SETTLE_FRAMES)
 		return;
 	bound += (period > DYNRES_MISS_US && work_us < DYNRES_CPU_US && swap_us > DYNRES_SWAP_US) || dynres_test;
 	if (++window < DYNRES_WINDOW)
@@ -165,18 +269,37 @@ static void dynamic_res_update(uint32_t swap_us, uint32_t work_us) {
 // Runs right after vglSwapBuffers, between frames: every scene of the frame has been submitted, so the GPU finish
 // and garbage collection below cannot free memory that commands still being recorded refer to
 
-uint32_t after_swap_step_us[2]; // debug: t30_update, dynamic_res_update of the last frame
+uint32_t after_swap_dynres_us; // debug: dynamic_res_update of the last frame
+static void after_swap(uint32_t swap_us, uint32_t work_us);
 void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
+	after_swap(swap_us, work_us);
+	// The title pages' state as the next frame starts, after any recovery flush above
+	extern void title_pages_snapshot(void);
+	title_pages_snapshot();
+}
+
+static void after_swap(uint32_t swap_us, uint32_t work_us) {
+	options_menu_sync();
+	enemy_half_rate_update();
 	uint32_t s0 = sceKernelGetProcessTimeLow();
-	t30_update(work_us);
-	uint32_t s1 = sceKernelGetProcessTimeLow();
 	dynamic_res_update(swap_us, work_us);
-	after_swap_step_us[0] = s1 - s0;
-	after_swap_step_us[1] = sceKernelGetProcessTimeLow() - s1;
-	if (!texture_flush)
+	after_swap_dynres_us = sceKernelGetProcessTimeLow() - s0;
+	rt_free_report();
+	// A frame that skipped its swap (frameSkip) may leave scenes open: no collection until a presented frame
+	if (vgl_scene_open)
 		return;
+	texdrain_run("after the swap");
+	forced_gc_report();
 	extern int vgl_failed_allocs;
 	extern size_t vgl_gpu_fallback_bytes;
+	// The title screen's pages are made resident right after its first frame (title_pages.c). It acknowledges a spill
+	// only when every byte of it was a title page it reloaded into VRAM.
+	extern int title_pages_after_swap(size_t *spill_seen);
+	size_t title_spill_seen;
+	if (title_pages_after_swap(&title_spill_seen))
+		texflush_spill_seen = title_spill_seen;
+	if (!texture_flush)
+		return;
 	const char *reason = NULL;
 	uint32_t now = sceKernelGetProcessTimeLow();
 	// A failure within TEXFLUSH_MIN_INTERVAL_US of the last flush is flushed for once the interval is over: dropping
@@ -215,10 +338,11 @@ void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
 		hang_set_stage(HANG_STAGE_TEXFLUSH);
 		texture_flush(&result, NULL, NULL, 0, NULL);
 		// Free the flushed pages now: otherwise vitaGL releases them a few frames later and the reloads,
-		// still not fitting, land in RAM again
-		extern void vgl_collect_garbage_now(void);
+		// still not fitting, land in RAM again. Only with no scene open: the flush call itself can open one
+		// (texdrain above); then the drain runs at the start of Draw or after the next swap
+		texdrain_pending = "the page recovery flush";
 		hang_set_stage(HANG_STAGE_GPU_GC);
-		vgl_collect_garbage_now();
+		texdrain_run("after the swap");
 		hang_set_stage(HANG_STAGE_AFTER_SWAP);
 		texflush_last_us = sceKernelGetProcessTimeLow();
 		texflush_count++;
@@ -355,6 +479,10 @@ void katana_display_hook_draw(void) {
 	debugPrintf("draw hook: %s, lighting %s\n", slot ? "installed" : "NOT installed", lighting30 ? "30 Hz" : "60 Hz");
 
 	// Default on: reload texture pages that failed to allocate or spilled out of VRAM (katana_after_swap)
+	uintptr_t flush = (uintptr_t)so_symbol(&yoyoloader_mod, "_Z23F_YoYo_DrawTextureFlushR6RValueP9CInstanceS2_iPS_");
+	if (!exp_flag("texdrain0") && flush && (orig_texture_flush = entry_hook(flush, texture_flush_drain)))
+		flush = (uintptr_t)orig_texture_flush; // the loader's own flush below drains by itself
+	debugPrintf("texture flush drain: %s\n", orig_texture_flush ? "installed" : "NOT installed");
 	if (!exp_flag("texflush0"))
-		texture_flush = (builtin_fn)so_symbol(&yoyoloader_mod, "_Z23F_YoYo_DrawTextureFlushR6RValueP9CInstanceS2_iPS_");
+		texture_flush = (builtin_fn)flush;
 }
