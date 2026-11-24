@@ -76,11 +76,8 @@ static event_func orig_particle_draw;
 // Instance pointers are 16-byte aligned; use them for a stable per-instance parity bit
 #define INSTANCE_PARITY(self) (((uintptr_t)(self) >> 4) & 1)
 
-// 30 fps mode (see t30_install) is active: ticks run at 30 Hz, so every-other-tick work runs on every tick
-int t30_active;
-
 static inline int half_rate_tick(void) {
-	return t30_active || !(*frame_count & 1);
+	return !(*frame_count & 1);
 }
 
 // Cloth simulation (clothesline + its softbody nodes) runs at 30Hz, and not at all while the
@@ -196,7 +193,7 @@ void katana_cloth_report(int frames) {
 
 // Each rain emitter is drawn every other frame, alternating between emitters
 static void rain_draw(void *self, void *other) {
-	if (t30_active || (INSTANCE_PARITY(self) ^ (*frame_count & 1)))
+	if (INSTANCE_PARITY(self) ^ (*frame_count & 1))
 		orig_rain_draw(self, other);
 }
 
@@ -234,7 +231,7 @@ static void particle_draw(void *self, void *other) {
 		if (heavy_profiling)
 			sample_recolor_timer();
 	}
-	if (t30_active || drawn++ < PARTICLES_ALWAYS_DRAWN || (INSTANCE_PARITY(self) ^ (*frame_count & 1)))
+	if (drawn++ < PARTICLES_ALWAYS_DRAWN || (INSTANCE_PARITY(self) ^ (*frame_count & 1)))
 		orig_particle_draw(self, other);
 }
 
@@ -1038,6 +1035,13 @@ gml_rvalue *global_var(int *var) {
 	return v && (v->kind == 0 || v->kind == 13) ? v : NULL;
 }
 
+// A real instance variable (through the write getter, as global_var)
+gml_rvalue *instance_var(void *self, int *var) {
+	gml_rvalue *(*vwrite)(void *, int) = (*(void ***)self)[3];
+	gml_rvalue *v = var ? vwrite(self, var[1]) : NULL;
+	return v && v->kind == 0 ? v : NULL;
+}
+
 static void level_complete_create_noreplay(void *self, void *other) {
 	gml_rvalue *a = global_var(var_speedrun), *b = global_var(var_speedrun_skip_replay);
 	gml_rvalue sa, sb;
@@ -1331,11 +1335,13 @@ static void patch_performance() {
 	orig_timing_sleep = entry_hook(so_symbol(&yoyoloader_mod, "Timing_Sleep"), timing_sleep_vsync);
 	debugPrintf("frame limiter spin: %s\n", orig_timing_sleep ? "skipped with vblank pacing" : "NOT hooked");
 
-	// Whatever yyl.cfg says: the GRAPHICS menu can turn 30 fps mode on, and it needs the time doubling then
-	t30_install(table);
-	fps_menu_install(table);
+	extern int fps_mode_ignored;
+	if (fps_mode_ignored)
+		debugPrintf("yyl.cfg fpsMode/fps30: no longer supported (the 30 fps mode was removed), ignored\n");
+	enemy_half_rate_install(table);
+	options_menu_install(table);
 	extern void fx_rate_install(gml_func_entry *table);
-	fx_rate_install(table); // after t30_install: uses its animation_code hook
+	fx_rate_install(table);
 	extern void glow_rest_install(gml_func_entry *table);
 	glow_rest_install(table);
 	extern void wobble_rest_install(gml_func_entry *table);
