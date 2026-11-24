@@ -1243,6 +1243,8 @@ static void patch_performance() {
 	install_lz4_pages();
 	extern void title_pages_install(void);
 	title_pages_install();
+	extern void page_restore_install(void);
+	page_restore_install();
 	install_nursery_align();
 	if (!exp_flag("letternative0")) {
 		extern int letter_native_install(void *(*rx_alloc)(size_t));

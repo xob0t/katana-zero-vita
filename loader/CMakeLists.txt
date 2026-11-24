@@ -77,6 +77,7 @@ add_executable(YoYoLoader
   loader/katana_display.c
   loader/enemy_half_rate.c
   loader/title_pages.c
+  loader/page_restore.c
   loader/fx_rate.c
   loader/rain_cheap.c
   loader/touch_controls.c
