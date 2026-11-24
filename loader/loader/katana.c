@@ -1438,6 +1438,8 @@ static void patch_performance() {
 	enemy_half_rate_install(table);
 	extern void enemy_timing_install(gml_func_entry *table);
 	enemy_timing_install(table); // before options_menu_install: its ENEMY TIMING row needs it
+	extern void timer_slowmo_install(void);
+	timer_slowmo_install(); // and the TIMER & SLOW-MO row this
 	options_menu_install(table);
 	extern void fx_rate_install(gml_func_entry *table);
 	fx_rate_install(table);

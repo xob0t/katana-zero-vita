@@ -47,6 +47,17 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Change | Undo with |
 |---|---|
 | Enemies attack on the PC version's timing: the first attack 15 frames sooner and every shot (gunmen, the Headhunter, drones) 5-6 frames sooner than in the Android release. In the first room's tutorial this shows the bullet in the slow-mo; with the Android timing it stays hidden in the muzzle flash | **GAME → ENEMY TIMING: ANDROID**, or `enemyTiming=1` |
+| Enemy melee cooldowns are the PC ones, 4 frames shorter: after every melee attack (pistol-whips, grunts, brawlers, the red pompadour) and after a gunman's shot | the same |
+| A slash can't kill through the temporary door a broken door leaves behind | the same |
+| A slash that opens a door stops being deadly on the next frame instead of 2-3 frames later, and stays turned the way the door turned it | the same |
+| An enemy that loses you in smoke stops falling at once (Android lets it fall for 3 more frames) | the same |
+| The slow motion after you die starts on the 6th frame, during the hit freeze, and ramps down more gently; the Android release starts it once the freeze ends and ramps it faster | the same |
+| Level time limits are the PC ones, two thirds of the Android release's (club_0: 8100 instead of 11850) | **GAME → TIMER & SLOW-MO: ANDROID**, or `timerSlowmo=1` |
+| Zero's slow-mo meter is the PC one, half as long (about 6 seconds instead of 13) | the same |
+
+The ENEMY TIMING and TIMER & SLOW-MO choices are saved with the game options. The time limits change from the next
+room or restart, the slow-mo meter from the next spawn, enemy attack timing for enemies that appear after the change,
+the other ENEMY TIMING rules at once.
 
 Over a long session video memory fills up. Texture pages the current room hasn't drawn are then unloaded to make
 room, so most room loads only load their own pages. Some rooms need more than fits next to the earlier rooms' pages
