@@ -25,13 +25,13 @@
  * Each of these statements builds its constant's high word with movw/movt (the low word is 0) and stores it, e.g.
  * chinatown_2 Create L27:
  *     movw r1, #0x8200; mov r0, #0; movt r1, #0x40c4; str r0, [r8, #0xc]; strd r0, r1, [r8]   (10500.0)
- * The table below lists the movw and movt of every one, found by work/pcmelee/const_sites.py (register and stack-slot
- * tracking from the getVar of max_time to the store; three by hand: club_7 Create, dragon_6 Step, obj_init Create)
- * and checked against the PC exe (gen_table.py: the PC event assigns the PC value and not the Android one). A scan of
- * all of libyoyo.so's code (scan_all.py, scan_lit.py) finds no other movw/movt pair or literal of these values in
- * code, apart from two 6000s that aren't time limits (draw_speedrun_timer, club_0 Step's movement_max, 6000 on PC
- * too). PC values rewrite the two immediates; ANDROID writes the originals back. At install every site must hold the 1.1.10 instruction (same
- * register in both), else nothing is patched.
+ * The table below lists the movw and movt of every one, found by tools/pc-vs-android/timer_sites/const_sites.py
+ * (register and stack-slot tracking from the getVar of max_time to the store; three by hand: club_7 Create, dragon_6
+ * Step, obj_init Create) and checked against the PC exe (gen_table.py: the PC event assigns the PC value and not the
+ * Android one). A scan of all of libyoyo.so's code (scan_all.py, scan_lit.py) finds no other movw/movt pair or literal
+ * of these values in code, apart from two 6000s that aren't time limits (draw_speedrun_timer, club_0 Step's
+ * movement_max, 6000 on PC too). PC values rewrite the two immediates; ANDROID writes the originals back. At install
+ * every site must hold the 1.1.10 instructions, else nothing is patched.
  *
  * A change applies from the next time the statement runs: the time limit when the level (or its controller's Step
  * after the intro) sets it, so the next room or a restart; the slow-mo meter at the next spawn (restart, next room).

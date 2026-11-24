@@ -52,7 +52,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | A slash that opens a door stops being deadly on the next frame instead of 2-3 frames later, and stays turned the way the door turned it | the same |
 | An enemy that loses you in smoke stops falling at once (Android lets it fall for 3 more frames) | the same |
 | The slow motion after you die starts on the 6th frame, during the hit freeze, and ramps down more gently; the Android release starts it once the freeze ends and ramps it faster | the same |
-| Level time limits are the PC ones, two thirds of the Android release's (club_0: 8100 instead of 11850) | **GAME → TIMER & SLOW-MO: ANDROID**, or `timerSlowmo=1` |
+| Level time limits are the PC ones, two thirds of the Android release's (club_0: 8100 instead of 11850 frames) | **GAME → TIMER & SLOW-MO: ANDROID**, or `timerSlowmo=1` |
 | Zero's slow-mo meter is the PC one, half as long (about 6 seconds instead of 13) | the same |
 
 The ENEMY TIMING and TIMER & SLOW-MO choices are saved with the game options. The time limits change from the next
