@@ -878,6 +878,10 @@ void katana_prof_report(int frames) {
 	}
 	if (debugMode && light_fast_mode)
 		light_fast_report(frames);
+	if (debugMode && light_fast_mode == 2) {
+		extern void lamp_sway_report(int frames);
+		lamp_sway_report(frames);
+	}
 	{
 		extern unsigned rope_fast_hits, rope_fast_fallbacks;
 		extern unsigned rf_fail_line[16], rf_fail_count[16];
