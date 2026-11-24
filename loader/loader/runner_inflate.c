@@ -20,6 +20,7 @@
 
 #define BLOCK (1u << 20)
 #define RING 8
+#define READ_PIECE (256u << 10)
 
 typedef struct {
 	const char *path;
@@ -56,7 +57,9 @@ static void *reader_thread(void *arg) {
 		uint8_t *dst = j->ring + (block % RING) * BLOCK;
 		uint32_t got = 0;
 		while (got < n) {
-			int r = sceIoRead(fd, dst + got, n - got);
+			// 256 KB requests: no slower, and the game thread's small file accesses don't wait behind 1 MB reads
+			// (vglInit's folders, asyncsave's saves; game.droid is inflated while the loader sets up)
+			int r = sceIoRead(fd, dst + got, n - got < READ_PIECE ? n - got : READ_PIECE);
 			if (r <= 0)
 				break;
 			got += r;
