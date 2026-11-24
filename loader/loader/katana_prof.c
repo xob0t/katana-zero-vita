@@ -479,11 +479,12 @@ void katana_prof_report(int frames) {
 		dossier_report(frames);
 		extern uint64_t letter_time[6];
 		extern unsigned letter_time_n[6];
-		if (letter_time_n[0]) {
-			static const char *names[5] = {"draw", "admit", "text", "font", "user"};
-			for (int i = 0; i < 5; i++)
-				debugPrintf("[LETTERTIME] %-5s %8u calls %6.2f us each\n", names[i], letter_time_n[i],
-					letter_time_n[i] ? (double)letter_time[i] / letter_time_n[i] : 0.0);
+		if (letter_time_n[0] || letter_time_n[5]) {
+			static const char *names[6] = {"draw", "admit", "text", "font", "user", "step"};
+			for (int i = 0; i < 6; i++)
+				debugPrintf("[LETTERTIME] %-5s %8u calls %6.2f us each %6.3f ms/frame\n", names[i], letter_time_n[i],
+					letter_time_n[i] ? (double)letter_time[i] / letter_time_n[i] : 0.0,
+					frames > 0 ? letter_time[i] / 1000.0 / frames : 0.0);
 			memset(letter_time, 0, sizeof(letter_time));
 			memset(letter_time_n, 0, sizeof(letter_time_n));
 		}
@@ -536,6 +537,8 @@ void katana_prof_report(int frames) {
 			last_fallback = light_array_fallback;
 			last_us = light_array_us;
 			light_array_max_us = 0;
+			extern void light_array_fast_report(int frames);
+			light_array_fast_report(frames);
 		}
 		extern unsigned shadow_native_fast, shadow_native_slow, shadow_native_rows;
 		if (shadow_native_fast || shadow_native_slow)
@@ -628,6 +631,38 @@ void katana_prof_report(int frames) {
 		last_skipped = trail_lights_skipped;
 		last_native = trail_lights_native;
 		last_fallback = trail_lights_fallback;
+	}
+	{
+		// obj_drawactors' ember loops (ember_draw.c): embers run by the original body / stepped over, and the loops'
+		// time; exp_emberdrawverify: step-overs checked in recording loops, whole lists and drawn embers checked per cached
+		// loop; exp_emberdrawab: stepping over off in every other window
+		extern unsigned ember_draw_loops, ember_draw_kept, ember_draw_skipped, ember_draw_odd, ember_draw_nested;
+		extern unsigned ember_draw_cmp_ok, ember_draw_cmp_bad, ember_draw_list_ok, ember_draw_list_bad, ember_draw_drawn_ok,
+			ember_draw_drawn_bad;
+		extern uint32_t ember_draw_us, ember_draw_set_gen;
+		extern unsigned ember_draw_cached_loops, ember_draw_recorded_loops;
+		extern int ember_draw_ab, ember_draw_ab_off;
+		static unsigned last_loops, last_kept, last_skipped, last_cached, last_recorded;
+		unsigned bad = ember_draw_cmp_bad + ember_draw_list_bad + ember_draw_drawn_bad;
+		if (frames > 0 && (ember_draw_kept != last_kept || ember_draw_skipped != last_skipped || bad))
+			debugPrintf("[EMBERDRAW] per frame: %.1f loops (%.1f from the ember list, %.1f recording it) %.3f ms, embers "
+				"%.1f run %.1f stepped over | other kinds %u, nested %u, set changes %u | verify: step-overs ok %u "
+				"mismatch %u, lists ok %u mismatch %u, drawn ok %u mismatch %u%s\n",
+				(float)(ember_draw_loops - last_loops) / frames, (float)(ember_draw_cached_loops - last_cached) / frames,
+				(float)(ember_draw_recorded_loops - last_recorded) / frames,
+				ember_draw_us / 1000.0f / frames, (float)(ember_draw_kept - last_kept) / frames,
+				(float)(ember_draw_skipped - last_skipped) / frames, ember_draw_odd, ember_draw_nested,
+				(unsigned)ember_draw_set_gen, ember_draw_cmp_ok, ember_draw_cmp_bad, ember_draw_list_ok, ember_draw_list_bad,
+				ember_draw_drawn_ok, ember_draw_drawn_bad,
+				ember_draw_ab ? (ember_draw_ab_off ? " | A/B: off" : " | A/B: on") : "");
+		last_loops = ember_draw_loops;
+		last_cached = ember_draw_cached_loops;
+		last_recorded = ember_draw_recorded_loops;
+		last_kept = ember_draw_kept;
+		last_skipped = ember_draw_skipped;
+		ember_draw_us = 0;
+		if (ember_draw_ab)
+			ember_draw_ab_off = !ember_draw_ab_off;
 	}
 	{
 		extern unsigned explosion_particles_created, explosion_particles_skipped, explosion_regions_skipped;
@@ -876,8 +911,17 @@ void katana_prof_report(int frames) {
 		if (mc_ab)
 			mc_ab_off = !mc_ab_off;
 	}
+	{
+		// collision_round_trip.c: CollisionUpdate calls that would remove + insert, no-op ones, skipped ones
+		extern void crt_report(int frames);
+		crt_report(frames);
+	}
 	if (debugMode && light_fast_mode)
 		light_fast_report(frames);
+	if (debugMode && light_fast_mode == 2) {
+		extern void lamp_sway_report(int frames);
+		lamp_sway_report(frames);
+	}
 	{
 		extern unsigned rope_fast_hits, rope_fast_fallbacks;
 		extern unsigned rf_fail_line[16], rf_fail_count[16];
@@ -894,8 +938,14 @@ void katana_prof_report(int frames) {
 	fx_rate_report(frames);
 	extern void rain_cheap_report(int frames);
 	rain_cheap_report(frames);
+	extern void touch_controls_report(int frames);
+	touch_controls_report(frames);
+	extern void psych_fix_report(int frames);
+	psych_fix_report(frames);
 	extern void glow_rest_report(int frames);
 	glow_rest_report(frames);
+	extern void corpse_rest_report(int frames);
+	corpse_rest_report(frames);
 	extern void wobble_rest_report(int frames);
 	wobble_rest_report(frames);
 	extern void blood_drops_report(int frames);
@@ -907,10 +957,16 @@ void katana_prof_report(int frames) {
 	lightback_native_report(frames);
 	extern void held_native_report(int frames);
 	held_native_report(frames);
+	extern void letter_glyph_report(int frames);
+	letter_glyph_report(frames);
 	extern void smokedraw_native_report(int frames);
 	smokedraw_native_report(frames);
+	extern void smoke_create_report(int frames);
+	smoke_create_report(frames);
 	extern void fog_skip_report(int frames);
 	fog_skip_report(frames);
+	extern void rain_skip_report(int frames);
+	rain_skip_report(frames);
 	static int builtins_hooked = 0;
 	if (!builtins_hooked) {
 		builtins_hooked = 1;

@@ -16,7 +16,9 @@ void * _sbrk_r(struct _reent *reent, ptrdiff_t incr)
 {
 	if (sceKernelLockLwMutex(&_newlib_sbrk_mutex, 1, 0) < 0)
 		goto fail;
-	if (!_newlib_heap_base || _newlib_heap_cur + incr >= _newlib_heap_end)
+	// Compare sizes, not pointers: _newlib_heap_cur + incr wraps past 4 GB for a request near 2 GB (the heap sits
+	// above 0x80000000), and the wrapped pointer passed the old test, handing malloc memory outside the heap
+	if (!_newlib_heap_base || incr >= _newlib_heap_end - _newlib_heap_cur || incr < _newlib_heap_base - _newlib_heap_cur)
 	{
 		sceKernelUnlockLwMutex(&_newlib_sbrk_mutex, 1);
 fail:

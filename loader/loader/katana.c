@@ -585,6 +585,33 @@ void katana_goto_check(void) {
 			x = global_real(var_xview, 0) + global_real(var_wview, 0) / 2;
 			y = global_real(var_yview, 0) + global_real(var_hview, 0) / 2;
 		}
+		// "smoke player": at the player (the first obj_player instance, through instance_find and the id table)
+		if (!strncmp(text, "smoke", 5) && strstr(text, "player")) {
+			void (*instance_find)(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) =
+				(void *)so_symbol(&yoyoloader_mod, "_Z14F_InstanceFindR6RValueP9CInstanceS2_iPS_");
+			int (*object_find)(const char *name) = (void *)so_symbol(&yoyoloader_mod, "_Z11Object_FindPKc");
+			const uint32_t *id_map = (const uint32_t *)so_symbol(&yoyoloader_mod, "_ZN9CInstance14ms_ID2InstanceE");
+			int player = object_find ? object_find("obj_player") : -1;
+			if (instance_find && id_map && id_map[0] && player >= 0) {
+				gml_rvalue found = {0, 0, 5}, a[2] = {{0, 0, 15}, {0, 0, 0}};
+				uint32_t ref[2] = {(uint32_t)player, 0x01000000}; // an object reference, as YYC passes obj_*
+				memcpy(&a[0].val, ref, 8);
+				instance_find(&found, NULL, NULL, 2, a);
+				int id = -4;
+				if ((found.kind & 0xffffff) == 0)
+					id = (int)found.val;
+				else if ((found.kind & 0xffffff) == 15)
+					memcpy(&id, &found.val, 4);
+				const uint32_t *e = id >= 0 ? (const uint32_t *)(uintptr_t)((const uint32_t *)(uintptr_t)id_map[0])
+					[(id_map[1] & (uint32_t)id) * 2] : NULL;
+				for (; e; e = (const uint32_t *)(uintptr_t)e[1])
+					if ((int)e[2] == id) {
+						memcpy(&x, (const char *)(uintptr_t)e[3] + 0xb8, 4);
+						memcpy(&y, (const char *)(uintptr_t)e[3] + 0xbc, 4);
+						break;
+					}
+			}
+		}
 		if (!strncmp(text, "smoke", 5)) {
 			// "smoke [view]": a smoke vial's burst there, create_smokescreen(x, y, 260) as obj_throwable's Destroy calls
 			// it (260 is its gs_constArg8), with an obj_throwable_smoke_vial (1015) created there as self. The burst's
@@ -602,9 +629,17 @@ void katana_goto_check(void) {
 			if (vial) {
 				gml_rvalue result = {0, 0, 5}, a[3] = {{x, 0, 0}, {y, 0, 0}, *count};
 				gml_rvalue *args[3] = {&a[0], &a[1], &a[2]};
+				// smoke_create.c's Create loops: counted for the log line; exp_smokecreateab alternates them per burst
+				extern int smoke_create_ab, smoke_create_ab_off;
+				extern unsigned smoke_create_native, smoke_create_original;
+				unsigned native0 = smoke_create_native, original0 = smoke_create_original;
 				uint32_t t0 = sceKernelGetProcessTimeLow();
 				smokescreen(vial, vial, &result, 3, args);
 				uint32_t us = sceKernelGetProcessTimeLow() - t0;
+				debugPrintf("create_object: smoke burst Create loops %u native, %u original\n",
+					smoke_create_native - native0, smoke_create_original - original0);
+				if (smoke_create_ab)
+					smoke_create_ab_off = !smoke_create_ab_off;
 				gml_rvalue destroy_result = {0, 0, 5}, destroy_args[2] = {{(double)*(uint32_t *)((char *)vial + 0x80), 0, 0},
 					{0, 0, 0}};
 				instance_destroy(&destroy_result, NULL, NULL, 2, destroy_args);
@@ -842,12 +877,24 @@ void katana_late_install(void) {
 	gcalloc_install();
 	dissolve_install();
 	fog_install();
+	// With cheap rain or none, the rain drops the game would destroy in their Create aren't created (rain_skip.c,
+	// exact): their GC churn drove ~3 old-generation collections a second in room_factory_0. exp_rainskip0 creates and
+	// destroys them as before.
+	extern void rain_skip_install(void);
+	rain_skip_install();
 	if (!exp_flag("dossiernative0")) {
 		extern int dossier_native_install(void *(*hook)(uintptr_t entry, void *replacement));
 		debugPrintf("native dossier burn steps: %s\n", dossier_native_install(entry_hook) ? "installed" : "NOT installed");
 	}
 	extern int letter_timing;
 	letter_timing = exp_flag("lettertime");
+	// letter_native.c's cached variable lookups (exp_lettercache0: off); exp_letterab (debugMode) switches them
+	// and the native letter glyphs off in every other report window ([LETTERAB] line)
+	extern int letter_cache, letter_ab;
+	letter_cache = !exp_flag("lettercache0");
+	extern int letter_cache_verify;
+	letter_cache_verify = exp_flag("lettercacheverify") ? 1 + exp_flag("lettercacheverifyfault") : 0;
+	letter_ab = debugMode && exp_flag("letterab");
 	extern int letter_glow_ab, letter_glow_prof;
 	letter_glow_ab = debugMode && exp_flag("letterglowab");
 	letter_glow_prof = debugMode && exp_flag("letterglowprof");
@@ -860,6 +907,8 @@ void katana_late_install(void) {
 		debugPrintf("native draw_shadow: %s\n", shadow_native_install(entry_hook) ? "installed" : "NOT installed");
 	}
 	appsurf_copy_install();
+	extern void psych_fix_late_install(void);
+	psych_fix_late_install();
 	if (orig_lighting_user0) {
 		runner_function **functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
 		int *count = (int *)so_symbol(&yoyoloader_mod, "the_numb");
@@ -990,6 +1039,7 @@ static int screen_btn_nodraw_install(void) {
  * (rain_cheap.c) destroys them the same way.
  */
 static event_func orig_rain_create;
+int rain_none_installed; // rain=0: drops are destroyed after their Create (rain_skip.c checks it)
 static void (*instance_destroy_fn)(void *self, void *other, int argc, void **args);
 
 static void rain_create(void *self, void *other) {
@@ -1163,19 +1213,25 @@ static void patch_performance() {
 	extern int rain_cheap_install(gml_func_entry *table, void *destroy);
 	if (rain_level == 1 && !(instance_destroy_fn && rain_cheap_install(table, instance_destroy_fn)))
 		rain_level = 0;
-	if (rain_level == 0 && instance_destroy_fn && (orig = gml_replace(table, "gml_Object_obj_rain_Create_0", rain_create)))
+	if (rain_level == 0 && instance_destroy_fn && (orig = gml_replace(table, "gml_Object_obj_rain_Create_0", rain_create))) {
 		orig_rain_create = orig;
+		rain_none_installed = 1;
+	}
 
-	// Skipped by default (buttons are used on Vita); exp_touchui brings the virtual controls back
-	if (!exp_flag("touchui"))
+	// The touch controls aren't drawn unless touchControls=2 (or exp_touchui) in yyl.cfg
+	extern int touch_controls;
+	if (touch_controls < 2)
 		gml_replace(table, "gml_Object_obj_onScreenKeyboard_Draw_0", touch_ui_draw_skip);
 	graphics_flush = (void *)so_symbol(&yoyoloader_mod, "_ZN8Graphics5FlushEv");
-	if (!exp_flag("touchui")) {
+	if (touch_controls < 2) {
 		int nodraw = !exp_flag("btnnodraw0") && screen_btn_nodraw_install();
 		if (!nodraw && graphics_flush && (orig = gml_replace(table, "gml_Object_obj_screenBtn_Draw_64", screen_btn_gui_hidden)))
 			orig_screen_btn_gui = orig;
 		debugPrintf("on-screen buttons: %s\n", nodraw ? "sprites not drawn" : "drawn with colour writes off");
 	}
+	// touchControls=0 (the default): no touch input, and the controls' per-frame events stop (touch_controls.c)
+	extern void touch_controls_install(gml_func_entry *table);
+	touch_controls_install(table);
 	katana_menu_install(table);
 
 	katana_display_install();
@@ -1224,10 +1280,23 @@ static void patch_performance() {
 	install_lz4_pages();
 	extern void title_pages_install(void);
 	title_pages_install();
+	extern void page_restore_install(void);
+	page_restore_install();
+	// Out of VRAM: unload only the least recently drawn texture pages (page_evict.c). exp_pageevict0 disables.
+	extern void page_evict_install(void);
+	page_evict_install();
 	install_nursery_align();
 	if (!exp_flag("letternative0")) {
 		extern int letter_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native dialogue letters: %s\n", letter_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
+		// The letters' one-character draw_text_transformed without Split_TextBlock's heap work (letter_glyph.c), and
+		// letter_native.c's cached variable lookups. Vita, 500 MHz, in-run A/B (exp_letterab), unprofiled:
+		// chinatown_10 ending -14 us per letter, ~-1.0 ms/frame at 68 letters; stage timers: runner text call 23.5 ->
+		// native 8.5 us, letter Step 11.9 -> 8.0 us. exp_letterglyph0: the runner's builtin.
+		if (!exp_flag("letterglyph0")) {
+			extern int letter_glyph_install(void *(*hook)(uintptr_t entry, void *replacement));
+			debugPrintf("native letter glyphs: %s\n", letter_glyph_install(entry_hook) ? "installed" : "NOT installed");
+		}
 	}
 	// Exact natives of the view tests inside_screen_point / inside_screen (visibility_native.c): the runner's own
 	// global getters and comparisons without the GML temporaries. In-run A/B (exp_visab), process per frame:
@@ -1251,6 +1320,13 @@ static void patch_performance() {
 	if (!exp_flag("bikedraw0")) {
 		extern int bike_draw_install(void);
 		debugPrintf("bike draw loops: %s\n", bike_draw_install() ? "installed" : "NOT installed");
+	}
+	// Burning corpses' embers: obj_drawactors' per-corpse ember with-loops visit only that corpse's embers, from an
+	// ember list kept for one Draw event (exact; ember_draw.c). haunted_alien2 fire bursts: 6.4 -> 2.0 ms per frame.
+	// exp_emberdraw0: the original loops.
+	if (!exp_flag("emberdraw0")) {
+		extern int ember_draw_install(gml_func_entry *table);
+		debugPrintf("ember draw loops: %s\n", ember_draw_install(table) ? "installed" : "NOT installed");
 	}
 	// update_region natively (exact; region_native.c): moving particles and every explosion particle call it from their
 	// draw event, 120-270 calls per frame in the bike chase's helicopter volleys at ~21 us each
@@ -1334,12 +1410,23 @@ static void patch_performance() {
 		extern int smokedraw_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native smoke cloud Draw: %s\n", smokedraw_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
+	// The two warm-up loops of the smoke cloud Create (smoke_create.c, exact): ~100 YYC iterations per cloud, most of
+	// a smoke vial's 131-cloud burst frame. exp_smokecreate0 keeps the original loops.
+	if (!exp_flag("smokecreate0")) {
+		extern int smoke_create_install(void);
+		debugPrintf("native smoke cloud Create loops: %s\n", smoke_create_install() ? "installed" : "NOT installed");
+	}
 	// move_contact_solid without the redundant collision-tree work (move_contact_native.c, exact): the Dragon's dash
 	// aim calls it every frame and it walked the player pixel by pixel with tree updates and searches (1.2-3.6 ms/frame
 	// in room_dragon_3, more on long aims). exp_movecontact0 keeps the runner's Command_MoveContact.
-	if (!exp_flag("movecontact0")) {
+	// The same install hooks CollisionUpdate/InsertRect for collision_round_trip.c (collisionRoundTrip): tree updates
+	// of instances back where they were (place_meeting probes, x/y set and restored) are skipped.
+	{
+		extern int mc_off;
 		extern int move_contact_native_install(void *(*hook)(uintptr_t entry, void *replacement));
-		debugPrintf("native move_contact_solid: %s\n", move_contact_native_install(entry_hook) ? "installed" : "NOT installed");
+		mc_off = exp_flag("movecontact0");
+		debugPrintf("native move_contact_solid: %s%s\n", move_contact_native_install(entry_hook) ? "installed" : "NOT installed",
+			mc_off ? " (off: exp_movecontact0)" : "");
 	}
 	// Exact natives of obj_orangelight Step and obj_lightback Step, from the static recompiler kill test
 	// (work/cpu_research/kill_test/REPORT.md): the events with the runner's compare/truth/variable helpers inlined
@@ -1353,7 +1440,13 @@ static void patch_performance() {
 	} else if (!exp_flag("lightfast0")) {
 		extern int light_fast_inline_install(void *(*rx_alloc)(size_t));
 		light_fast_mode = light_fast_inline_install(katana_rx_alloc) ? 2 : 0;
-		debugPrintf("light fast: %s (inline)\n", light_fast_mode ? "installed" : "NOT installed");
+		// Lamp sway at 1/lampSway rate (in light_fast_inline.c): exp_swayab alternates it with the original per
+		// report window, exp_lightparts times the event's parts ([LAMPSWAY] / [LIGHTPARTS] lines)
+		extern int lamp_sway, lamp_sway_ab, light_parts;
+		lamp_sway_ab = exp_flag("swayab");
+		light_parts = exp_flag("lightparts");
+		debugPrintf("light fast: %s (inline), lampSway %d%s\n", light_fast_mode ? "installed" : "NOT installed", lamp_sway,
+			lamp_sway_ab ? " (A/B)" : "");
 	}
 	// Exact native of the off-screen path of obj_lightback user event 0, the lighting pass's per-light event
 	// (lightback_native.c): visible lights run the original. In-run A/B (exp_lbab): haunted_cart2 (111 of 129
@@ -1420,11 +1513,18 @@ static void patch_performance() {
 	if (fps_mode_ignored)
 		debugPrintf("yyl.cfg fpsMode/fps30: no longer supported (the 30 fps mode was removed), ignored\n");
 	enemy_half_rate_install(table);
+	extern void enemy_timing_install(gml_func_entry *table);
+	enemy_timing_install(table); // before options_menu_install: its ENEMY TIMING row needs it
 	options_menu_install(table);
 	extern void fx_rate_install(gml_func_entry *table);
 	fx_rate_install(table);
 	extern void glow_rest_install(gml_func_entry *table);
 	glow_rest_install(table);
+	extern void corpse_rest_install(gml_func_entry *table);
+	corpse_rest_install(table);
+	// Secret Psychiatrist fight: empty surface passes skipped, surfaces reused across restarts (psych_fix.c)
+	extern void psych_fix_install(gml_func_entry *table);
+	psych_fix_install(table);
 	extern void wobble_rest_install(gml_func_entry *table);
 	wobble_rest_install(table);
 	extern void blood_drops_install(gml_func_entry *table);

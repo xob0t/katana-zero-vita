@@ -56,6 +56,38 @@
  * except the submissions, draw_sprite_recolored's call and those light variables. smokeClouds is clamped to 1..3:
  * a large divisor would hide almost every cloud.
  *
+ * smokeWobble (yyl.cfg, default 1; 0 = original): the wobble without the collision system. The event moves the cloud
+ * by its wobble (lines 25/27), turns it to `angle` (32), back to 0 (72) or to `angle` again (77), and puts x and y
+ * back (86/87). Through the setters (SV_X/SV_Y -> CInstance::SetPosition, SV_ImageAngle -> SetImageAngle) every one
+ * of those writes sets the bounding-box flag (+0x7c bit 3) and calls CollisionMarkDirty, so each cloud on screen is
+ * pushed onto the collision dirty list every frame and the next tree query's UpdateTree recomputes its box and
+ * removes and reinserts it: ~2 ms per frame for a smoke vial's 131 clouds on the Vita (setters and tree updates).
+ * The box (CInstance::Compute_BoundingBox) depends on x, y, the scales, image_angle and the sprite or mask, not on
+ * image_index; at the end x and y hold the same floats as before, and image_angle changes for good only when it ends
+ * at another value (the cloud's first frame on screen at a non-zero angle, the slowdown branch starting or ending).
+ * With smokeWobble=1 these writes are the setters' field writes alone: (float) of the value, written if it differs as
+ * a float (SetPosition / SetImageAngle compare first), and for image_angle the +0x7c bit 14 "plain draw" flag
+ * recomputed as SetImageAngle does (blend, image_alpha and draw_self read it). Nothing in between reads the cloud's
+ * box: the scripts and draws read the x/y fields (update_region, draw_sprite_recolored's light distances, the draw
+ * arguments), which hold the same values as before. The one tree query that can run in between,
+ * draw_sprite_recolored's update_light_array(true) (close_lights == -1 only), tests obj_door, not clouds. If
+ * image_angle ends at another value, bit 3 is set and CollisionMarkDirty called, as SetImageAngle does. So the cloud's box, its rectangle in the tree, the dirty lists' other entries and
+ * every variable and field come out as before; what differs is that a cloud whose box did not change is not taken
+ * out of the tree and put back each frame, so the order of the tree's leaves (which instance_place meets first when
+ * several instances overlap) is not reshuffled by the clouds. Used only for an ordinary CInstance without a skeleton
+ * (SetPosition calls SkeletonAnimation, which could create one), with the audited setters in the builtin table.
+ * exp_smokewobbleab (debugMode) switches it off and on every report window ([SMOKEWOBBLE]). exp_smokeverify +
+ * exp_smokewobbleverify compares the original with the native at smokeWobble=1 (with exp_smokelookverify too, at
+ * smokeClouds): everything the exact verify compares, except that with an unchanged angle the native must leave the
+ * collision lists and the cloud's links as they were before the event (the original moves the cloud to the front of
+ * them) and bit 3 as it was; the box fields (+0xec..+0xf8) must be untouched by both passes, and when bit 3 was clear
+ * before the event, the box Compute_BoundingBox gives for the original's final state must be the box the cloud holds.
+ * Compute_BoundingBox calls during either pass are recorded with the script calls. exp_smoketreecheck (debugMode)
+ * walks the collision trees once a frame: every leaf of an instance with nothing pending (bit 3 clear, not on the
+ * dirty list) must hold the instance's box, with each instance once ([SMOKETREE] line). Negative controls:
+ * exp_smokeverifyfault3 marks every unmoved cloud (lists), exp_smokeverifyfault4 leaves the angle turned and unmarked
+ * (fields, box). exp_smokecollog (smoke_collog.c) logs what the clouds' place_meeting/instance_place return.
+ *
  * exp_smokedraw0 keeps the original event. Debug (profiling report, [SMOKEDRAW]): exp_smokeab switches the native
  * off and on every report window; exp_smokeprof times the event; exp_smokeverify (debug builds) runs the original with
  * its draws recorded but not submitted, puts the cloud's variables and image fields back, runs the native and compares
@@ -231,10 +263,38 @@ static int look_ab, look_off, look_verify;
 static float draw_scale = 1.0f, cloud_scale = 1.0f; // cloud_scale: sqrt(smokeClouds), set at install
 static unsigned look_drawn, look_hidden;
 
+#ifndef SMOKEDRAW_TEST
+int smoke_wobble = 1; // smokeWobble (yyl.cfg): the wobble's x/y/image_angle writes without the collision system
+#else
+int smoke_wobble = 0; // the fixture switches it on for its wobble cases
+#endif
+static int wobble_ab, wobble_off, wobble_verify, wobble_ok;
+static int raw, raw_marked;   // this event: wobble as field writes; image_angle changed, so the cloud was marked
+static uint32_t raw_angle0;   // image_angle's bits when the event started
+static int verify_fault;
+static unsigned wobble_raw, wobble_exact, wobble_marked;
+// What the setters run, which the field writes stand in for: must be the audited code (no entry or GOT hook)
+enum { W_SV_X, W_SV_Y, W_SV_ANGLE, W_SETPOS, W_SETANGLE, W_MARK, W_SKELETON, NWOBBLE };
+static const struct {
+	const char *name;
+	uint32_t addr, w0, w1;
+} wobble_fns[NWOBBLE] = {
+	{"_Z4SV_XP9CInstanceiP6RValue", 0xf84e6c, 0xe92d4c10, 0xe28db008},
+	{"_Z4SV_YP9CInstanceiP6RValue", 0xf84ebc, 0xe92d4c10, 0xe28db008},
+	{"_Z13SV_ImageAngleP9CInstanceiP6RValue", 0xf85678, 0xe92d4c10, 0xe28db008},
+	{"_ZN9CInstance11SetPositionEff", 0xf297d4, 0xe92d4c10, 0xe28db008},
+	{"_ZN9CInstance13SetImageAngleEf", 0xf27260, 0xe92d4c10, 0xe28db008},
+	{"_Z18CollisionMarkDirtyP9CInstance", 0xf6bf40, 0xe5901068, 0xe3510000},
+	{"_ZN9CInstance17SkeletonAnimationEv", 0xf2673c, 0xe92d4830, 0xe28db008},
+};
+static uintptr_t wobble_addr[NWOBBLE];
+static uintptr_t *wobble_got[NWOBBLE];
+typedef void ABI (*inst_fn)(void *inst);
+
 // draw_self for this cloud: nothing if hidden, else at draw_scale times the instance's size (its scale fields for
 // the call, then the same bits back)
 static int hidden;
-static void *(*sprite_data)(int sprite); // Sprite_Data, resolved at install when smokeClouds > 1
+static void *(*sprite_data)(int sprite); // Sprite_Data, resolved at install
 static void **draw_instance;           // CSkeletonSprite::ms_drawInstance
 static void draw_cloud(void *self) {
 	if (hidden) {
@@ -323,6 +383,53 @@ static inline RV *ref(void *self, int n) {
 	return v ? v : standard_ref(self, id[n]);
 }
 static inline void bset(void *self, int n, RV *value) { set_fn[n](self, ARRAY_INDEX, value); }
+static inline void put_field(void *inst, size_t o, float v) { memcpy((uint8_t *)inst + o, &v, 4); }
+static inline void put_word(void *inst, size_t o, uint32_t v) { memcpy((uint8_t *)inst + o, &v, 4); }
+
+// smokeWobble: an x, y or image_angle write of the wobble. The setter, or (raw) the fields it writes without the
+// bounding-box flag and CollisionMarkDirty:
+// - SV_X / SV_Y / SV_ImageAngle: (float) of the value, REAL_RValue_Ex unless the kind is 0;
+// - CInstance::SetPosition(x, y): nothing if both equal the fields as floats, else both fields written;
+// - CInstance::SetImageAngle(a): nothing if it equals the field as a float, else the field and +0x7c bit 14 (set if
+//   image_alpha is 1, image_blend 0xffffff, both scales 1 and the angle 0). A NaN angle (the runner's YYError) takes
+//   the setter.
+static void wset(void *self, int n, RV *value) {
+	if (!raw) {
+		bset(self, n, value);
+		return;
+	}
+	double d = KIND(value) == 0 ? value->v.d : ((real_fn)calls[C_REAL])(value);
+	float f = (float)d;
+	if (n == V_IMAGE_ANGLE) {
+		if (field(self, 0xac) == f)
+			return;
+		if (f != f) {
+			bset(self, n, value);
+			return;
+		}
+		uint32_t flags = word(self, 0x7c) & ~0x4000u;
+		if (field(self, 0xb0) == 1.0f && word(self, 0xb4) == 0xffffff && field(self, 0xa8) == 1.0f &&
+				field(self, 0xa4) == 1.0f && f == 0.0f)
+			flags |= 0x4000;
+		put_field(self, 0xac, f);
+		put_word(self, 0x7c, flags);
+		return;
+	}
+	float x = n == V_X ? f : field(self, 0xb8), y = n == V_Y ? f : field(self, 0xbc);
+	if (field(self, 0xb8) == x && field(self, 0xbc) == y)
+		return;
+	put_field(self, 0xb8, x);
+	put_field(self, 0xbc, y);
+}
+// Whether this event's wobble can be field writes: the setters are the audited ones (validate) and the cloud has no
+// skeleton and won't get one (CInstance::SkeletonAnimation, which SetPosition calls, creates one for a sprite of
+// type 2 when +0x70 is NULL)
+static inline int wobble_raw_ok(void *self) {
+	if (word(self, 0x70))
+		return 0;
+	const void *sprite = sprite_data((int32_t)word(self, 0x88));
+	return !sprite || word(sprite, 0x84) != 2;
+}
 // GV_X & co.: value (double)(float field), kind 0; the flags word is not written
 static inline void bget_field(void *self, size_t o, RV *out) {
 	out->v.d = (double)field(self, o);
@@ -475,6 +582,14 @@ static int validate(void) {
 		REQUIRE(!bypassed_got[i] || *bypassed_got[i] == bypassed_addr[i]);
 	}
 	REQUIRE(*epsilon == *epsilon);
+	// smokeWobble: the setters in the table and the runner code they run are the audited ones (else the setters run)
+	wobble_ok = sprite_data && set_fn[V_X] == (bvar_fn)wobble_addr[W_SV_X] &&
+		set_fn[V_Y] == (bvar_fn)wobble_addr[W_SV_Y] && set_fn[V_IMAGE_ANGLE] == (bvar_fn)wobble_addr[W_SV_ANGLE];
+	for (unsigned i = 0; i < NWOBBLE && wobble_ok; i++) {
+		const uint32_t *code = (const uint32_t *)wobble_addr[i];
+		wobble_ok = code && code[0] == wobble_fns[i].w0 && code[1] == wobble_fns[i].w1 &&
+			(!wobble_got[i] || *wobble_got[i] == wobble_addr[i]);
+	}
 	return 1;
 }
 
@@ -521,6 +636,12 @@ static void native_event(void *self, void *other) {
 	angle_copy.kind = 0xffffff;
 	RV b; // builtin getter output (the original's per-variable stack slots; only value and kind are written)
 
+	// smokeWobble: the wobble as field writes; what x, y and image_angle hold now
+	raw = smoke_wobble && wobble_ok && !wobble_off && (!smokedraw_verify || wobble_verify) && wobble_raw_ok(self);
+	raw_marked = 0;
+	uint32_t x0 = word(self, 0xb8), y0 = word(self, 0xbc);
+	raw_angle0 = word(self, 0xac);
+
 	// smokeClouds: whether this cloud makes its submissions (every other effect stays)
 	hidden = 0;
 	draw_scale = 1.0f;
@@ -566,7 +687,7 @@ static void native_event(void *self, void *other) {
 	bget_field(self, 0xbc, &b);
 	RV ynew;
 	offset_coord(&b, offset, 4, &ynew);
-	bset(self, V_Y, &ynew);
+	wset(self, V_Y, &ynew);
 
 	tr.line = 26;
 	RV *ax = ref(self, V_AX);
@@ -578,7 +699,7 @@ static void native_event(void *self, void *other) {
 	bget_field(self, 0xb8, &b);
 	RV xnew;
 	offset_coord(&b, hoffset, 2, &xnew);
-	bset(self, V_X, &xnew);
+	wset(self, V_X, &xnew);
 
 	tr.line = 28;
 	RV index_copy;
@@ -592,7 +713,7 @@ static void native_event(void *self, void *other) {
 	if (truth(get_std(self, V_IN_SCREEN))) {
 		tr.line = 32;
 		assign_rv(&angle_copy, get_std(self, V_ANGLE));
-		bset(self, V_IMAGE_ANGLE, &angle_copy);
+		wset(self, V_IMAGE_ANGLE, &angle_copy);
 
 		tr.line = 33;
 		RV minus_one = real(-1.0);
@@ -701,14 +822,15 @@ static void native_event(void *self, void *other) {
 		tr.line = 72;
 		free_rv(&angle_copy);
 		angle_copy = real(0.0);
-		bset(self, V_IMAGE_ANGLE, &angle_copy);
+		if (!(raw && verify_fault == 4)) // test only: the angle not put back
+			wset(self, V_IMAGE_ANGLE, &angle_copy);
 		tr.line = 75;
 		RV one = real(1.0);
 		int s = compare(g_slowdown, &one, 1);
 		if (s != -2 && s <= -1 && truth(get_std(self, V_SLOWDOWN))) {
 			tr.line = 77;
 			assign_rv(&angle_copy, get_std(self, V_ANGLE));
-			bset(self, V_IMAGE_ANGLE, &angle_copy);
+			wset(self, V_IMAGE_ANGLE, &angle_copy);
 			tr.line = 78;
 			blend = real(0.0);
 			bset(self, V_IMAGE_BLEND, &blend);
@@ -746,7 +868,7 @@ static void native_event(void *self, void *other) {
 		RV tmp = *get_std(self, V_AY);
 		copy_rv(&back, &tmp);
 	}
-	bset(self, V_Y, &back);
+	wset(self, V_Y, &back);
 	free_rv(&back);
 	tr.line = 87;
 	{
@@ -754,8 +876,22 @@ static void native_event(void *self, void *other) {
 		copy_rv(&back, &tmp);
 	}
 	if (!BUG(3))
-		bset(self, V_X, &back);
+		wset(self, V_X, &back);
 	free_rv(&back);
+	if (raw) {
+		// A position or angle that ends elsewhere: the box changes, so the cloud is marked as the setters mark it
+		if ((word(self, 0xb8) != x0 || word(self, 0xbc) != y0 || word(self, 0xac) != raw_angle0) && verify_fault != 4) {
+			put_word(self, 0x7c, word(self, 0x7c) | 8);
+			((inst_fn)wobble_addr[W_MARK])(self);
+			raw_marked = 1;
+			wobble_marked++;
+		} else if (verify_fault == 3) { // test only: marked although nothing moved
+			((inst_fn)wobble_addr[W_MARK])(self);
+		}
+		wobble_raw++;
+	} else {
+		wobble_exact++;
+	}
 	free_rv(&result);
 	free_rv(&ynew);
 	free_rv(&xnew);
@@ -778,7 +914,104 @@ static void native_event(void *self, void *other) {
 
 static void verify_event(void *self, void *other);
 
+/*
+ * exp_smoketreecheck (debugMode): once a frame, before the first cloud's Draw, every collision tree is walked. Each leaf
+ * entry of an instance with nothing pending (+0x7c bit 3 clear, not on the dirty list) must hold the rectangle
+ * CollisionUpdate makes from the instance's box (min and max of the corners, its compares); no instance may be in the
+ * trees twice. Counted for clouds and for everything else ([SMOKETREE]).
+ */
+static int tree_check;
+static void **collision_trees;
+static uintptr_t dirty_sentinel;
+static int cloud_object = -2;
+static int (*object_find)(const char *name);
+static uint32_t tree_check_frame;
+static unsigned tc_frames, tc_entries, tc_clouds, tc_pending, tc_bad_cloud, tc_bad_other, tc_dup, tc_broken;
+#define TC_SET 4096
+static uintptr_t tc_seen[TC_SET];
+static int tc_insert(uintptr_t p) {
+	uint32_t h = ((uint32_t)p >> 3) * 2654435761u;
+	for (int k = 0; k < TC_SET; k++) {
+		uintptr_t *e = &tc_seen[(h + k) & (TC_SET - 1)];
+		if (*e == p)
+			return 0;
+		if (!*e) {
+			*e = p;
+			return 1;
+		}
+	}
+	return 1; // full: not checked
+}
+static void check_trees(void) {
+	if (cloud_object == -2)
+		cloud_object = object_find ? object_find("obj_smokecloud") : -1;
+	memset(tc_seen, 0, sizeof(tc_seen));
+	tc_frames++;
+	for (int t = 0; t < 3; t++) {
+		const uint8_t *tree = (const uint8_t *)collision_trees[t];
+		if (!tree)
+			continue;
+		const uint8_t *stack[64];
+		int sp = 0;
+		const uint8_t *root = (const uint8_t *)(uintptr_t)word(tree, 0x14);
+		if (root)
+			stack[sp++] = root;
+		while (sp) {
+			const uint8_t *node = stack[--sp];
+			uint32_t count = word(node, 0), level = word(node, 4);
+			if (count > 6 || level > 16) {
+				tc_broken++;
+				break;
+			}
+			for (uint32_t i = 0; i < count; i++) {
+				const uint8_t *b = node + 8 + 0x18 * i;
+				if (level) {
+					if (sp < 64)
+						stack[sp++] = (const uint8_t *)(uintptr_t)word(b, 0x10);
+					else
+						tc_broken++;
+					continue;
+				}
+				const uint8_t *inst = (const uint8_t *)(uintptr_t)word(b, 0x14);
+				tc_entries++;
+				int cloud = (int32_t)word(inst, 0x84) == cloud_object;
+				tc_clouds += cloud;
+				if (!tc_insert((uintptr_t)inst))
+					tc_dup++;
+				if ((word(inst, 0x7c) & 8) || word(inst, 0x170) == dirty_sentinel) {
+					tc_pending++;
+					continue;
+				}
+				// CollisionUpdate (0xf6c4e4..): x from +0xec/+0xf4, y from +0xf0/+0xf8
+				float x0 = field(inst, 0xec), y0 = field(inst, 0xf0), x1 = field(inst, 0xf4), y1 = field(inst, 0xf8);
+				float r[4] = {x0 < x1 ? x0 : x1, y0 < y1 ? y0 : y1, x0 > x1 ? x0 : x1, y0 > y1 ? y0 : y1};
+				if (memcmp(r, b, 16)) {
+					if (cloud)
+						tc_bad_cloud++;
+					else
+						tc_bad_other++;
+				}
+			}
+		}
+	}
+}
+
+#ifndef SMOKEDRAW_TEST
+void smoke_collog_enable(void), smoke_collog_frame(void), smoke_collog_report(int frames); // smoke_collog.c
+#else
+static void smoke_collog_enable(void) {}
+static void smoke_collog_frame(void) {}
+static void smoke_collog_report(int frames) { (void)frames; }
+#endif
+static int collog;
+
 static void ABI smokedraw_event(void *self, void *other) {
+	if (collog)
+		smoke_collog_frame();
+	if (tree_check && *frame_counter != tree_check_frame) {
+		tree_check_frame = *frame_counter;
+		check_trees();
+	}
 	if (smokedraw_ab_off || !admit(self, other)) {
 		smokedraw_fallbacks++;
 		original(self, other);
@@ -959,7 +1192,6 @@ static uintptr_t *coll_list[2]; // s_dirty_list, s_test_list
 #define SELF_LINKS_SIZE 24
 unsigned smokedraw_verify_lists_unchecked, smokedraw_verify_arrays_unchecked;
 unsigned smokedraw_verify_nodes, smokedraw_verify_arrays, smokedraw_verify_elements; // compared (session)
-static int verify_fault;
 
 // The list in order; 0 if it is longer than MAX_LIST or a link is NULL
 static int list_take(int l, ListSnap *s) {
@@ -1060,6 +1292,21 @@ static int arrays_same(const Arrays *a, const Arrays *b) {
 	return 1;
 }
 
+// smokeWobble verify: CInstance::Compute_BoundingBox calls for the verified cloud during each pass (recorded), and
+// the box check (Compute_BoundingBox(false) on the final state: box and +0x7c written, no tree update; both put back)
+typedef void ABI (*bbox_fn)(void *inst, int update);
+static bbox_fn compute_bbox, orig_compute_bbox;
+static void *verify_self;
+static unsigned bbox_calls[2];
+unsigned smokedraw_wobble_events, smokedraw_wobble_unmoved, smokedraw_wobble_box_checked, smokedraw_wobble_box_bad;
+unsigned smokedraw_wobble_flag_bad, smokedraw_wobble_box_window, smokedraw_wobble_list_bad;
+static void ABI record_bbox(void *inst, int update) {
+	if (capture >= 0 && inst == verify_self)
+		bbox_calls[capture]++;
+	orig_compute_bbox(inst, update);
+}
+#define BOX 0xec // the bounding box, 4 floats
+
 static void verify_event(void *self, void *other) {
 	static Slot before[MAX_SLOTS], after_gml[MAX_SLOTS], after_native[MAX_SLOTS];
 	static ListSnap lists_before[2], lists_gml[2], lists_native[2], lists_real[2];
@@ -1084,6 +1331,10 @@ static void verify_event(void *self, void *other) {
 	memcpy(links_before, (uint8_t *)self + SELF_LINKS, sizeof(links_before));
 	int lists_ok = list_take(0, &lists_before[0]) && list_take(1, &lists_before[1]);
 	int arrays_ok = arrays_take(before, nb, &arrays_before);
+	uint8_t box_before[16], box_gml[16];
+	memcpy(box_before, (uint8_t *)self + BOX, 16);
+	verify_self = self;
+	bbox_calls[0] = bbox_calls[1] = 0;
 
 	record_count[0] = record_count[1] = 0;
 	capture = 0;
@@ -1096,6 +1347,7 @@ static void verify_event(void *self, void *other) {
 	memcpy(rng_gml, rng_state, 64);
 	rng_gml[16] = *rng_index;
 	memcpy(links_gml, (uint8_t *)self + SELF_LINKS, sizeof(links_gml));
+	memcpy(box_gml, (uint8_t *)self + BOX, 16);
 	// The lists go back only if the original moved nothing but the cloud's own nodes
 	for (int l = 0; l < 2 && lists_ok; l++)
 		lists_ok = list_take(l, &lists_gml[l]) &&
@@ -1107,6 +1359,7 @@ static void verify_event(void *self, void *other) {
 		if (!owning(&before[i].value) && !owning(before[i].slot))
 			*before[i].slot = before[i].value;
 	memcpy((uint8_t *)self + FIELDS_FROM, fields_before, sizeof(fields_before));
+	memcpy((uint8_t *)self + BOX, box_before, 16);
 	memcpy(rng_state, rng_before, 64);
 	*rng_index = rng_before[16];
 	if (lists_ok) {
@@ -1119,6 +1372,15 @@ static void verify_event(void *self, void *other) {
 	capture = 1;
 	native_event(self, other);
 	capture = -1;
+	verify_self = NULL;
+	// smokeWobble: a cloud that ends where it started is not marked, so the lists, its links and +0x7c bit 3 must be
+	// as before the event; one that moved or turned is marked like the original
+	int unmoved = raw && !raw_marked;
+	const ListSnap *lists_expect = unmoved ? lists_before : lists_gml;
+	const uint8_t *links_expect = unmoved ? links_before : links_gml;
+	if (unmoved)
+		put_word(fields_gml, 0x7c - FIELDS_FROM, (word(fields_gml, 0x7c - FIELDS_FROM) & ~8u) |
+			(word(fields_before, 0x7c - FIELDS_FROM) & 8u));
 
 	// exp_smokeverifyfault1: the lists as if the native had skipped CollisionMarkDirty; the real ones go back after
 	// the compare
@@ -1143,9 +1405,9 @@ static void verify_event(void *self, void *other) {
 	int collision_ok = 1;
 	if (lists_ok) {
 		lists_ok = list_take(0, &lists_native[0]) && list_take(1, &lists_native[1]);
-		collision_ok = lists_ok && list_same(&lists_gml[0], &lists_native[0]) &&
-			list_same(&lists_gml[1], &lists_native[1]) &&
-			!memcmp((uint8_t *)self + SELF_LINKS, links_gml, sizeof(links_gml));
+		collision_ok = lists_ok && list_same(&lists_expect[0], &lists_native[0]) &&
+			list_same(&lists_expect[1], &lists_native[1]) &&
+			!memcmp((uint8_t *)self + SELF_LINKS, links_expect, sizeof(links_gml));
 	}
 	if (fault_lists) {
 		list_restore(0, &lists_real[0]);
@@ -1172,6 +1434,31 @@ static void verify_event(void *self, void *other) {
 	int records_ok = record_count[0] == record_count[1] && record_count[0] <= MAX_RECORDS &&
 		!memcmp(records[0], records[1], sizeof(Record) * record_count[0]);
 	int fields_ok = !memcmp((uint8_t *)self + FIELDS_FROM, fields_gml, sizeof(fields_gml));
+	// The box: the native leaves it as the original does (raw: as before the event; the original changes it only if
+	// something in the event ran UpdateTree, counted). Raw with the box current before the event (bit 3 clear): the
+	// box Compute_BoundingBox gives for the final state is the box the cloud holds (one that moved is marked).
+	int box_ok = !memcmp((uint8_t *)self + BOX, raw ? box_before : box_gml, 16), recompute_ok = 1;
+	if (raw) {
+		smokedraw_wobble_events++;
+		smokedraw_wobble_unmoved += unmoved;
+		if (memcmp(box_gml, box_before, 16) || bbox_calls[0] || bbox_calls[1])
+			smokedraw_wobble_box_window++;
+		if (unmoved && (word(self, 0x7c) & 8) != (word(fields_before, 0x7c - FIELDS_FROM) & 8))
+			smokedraw_wobble_flag_bad++;
+		if (unmoved && !(word(fields_before, 0x7c - FIELDS_FROM) & 8) && compute_bbox) {
+			uint32_t flags = word(self, 0x7c);
+			uint8_t box_now[16];
+			memcpy(box_now, (uint8_t *)self + BOX, 16);
+			compute_bbox(self, 0);
+			recompute_ok = !memcmp((uint8_t *)self + BOX, box_before, 16);
+			memcpy((uint8_t *)self + BOX, box_now, 16);
+			put_word(self, 0x7c, flags);
+			smokedraw_wobble_box_checked++;
+			smokedraw_wobble_box_bad += !recompute_ok;
+		}
+		smokedraw_wobble_list_bad += !collision_ok;
+	}
+	box_ok = box_ok && recompute_ok;
 	int rng_ok = !memcmp(rng_state, rng_gml, 64) && *rng_index == rng_gml[16];
 	int bad_slot = ng < 0 || ng != nn ? -2 : -1;
 	for (int i = 0; bad_slot == -1 && i < ng; i++) {
@@ -1185,7 +1472,7 @@ static void verify_event(void *self, void *other) {
 				memcmp(&a->value.v, &n->value.v, 8) || (!loose && a->value.flags != n->value.flags))
 			bad_slot = i;
 	}
-	if (records_ok && fields_ok && rng_ok && bad_slot == -1 && collision_ok && elements_ok) {
+	if (records_ok && fields_ok && rng_ok && bad_slot == -1 && collision_ok && elements_ok && box_ok) {
 		smokedraw_verified++;
 		smokedraw_verify_records += record_count[1];
 		if (lists_ok)
@@ -1198,11 +1485,12 @@ static void verify_event(void *self, void *other) {
 	}
 	if (smokedraw_mismatches++ < 8) {
 		debugPrintf("[SMOKEDRAW] mismatch: records %d/%d %s, fields %s, rng %s, variables %s (slot %d key %u), "
-			"collision lists %s, array elements %s\n",
+			"collision lists %s, array elements %s, box %s%s\n",
 			record_count[0], record_count[1], records_ok ? "same" : "differ", fields_ok ? "same" : "differ",
 			rng_ok ? "same" : "differs", bad_slot == -1 ? "same" : "differ", bad_slot,
 			bad_slot >= 0 ? after_gml[bad_slot].key : 0, collision_ok ? "same" : "differ",
-			elements_ok ? "same" : "differ");
+			elements_ok ? "same" : "differ", box_ok ? "same" : "differs",
+			raw ? (unmoved ? " (wobble)" : " (wobble, marked)") : "");
 		for (int k = 0; k < record_count[0] && k < record_count[1] && k < MAX_RECORDS; k++)
 			if (memcmp(&records[0][k], &records[1][k], sizeof(Record)))
 				debugPrintf("[SMOKEDRAW]   record %d (kind %u/%u) differs\n", k, records[0][k].kind, records[1][k].kind);
@@ -1238,7 +1526,8 @@ static int verify_install(void) {
 	draw_instance = (void **)so_symbol(&yoyoloader_mod, "_ZN15CSkeletonSprite15ms_drawInstanceE");
 	coll_list[0] = (uintptr_t *)so_symbol(&yoyoloader_mod, "s_dirty_list");
 	coll_list[1] = (uintptr_t *)so_symbol(&yoyoloader_mod, "s_test_list");
-	verify_fault = exp_flag("smokeverifyfault1") ? 1 : exp_flag("smokeverifyfault2") ? 2 : 0;
+	verify_fault = exp_flag("smokeverifyfault1") ? 1 : exp_flag("smokeverifyfault2") ? 2 :
+		exp_flag("smokeverifyfault3") ? 3 : exp_flag("smokeverifyfault4") ? 4 : 0;
 	return rng_state && rng_index && draw_instance && coll_list[0] && coll_list[1] &&
 		coll_list[0][2] == 0x168 && coll_list[1][2] == SELF_LINKS &&
 		so_symbol(&yoyoloader_mod, "_ZN7CSprite4DrawEffffffjf");
@@ -1252,6 +1541,9 @@ static int verify_hooks(void) {
 		debugPrintf("smoke cloud Draw verify: CSprite::Draw can't be hooked, verify off\n");
 		return 0;
 	}
+	compute_bbox = (bbox_fn)so_symbol(&yoyoloader_mod, "_ZN9CInstance19Compute_BoundingBoxEb");
+	if (compute_bbox && !(orig_compute_bbox = (bbox_fn)hook_or_chain((uintptr_t)compute_bbox, (void *)record_bbox)))
+		compute_bbox = NULL; // no box checks
 	for (int k = 0; k < 4; k++) {
 		script_orig[k] = (script_fn)hook_or_chain(so_symbol(&yoyoloader_mod, script_names[k]), script_recorders[k]);
 		if (!script_orig[k])
@@ -1291,6 +1583,26 @@ void smokedraw_native_report(int frames) {
 	look_drawn = look_hidden = 0;
 	if (look_ab)
 		look_off = !look_off;
+	if ((smoke_wobble || wobble_ab) && (wobble_raw || wobble_exact))
+		debugPrintf("[SMOKEWOBBLE] smokeWobble %d: field writes %.1f setters %.1f marked %.1f per frame%s\n", smoke_wobble,
+			(float)wobble_raw / frames, (float)wobble_exact / frames, (float)wobble_marked / frames,
+			wobble_ab ? (wobble_off ? " | A/B: off" : " | A/B: on") : "");
+	if (wobble_verify)
+		debugPrintf("[SMOKEWOBBLE] verify: %u wobble events (%u unmoved, %u marked), lists differ %u, bit 3 differs %u, "
+			"box checked %u differs %u, box computed in the event %u\n", smokedraw_wobble_events,
+			smokedraw_wobble_unmoved, smokedraw_wobble_events - smokedraw_wobble_unmoved, smokedraw_wobble_list_bad,
+			smokedraw_wobble_flag_bad, smokedraw_wobble_box_checked, smokedraw_wobble_box_bad,
+			smokedraw_wobble_box_window);
+	wobble_raw = wobble_exact = wobble_marked = 0;
+	if (collog)
+		smoke_collog_report(frames);
+	if (tree_check && tc_frames)
+		debugPrintf("[SMOKETREE] check: %u frames, per frame %.1f entries (%.1f clouds, %.1f pending); rectangle differs: "
+			"clouds %u, others %u; in twice %u, broken %u\n", tc_frames, (float)tc_entries / tc_frames,
+			(float)tc_clouds / tc_frames, (float)tc_pending / tc_frames, tc_bad_cloud, tc_bad_other, tc_dup, tc_broken);
+	tc_frames = tc_entries = tc_clouds = tc_pending = 0;
+	if (wobble_ab)
+		wobble_off = !wobble_off;
 	smokedraw_native_calls = smokedraw_fallbacks = smokedraw_prof_us = smokedraw_prof_calls = 0;
 	memset(smokedraw_reject_line, 0, sizeof(smokedraw_reject_line));
 	memset(smokedraw_reject_count, 0, sizeof(smokedraw_reject_count));
@@ -1404,9 +1716,31 @@ int smokedraw_native_install(void *(*rx_alloc)(size_t)) {
 	for (int i = 0; i < 20; i++)
 		cloud_scale = 0.5f * (cloud_scale + (float)smoke_clouds / cloud_scale);
 	debugPrintf("smoke look: smokeClouds %d\n", smoke_clouds);
+	for (unsigned i = 0; i < NWOBBLE; i++) { // smokeWobble's runner functions (validate checks them every frame)
+		wobble_addr[i] = so_symbol(&yoyoloader_mod, wobble_fns[i].name);
+		if (wobble_addr[i] && wobble_addr[i] != bias + wobble_fns[i].addr)
+			wobble_addr[i] = 0;
+		wobble_got[i] = so_got_slot(&yoyoloader_mod, wobble_fns[i].name);
+		if (!wobble_addr[i])
+			smoke_wobble = 0;
+	}
+	wobble_ab = debugMode && exp_flag("smokewobbleab");
+	if (debugMode && exp_flag("smokecollog")) {
+		collog = 1;
+		smoke_collog_enable();
+	}
+	if (debugMode && exp_flag("smoketreecheck")) {
+		collision_trees = (void **)so_symbol(&yoyoloader_mod, "g_collision_trees");
+		dirty_sentinel = so_symbol(&yoyoloader_mod, "s_dirty_list");
+		object_find = (int (*)(const char *))so_symbol(&yoyoloader_mod, "_Z11Object_FindPKc");
+		tree_check = collision_trees && dirty_sentinel;
+		debugPrintf("smoke tree check: %s\n", tree_check ? "on" : "NOT available");
+	}
+	debugPrintf("smoke wobble: %s\n", smoke_wobble ? "field writes" : "setters (original)");
 	if (debugMode && exp_flag("smokeverify")) {
 		smokedraw_verify = verify_install();
 		look_verify = smokedraw_verify && exp_flag("smokelookverify");
+		wobble_verify = smokedraw_verify && exp_flag("smokewobbleverify");
 		debugPrintf("smoke cloud Draw verify: %s\n", smokedraw_verify ? "on" : "NOT available");
 	}
 	hook_addr(entry, (uintptr_t)smokedraw_event);

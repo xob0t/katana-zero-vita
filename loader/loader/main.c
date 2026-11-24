@@ -201,15 +201,25 @@ void loadConfig(const char *game) {
 			else if (strcmp("fogScale", buffer) == 0) { extern int fog_scale; fog_scale = value; }
 			else if (strcmp("fogTrailLights", buffer) == 0) { extern int fog_trail_lights; fog_trail_lights = value; }
 			else if (strcmp("smokeClouds", buffer) == 0) { extern int smoke_clouds; smoke_clouds = value; }
+			else if (strcmp("smokeWobble", buffer) == 0) { extern int smoke_wobble; smoke_wobble = value; }
+			else if (strcmp("smokeContactFilter", buffer) == 0) { extern int smoke_contact_filter; smoke_contact_filter = value; }
+			else if (strcmp("collisionRoundTrip", buffer) == 0) { extern int collision_round_trip; collision_round_trip = value; }
+			else if (strcmp("smokePlayerStill", buffer) == 0) { extern int smoke_player_still; smoke_player_still = value; }
+			else if (strcmp("smokeRecord", buffer) == 0) { extern int smoke_record; smoke_record = value; }
+			else if (strcmp("lightArrayFast", buffer) == 0) { extern int light_array_fast_on; light_array_fast_on = value; }
 			else if (strcmp("trailLights", buffer) == 0) { extern int trail_lights; trail_lights = value; }
 			else if (strcmp("dancerGlow", buffer) == 0) { extern int dancer_glow; dancer_glow = value; }
 			else if (strcmp("farRocketLights", buffer) == 0) { extern int far_rocket_lights; far_rocket_lights = value; }
 			else if (strcmp("coneShadows", buffer) == 0) { extern int cone_shadows; cone_shadows = value; }
+			else if (strcmp("psychEffects", buffer) == 0) { extern int psych_effects; psych_effects = value; }
+			else if (strcmp("psychPetals", buffer) == 0) { extern int psych_petals; psych_petals = value; }
 			else if (strcmp("fullExplosions", buffer) == 0) { extern int full_explosions; full_explosions = value; }
 			else if (strcmp("letterGlow", buffer) == 0) { extern int letter_glow; letter_glow = value; }
 			else if (strcmp("cathedralDust", buffer) == 0) { extern int cathedral_dust; cathedral_dust = value; }
 			else if (strcmp("roomLighting", buffer) == 0) { extern int room_lighting; room_lighting = value; }
+			else if (strcmp("enemyTiming", buffer) == 0) { extern int enemy_timing_cfg; enemy_timing_cfg = value; }
 			else if (strcmp("waveStrips", buffer) == 0) { extern int wave_strips; wave_strips = value; }
+			else if (strcmp("lampSway", buffer) == 0) { extern int lamp_sway; lamp_sway = value; }
 			else if (strcmp("dynamicRes", buffer) == 0) { extern int dynamic_res; dynamic_res = value; }
 			else if (strcmp("skipNetflixLogo", buffer) == 0) { extern int skip_netflix_logo; skip_netflix_logo = value; }
 			else if (strcmp("noSplash", buffer) == 0) forceSplashSkip = value;
@@ -230,6 +240,8 @@ void loadConfig(const char *game) {
 			else if (strcmp("asyncSave", buffer) == 0) { extern int asyncsave_cfg; asyncsave_cfg = value; }
 			else if (strcmp("rain", buffer) == 0 && value >= 0 && value <= 2) rain_level = value;
 			else if (strcmp("ropeLights", buffer) == 0) rope_lights = value;
+			// touchControls: 0 no touch controls (default), 1 touch works but the controls aren't drawn, 2 drawn
+			else if (strcmp("touchControls", buffer) == 0) { extern int touch_controls; touch_controls = value; }
 			else if (strcmp("renderRes", buffer) == 0) {
 				// Display modes the Vita scales up in hardware
 				if (value == 720) { screen_w = 720; screen_h = 408; }
@@ -239,6 +251,10 @@ void loadConfig(const char *game) {
 		}
 		fclose(config);
 	}
+	// exp_touchui (older test flag): the drawn touch controls, touchControls=2
+	extern int touch_controls;
+	if (exp_flag("touchui"))
+		touch_controls = 2;
 }
 
 extern void *GetPlatformInstance;
@@ -909,17 +925,18 @@ int GetEnv(void *vm, void **env, int r2) {
 }
 
 int DebugPrintf(int *target, const char *fmt, ...) {
-	if (!debugMode)
+	if (!debugMode || !log_available())
 		return 0;
-	
+
 	va_list list;
-	static char string[0x8000];
+	static char string[0x8000]; // shared: runner threads call this concurrently, so format under the lock
 
+	sceKernelLockLwMutex(&android_log_mutex, 1, NULL);
 	va_start(list, fmt);
-	vsprintf(string, fmt, list);
+	vsnprintf(string, sizeof(string), fmt, list);
 	va_end(list);
-
 	debugPrintf("[DBG] %s\n", string);
+	sceKernelUnlockLwMutex(&android_log_mutex, 1);
 	return 0;
 }
 
@@ -981,9 +998,14 @@ void main_loop() {
 			GamePadUpdate();
 		}
 		
+		// The front panel reaches the runner only with touch controls on (touchControls in yyl.cfg)
+		extern int touch_controls;
 		SceTouchData touch;
-		sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
-		for (int i = 0; i < SCE_TOUCH_MAX_REPORT; i++) {
+		if (touch_controls)
+			sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
+		else
+			touch.reportNum = 0;
+		for (int i = 0; touch_controls && i < SCE_TOUCH_MAX_REPORT; i++) {
 			if (i < touch.reportNum) {
 				int x = (int)((float)touch.report[i].x * (float)SCREEN_W / 1920.0f);
 				int y = (int)((float)touch.report[i].y * (float)SCREEN_H / 1088.0f);
@@ -1730,11 +1752,12 @@ typedef struct {
 } AAssetHandle;
 
 // The runner opens assets from several threads (its OGG streaming threads open the next song while the
-// game thread loads at a room change), but they share one minizip handle, which is not thread-safe:
-// interleaved locate/read calls gave "Failed to open assets/song_*.ogg" or corrupt music data
-// ("ov_read returned -3"), and the scene had no music. Opening (locate + full read) is serialised; reads
-// afterwards use each handle's own memory copy.
+// game thread loads at a room change). They all get the one minizip handle AAssetManager_fromJava opens, and
+// minizip is not thread-safe: interleaved locate/read calls gave "Failed to open assets/song_*.ogg" or corrupt
+// music data ("ov_read returned -3"), and the scene had no music. So every use of that handle (opening: locate +
+// full read) holds asset_open_mutex; reads afterwards use each asset's own memory copy.
 static pthread_mutex_t asset_open_mutex = PTHREAD_MUTEX_INITIALIZER;
+static unzFile asset_apk = NULL; // AAssetManager_fromJava's handle, opened once (the runner never releases it)
 
 AAssetHandle *AAssetManager_open(unzFile apk_file, const char *fname, int mode) {
 	debugPrintf("AAssetManager_open %s\n", fname);
@@ -1766,8 +1789,15 @@ void AAsset_close(AAssetHandle *f) {
 	}
 }
 
+// The runner calls this before every AAssetManager_open (LoadSave::_ReadFile, the asset opener at runner+0xf636b0)
+// and never closes the result: opening the APK each time leaked a minizip handle and its FILE per asset
 unzFile AAssetManager_fromJava(void *env, void *obj) {
-	return unzOpen(apk_path);
+	pthread_mutex_lock(&asset_open_mutex);
+	if (!asset_apk)
+		asset_apk = unzOpen(apk_path);
+	unzFile ret = asset_apk;
+	pthread_mutex_unlock(&asset_open_mutex);
+	return ret;
 }
 
 int AAsset_read(AAssetHandle *f, void *buf, size_t count) {
@@ -3897,7 +3927,10 @@ void *pthread_main(void *arg) {
 	*(uintptr_t *)(fake_env + 0x37C) = (uintptr_t)ReleasePrimitiveArrayCritical;
 	*(uintptr_t *)(fake_env + 0x394) = (uintptr_t)NewWeakGlobalRef;
 	
-	void (*Java_com_yoyogames_runner_RunnerJNILib_Startup) (void *env, int a2, char *apk_path, char *save_dir, char *pkg_dir, int sleep_margin) = (void *)so_symbol(&yoyoloader_mod, "Java_com_yoyogames_runner_RunnerJNILib_Startup");
+	// The 7th argument is stored as g_Android_UseDynamicAssetDelivery (runner Startup+0x88: ldr r6, [fp, #0x10]; strb
+	// r6 != 0): non-zero switches save/asset reads, OGG streaming, video and others from libzip to AAssetManager. The
+	// old 6-argument call left it to stale stack (0 after the splash draw, 1 with noSplash=1)
+	void (*Java_com_yoyogames_runner_RunnerJNILib_Startup) (void *env, int a2, char *apk_path, char *save_dir, char *pkg_dir, int sleep_margin, int dynamic_asset_delivery) = (void *)so_symbol(&yoyoloader_mod, "Java_com_yoyogames_runner_RunnerJNILib_Startup");
 	Java_com_yoyogames_runner_RunnerJNILib_CreateVersionDSMap = (void *)so_symbol(&yoyoloader_mod, "Java_com_yoyogames_runner_RunnerJNILib_CreateVersionDSMap");
 	Java_com_yoyogames_runner_RunnerJNILib_TouchEvent  = (void *)so_symbol(&yoyoloader_mod, "Java_com_yoyogames_runner_RunnerJNILib_TouchEvent");
 	
@@ -3969,7 +4002,11 @@ void *pthread_main(void *arg) {
 	extern void katana_texture_selftest(void);
 	katana_texture_selftest();
 	debugPrintf("Calling runner Startup\n");
-	Java_com_yoyogames_runner_RunnerJNILib_Startup(fake_env, 0, apk_path, data_path, pkg_name, 0);
+	Java_com_yoyogames_runner_RunnerJNILib_Startup(fake_env, 0, apk_path, data_path, pkg_name, 0, 0);
+	{
+		uint8_t *dad = (uint8_t *)so_symbol(&yoyoloader_mod, "g_Android_UseDynamicAssetDelivery");
+		debugPrintf("Runner Startup done (g_Android_UseDynamicAssetDelivery %d)\n", dad ? *dad : -1);
+	}
 	
 	enter_main_loop();
 	

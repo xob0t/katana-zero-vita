@@ -234,9 +234,26 @@ static void add_splash(float x, float y) {
 	s->xs = frand() < 0.5f ? -1.0f : 1.0f;
 }
 
+// A loader drop for a game drop at x, y
+static void drop_add(float x, float y) {
+	rain_cheap_spawned++;
+	if (keep_n <= 1 || created++ % (unsigned)keep_n == 0) {
+		if (ndrops < MAX_DROPS) {
+			drop_t *d = &drops[ndrops++];
+			d->x = x;
+			d->y = y;
+			d->land = NAN; // found on the first update, once the spawner has set the speed
+			d->len = 1.0f + frand() * 0.6f;
+			d->alpha = 0.25f + frand() * 0.2f;
+			d->jumpthrough = frand() < 0.5f; // jumpthrough_collide = choose(true, false)
+			d->splash = 0;
+			rain_cheap_kept++;
+		}
+	}
+}
+
 static void rain_cheap_create(void *self, void *other) {
 	orig_create(self, other);
-	rain_cheap_spawned++;
 	int alive = carrier_alive();
 	if (!alive) {
 		// A new shower (or a new room): this drop carries the rain from now on
@@ -246,21 +263,19 @@ static void rain_cheap_create(void *self, void *other) {
 		rects_room = -1;
 		rain_cheap_carriers++;
 	}
-	if (keep_n <= 1 || created++ % (unsigned)keep_n == 0) {
-		if (ndrops < MAX_DROPS) {
-			drop_t *d = &drops[ndrops++];
-			d->x = field(self, 0xb8);
-			d->y = field(self, 0xbc);
-			d->land = NAN; // found on the first update, once the spawner has set the speed
-			d->len = 1.0f + frand() * 0.6f;
-			d->alpha = 0.25f + frand() * 0.2f;
-			d->jumpthrough = frand() < 0.5f; // jumpthrough_collide = choose(true, false)
-			d->splash = 0;
-			rain_cheap_kept++;
-		}
-	}
+	drop_add(field(self, 0xb8), field(self, 0xbc));
 	if (alive)
 		instance_destroy(self, other, 0, NULL);
+}
+
+// For rain_skip.c, which doesn't create the drops this would destroy: whether a drop created now would be destroyed
+// in its Create (the carrier is alive), and the Create's bookkeeping for one such drop at x, y
+int rain_cheap_drop_destroyed(void) {
+	return orig_create && carrier_alive();
+}
+
+void rain_cheap_phantom(float x, float y) {
+	drop_add(x, y);
 }
 
 static void rain_cheap_step(void *self, void *other) {

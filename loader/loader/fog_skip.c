@@ -141,11 +141,12 @@ static void spawner_step(void *self, void *other) {
 
 // FNV-1a over a function's words from the third on (the first two may be an entry hook), skipping pc-relative literal
 // pool words (ldr/vldr targets: relocated constants) and with every bl/blx word replaced by 0xb (patch_plt_calls and
-// call-site veneers change their targets). work/fogskip/fingerprint.py computes the same offline.
-static uint32_t code_fingerprint(uintptr_t entry, uint32_t size) {
+// call-site veneers change their targets). work/fogskip/fingerprint.py computes the same offline. Also used by
+// rain_skip.c (functions up to 64 KB).
+uint32_t code_fingerprint(uintptr_t entry, uint32_t size) {
 	const uint32_t *w = (const uint32_t *)entry;
 	uint32_t n = size / 4, h = 2166136261u;
-	static uint8_t pool[0x5000 / 4];
+	static uint8_t pool[0x10000 / 4];
 	if (!entry || n > sizeof(pool))
 		return 0;
 	memset(pool, 0, n);
