@@ -100,6 +100,14 @@ static void texdrain_run(const char *where) {
 		vglMemFree(VGL_MEM_PHYCONT) / 1024);
 }
 
+// For title_pages.c: frees what was just released, the same way (scene-aware). Returns 1 if it was freed now, 0 if
+// it waits for the start of Draw or the next presented frame.
+int katana_texdrain_now(const char *what) {
+	texdrain_pending = what;
+	texdrain_run("after the swap");
+	return !texdrain_pending;
+}
+
 static void texture_flush_drain(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) {
 	orig_texture_flush(result, self, other, argc, args);
 	texdrain_pending = "the game's texture flush";
@@ -156,7 +164,7 @@ static void DoAStep_Draw_katana(void) {
 		*app_height = *app_new_height = app_set_h = app_surf_h;
 		*app_new_size = 1;
 	}
-	if (lighting30 && !t30_active) {
+	if (lighting30) {
 		gml_rvalue *(*vwrite)(void *, int) = (*(void ***)*global_obj_ptr)[3];
 		gml_rvalue *timer = vwrite(*global_obj_ptr, var_recolor_timer[1]);
 		if (timer && timer->kind == 0) {
@@ -242,8 +250,7 @@ static void dynamic_res_update(uint32_t swap_us, uint32_t work_us) {
 		}
 		return;
 	}
-	// In 30 fps mode the swap also waits for the second vblank of each frame: not GPU load
-	if (dropped || t30_active || ++frames <= DYNRES_SETTLE_FRAMES)
+	if (dropped || ++frames <= DYNRES_SETTLE_FRAMES)
 		return;
 	bound += (period > DYNRES_MISS_US && work_us < DYNRES_CPU_US && swap_us > DYNRES_SWAP_US) || dynres_test;
 	if (++window < DYNRES_WINDOW)
@@ -262,24 +269,37 @@ static void dynamic_res_update(uint32_t swap_us, uint32_t work_us) {
 // Runs right after vglSwapBuffers, between frames: every scene of the frame has been submitted, so the GPU finish
 // and garbage collection below cannot free memory that commands still being recorded refer to
 
-uint32_t after_swap_step_us[2]; // debug: t30_update, dynamic_res_update of the last frame
+uint32_t after_swap_dynres_us; // debug: dynamic_res_update of the last frame
+static void after_swap(uint32_t swap_us, uint32_t work_us);
 void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
+	after_swap(swap_us, work_us);
+	// The title pages' state as the next frame starts, after any recovery flush above
+	extern void title_pages_snapshot(void);
+	title_pages_snapshot();
+}
+
+static void after_swap(uint32_t swap_us, uint32_t work_us) {
+	options_menu_sync();
+	enemy_half_rate_update();
 	uint32_t s0 = sceKernelGetProcessTimeLow();
-	t30_update(work_us);
-	uint32_t s1 = sceKernelGetProcessTimeLow();
 	dynamic_res_update(swap_us, work_us);
-	after_swap_step_us[0] = s1 - s0;
-	after_swap_step_us[1] = sceKernelGetProcessTimeLow() - s1;
+	after_swap_dynres_us = sceKernelGetProcessTimeLow() - s0;
 	rt_free_report();
 	// A frame that skipped its swap (frameSkip) may leave scenes open: no collection until a presented frame
 	if (vgl_scene_open)
 		return;
 	texdrain_run("after the swap");
 	forced_gc_report();
-	if (!texture_flush)
-		return;
 	extern int vgl_failed_allocs;
 	extern size_t vgl_gpu_fallback_bytes;
+	// The title screen's pages are made resident right after its first frame (title_pages.c). It acknowledges a spill
+	// only when every byte of it was a title page it reloaded into VRAM.
+	extern int title_pages_after_swap(size_t *spill_seen);
+	size_t title_spill_seen;
+	if (title_pages_after_swap(&title_spill_seen))
+		texflush_spill_seen = title_spill_seen;
+	if (!texture_flush)
+		return;
 	const char *reason = NULL;
 	uint32_t now = sceKernelGetProcessTimeLow();
 	// A failure within TEXFLUSH_MIN_INTERVAL_US of the last flush is flushed for once the interval is over: dropping

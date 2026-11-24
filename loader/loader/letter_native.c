@@ -85,6 +85,15 @@ static const int *builtin_count;
 static uintptr_t getters[5],setters[5];
 static getter_fn room_height;
 static int installed;
+/* letterGlow in yyl.cfg (default 0): the glow pass of glowing dialogue letters (the highlighted words) is skipped; 1
+ * keeps it. That pass is draw_text_scaled_glow_ext -> draw_text_glow_ext, which redraws the letter around itself in
+ * purple through the runner's text drawing: ~300 us per letter on the Vita, 2.7-3.7 ms per frame with 9-12 glowing
+ * letters on screen (chinatown_10's nightmare dialogue: 23.9 -> 18.8 ms in an in-run A/B). Visual only: the scripts
+ * read the draw alpha/colour, draw, and restore both; they call no random and write no instance or global variable.
+ * The original user event (fallback path) still draws it. Debug: exp_letterglowab draws it in every other report
+ * window, exp_letterglowprof times it ([LETTERGLOW] report line). */
+int letter_glow=0,letter_glow_ab,letter_glow_ab_on,letter_glow_prof;
+unsigned letter_glow_calls,letter_glow_zero,letter_glow_skipped; uint64_t letter_glow_us;
 unsigned letter_native_hits[5],letter_native_fallbacks[5],letter_native_draws,letter_native_rng_calls,letter_native_direct_user,letter_native_cached_slots;
 unsigned letter_native_reject_line[64],letter_native_reject_count[64],letter_native_reject_overflow;
 enum { DRAW_HOOK,STEP_HOOK,USER_HOOK,SCALED_HOOK,FONT_HOOK };
@@ -428,7 +437,13 @@ static void user_call(void *self,void *other,State *s) {
    RV alpha=real(0); builtin(GET_ALPHA,&alpha,self,other,0,NULL);
    RV args[7]={real(x),real(y),*slot(self,LETTER),real(2),real(2),real(8388736),real(((value(s->parent,TXT_GLOW_ALPHA)*alpha.value)*.75)*number(s->v[FX_SCALE]))},out=real(0);
    RV *argv[7]; for(int i=0;i<7;++i) argv[i]=args+i;
-   glow_script(self,other,&out,7,argv);
+   ++letter_glow_calls; if(args[6].value==0) ++letter_glow_zero;
+   // letterGlow=0 (the default): no purple glow behind glowing dialogue letters (visual only; see letter_glow)
+   if(letter_glow||letter_glow_ab_on) {
+    uint64_t t0=letter_glow_prof?sceKernelGetProcessTimeWide():0;
+    glow_script(self,other,&out,7,argv);
+    if(letter_glow_prof) letter_glow_us+=sceKernelGetProcessTimeWide()-t0;
+   } else ++letter_glow_skipped;
   }
  }
 }
