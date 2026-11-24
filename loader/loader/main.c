@@ -201,6 +201,8 @@ void loadConfig(const char *game) {
 			else if (strcmp("fogScale", buffer) == 0) { extern int fog_scale; fog_scale = value; }
 			else if (strcmp("fogTrailLights", buffer) == 0) { extern int fog_trail_lights; fog_trail_lights = value; }
 			else if (strcmp("smokeClouds", buffer) == 0) { extern int smoke_clouds; smoke_clouds = value; }
+			else if (strcmp("smokeWobble", buffer) == 0) { extern int smoke_wobble; smoke_wobble = value; }
+			else if (strcmp("smokeContactFilter", buffer) == 0) { extern int smoke_contact_filter; smoke_contact_filter = value; }
 			else if (strcmp("trailLights", buffer) == 0) { extern int trail_lights; trail_lights = value; }
 			else if (strcmp("dancerGlow", buffer) == 0) { extern int dancer_glow; dancer_glow = value; }
 			else if (strcmp("farRocketLights", buffer) == 0) { extern int far_rocket_lights; far_rocket_lights = value; }

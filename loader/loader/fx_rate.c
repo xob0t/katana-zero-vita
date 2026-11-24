@@ -146,6 +146,125 @@ static int fx_place_meeting(void *self, float x, float y, int object) {
 	return (out.kind == 0 || out.kind == 13) && out.val != 0;
 }
 
+/*
+ * smokeContactFilter (yyl.cfg, default 1; 0 = the three place_meeting calls for every skipped cloud): a skipped
+ * settled cloud tests its gates only if its box can touch the box of an enemy, the player or a slash. place_meeting
+ * at the cloud's own position needs the boxes to overlap, so a cloud whose box (+0xec..+0xf8) overlaps none of them,
+ * grown by a pixel, has no contact. It is used only when every box involved is current: the collision dirty list is
+ * empty (the first tree query of a tick drains it: until then, and after anything moves, the gates run as before),
+ * and neither the cloud nor any target has the box flag (+0x7c bit 3) set. The targets are every instance of the three
+ * objects (instance_find, children included), collected once per tick and again when an instance is created
+ * (room_maxid). Not covered: an instance activated, or changed into an enemy (instance_change), during a tick after
+ * the collection, until the next tick. ~131 clouds of a smoke vial made ~300 place_meeting calls per tick (2.3 ms).
+ * exp_smokecontactverify (debugMode): every filtered cloud runs the gates anyway; a contact counts as a miss.
+ * exp_smokecontactverifyfault (negative control): no targets, so every contact of a skipped cloud is a miss.
+ * exp_smokecontactab: the filter off in every other report window ([FXCONTACT]).
+ */
+int smoke_contact_filter = 1;
+static const int *fx_fn_instance_find;
+static uint32_t *fx_id_map, *fx_dirty_list;
+static const int *fx_room_maxid;
+static int fx_cf_verify, fx_cf_fault, fx_cf_ab, fx_cf_off;
+unsigned fx_cf_filtered, fx_cf_tested, fx_cf_unsure, fx_cf_misses, fx_cf_checked;
+#define FX_TARGETS 48
+static struct { uint32_t tick; int maxid, n, valid; void *inst[FX_TARGETS]; } fx_targets = {.tick = (uint32_t)-1};
+
+static void *fx_instance(int id) {
+	if (!fx_id_map[0])
+		return NULL;
+	const uint32_t *buckets = (const uint32_t *)(uintptr_t)fx_id_map[0]; // {first, last} each, element {prev, next, id, inst}
+	const uint32_t *e = (const uint32_t *)(uintptr_t)buckets[(fx_id_map[1] & (uint32_t)id) * 2];
+	for (; e; e = (const uint32_t *)(uintptr_t)e[1])
+		if ((int)e[2] == id)
+			return (void *)(uintptr_t)e[3];
+	return NULL;
+}
+static void fx_collect_targets(void *self) {
+	fx_targets.tick = *frame_count;
+	fx_targets.maxid = *fx_room_maxid;
+	fx_targets.n = 0;
+	fx_targets.valid = 0;
+	runner_function *f = *fx_functions + fx_fn_instance_find[1], *saved = *fx_current_function;
+	for (int k = 0; k < 3; k++) {
+		if (fx_cf_fault)
+			continue; // exp_smokecontactverifyfault: no targets
+		for (int i = 0;; i++) {
+			gml_rvalue args[2] = {{0, 0, 15}, {(double)i, 0, 0}}, out = {0, 0, 5};
+			uint32_t ref[2] = {(uint32_t)fx_contact_objects[k], 0x01000000};
+			memcpy(&args[0].val, ref, 8);
+			*fx_current_function = f;
+			((builtin_fn)f->func)(&out, self, self, 2, args);
+			*fx_current_function = saved;
+			uint32_t kind = out.kind & 0xffffff;
+			int id;
+			if (kind == 0)
+				id = (int)out.val;
+			else if (kind == 15) {
+				int32_t lo;
+				memcpy(&lo, &out.val, 4);
+				id = lo;
+			} else
+				return; // an answer it doesn't know: no filter this tick
+			if (id < 0)
+				break; // noone: the end of this object's instances
+			void *inst = fx_instance(id);
+			if (!inst || fx_targets.n == FX_TARGETS)
+				return;
+			fx_targets.inst[fx_targets.n++] = inst;
+		}
+	}
+	fx_targets.valid = 1;
+}
+static inline uint32_t fx_word(const void *p, size_t o) {
+	uint32_t v;
+	memcpy(&v, (const uint8_t *)p + o, 4);
+	return v;
+}
+static inline void fx_box(const void *inst, float b[4]) {
+	float x0, y0, x1, y1;
+	memcpy(&x0, (const char *)inst + 0xec, 4);
+	memcpy(&y0, (const char *)inst + 0xf0, 4);
+	memcpy(&x1, (const char *)inst + 0xf4, 4);
+	memcpy(&y1, (const char *)inst + 0xf8, 4);
+	b[0] = x0 < x1 ? x0 : x1;
+	b[1] = y0 < y1 ? y0 : y1;
+	b[2] = x0 > x1 ? x0 : x1;
+	b[3] = y0 > y1 ? y0 : y1;
+}
+// 1: no target's box comes near the cloud's, so no gate can be true; 0: the gates must run
+static int fx_no_contact_possible(void *self) {
+	if (!smoke_contact_filter || fx_cf_off || !fx_fn_instance_find || !fx_id_map || !fx_dirty_list || !fx_room_maxid)
+		return 0;
+	if (fx_dirty_list[0] != (uint32_t)(uintptr_t)fx_dirty_list || (fx_word(self, 0x7c) & 8)) {
+		fx_cf_unsure++;
+		return 0;
+	}
+	if (fx_targets.tick != *frame_count || fx_targets.maxid != *fx_room_maxid)
+		fx_collect_targets(self);
+	if (!fx_targets.valid) {
+		fx_cf_unsure++;
+		return 0;
+	}
+	float c[4];
+	fx_box(self, c);
+	if (!(c[0] <= c[2] && c[1] <= c[3])) { // NaN
+		fx_cf_unsure++;
+		return 0;
+	}
+	for (int i = 0; i < fx_targets.n; i++) {
+		const void *t = fx_targets.inst[i];
+		if (fx_word(t, 0x7c) & 8) {
+			fx_cf_unsure++;
+			return 0;
+		}
+		float b[4];
+		fx_box(t, b);
+		if (!(b[0] - 1 > c[2] || c[0] > b[2] + 1 || b[1] - 1 > c[3] || c[1] > b[3] + 1))
+			return 0; // overlap (or NaN): the gates decide
+	}
+	return 1;
+}
+
 // Would this tick's Step take one of its contact branches? -1 if it can't tell (the Step runs then)
 static int fx_smoke_contact(void *self) {
 	gml_rvalue *v = fx_var(self, var_in_screen);
@@ -154,17 +273,35 @@ static int fx_smoke_contact(void *self) {
 	if (v->val == 0)
 		return 0; // the contacts are inside if (in_screen)
 	static const char *const names[3] = {"obj_enemy", "obj_player", "obj_slash"};
-	float x, y;
-	memcpy(&x, (char *)self + 0xb8, 4);
-	memcpy(&y, (char *)self + 0xbc, 4);
 	for (int i = 0; i < 3; i++) {
 		if (fx_contact_objects[i] == -2)
 			fx_contact_objects[i] = fx_object_find(names[i]);
 		if (fx_contact_objects[i] < 0)
 			return -1;
-		if (fx_place_meeting(self, x, y, fx_contact_objects[i]))
-			return 1;
 	}
+	int filtered = fx_no_contact_possible(self);
+	if (filtered) {
+		fx_cf_filtered++;
+		if (!fx_cf_verify)
+			return 0;
+	} else {
+		fx_cf_tested++;
+	}
+	float x, y;
+	memcpy(&x, (char *)self + 0xb8, 4);
+	memcpy(&y, (char *)self + 0xbc, 4);
+	for (int i = 0; i < 3; i++)
+		if (fx_place_meeting(self, x, y, fx_contact_objects[i])) {
+			if (filtered) {
+				if (fx_cf_misses++ < 8)
+					debugPrintf("[FXCONTACT] miss: cloud %u touches object %d\n", fx_word(self, 0x80),
+						fx_contact_objects[i]);
+				// the original's answer stands (verify mode only)
+			}
+			return 1;
+		}
+	if (filtered)
+		fx_cf_checked++;
 	return 0;
 }
 
@@ -319,6 +456,15 @@ void fx_rate_report(int frames) {
 		debugPrintf("[FXRATE] embers updated %.1f skipped %.1f per tick\n", (float)fx_ember_update / frames,
 			(float)fx_ember_skip / frames);
 	fx_smoke_full = fx_smoke_update = fx_smoke_skip = fx_smoke_contacts = fx_anim_calls = fx_ember_update = fx_ember_skip = 0;
+	if (fx_cf_filtered || fx_cf_tested || fx_cf_ab)
+		debugPrintf("[FXCONTACT] smokeContactFilter %d: filtered %.1f gates run %.1f (unsure %.1f) per tick, targets %d%s\n",
+			smoke_contact_filter, (float)fx_cf_filtered / frames, (float)fx_cf_tested / frames,
+			(float)fx_cf_unsure / frames, fx_targets.n, fx_cf_ab ? (fx_cf_off ? " | A/B: off" : " | A/B: on") : "");
+	if (fx_cf_verify)
+		debugPrintf("[FXCONTACT] verify: %u filtered clouds checked, %u misses\n", fx_cf_checked, fx_cf_misses);
+	fx_cf_filtered = fx_cf_tested = fx_cf_unsure = 0;
+	if (fx_cf_ab)
+		fx_cf_off = !fx_cf_off;
 }
 
 void fx_rate_install(gml_func_entry *table) {
@@ -333,6 +479,13 @@ void fx_rate_install(gml_func_entry *table) {
 	fx_fn_place_meeting = (const int *)so_symbol(&yoyoloader_mod, "g_FUNC_place_meeting");
 	fx_object_find = (void *)so_symbol(&yoyoloader_mod, "_Z11Object_FindPKc");
 	var_animation_finished = (int *)so_symbol(&yoyoloader_mod, "g_VAR_animation_finished");
+	fx_fn_instance_find = (const int *)so_symbol(&yoyoloader_mod, "g_FUNC_instance_find");
+	fx_id_map = (uint32_t *)so_symbol(&yoyoloader_mod, "_ZN9CInstance14ms_ID2InstanceE");
+	fx_dirty_list = (uint32_t *)so_symbol(&yoyoloader_mod, "s_dirty_list");
+	fx_room_maxid = (const int *)so_symbol(&yoyoloader_mod, "room_maxid");
+	fx_cf_verify = debugMode && exp_flag("smokecontactverify");
+	fx_cf_ab = debugMode && exp_flag("smokecontactab");
+	fx_cf_fault = fx_cf_verify && exp_flag("smokecontactverifyfault");
 #define FX_RESOLVE(var, sym) var = (builtin_var_fn)so_symbol(&yoyoloader_mod, sym)
 	FX_RESOLVE(gv_speed, "_Z8GV_SpeedP9CInstanceiP6RValue");
 	FX_RESOLVE(sv_speed, "_Z8SV_SpeedP9CInstanceiP6RValue");
