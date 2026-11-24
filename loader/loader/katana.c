@@ -1218,12 +1218,12 @@ static void patch_performance() {
 		extern int bike_draw_install(void);
 		debugPrintf("bike draw loops: %s\n", bike_draw_install() ? "installed" : "NOT installed");
 	}
-	// Burning corpses' embers: obj_drawactors' per-corpse ember with-loops visit only that corpse's embers, from a
-	// per-frame ember list (exact; ember_draw.c). haunted_alien2 fire bursts: 6.4 -> 2.0 ms per frame.
+	// Burning corpses' embers: obj_drawactors' per-corpse ember with-loops visit only that corpse's embers, from an
+	// ember list kept for one Draw event (exact; ember_draw.c). haunted_alien2 fire bursts: 6.4 -> 2.0 ms per frame.
 	// exp_emberdraw0: the original loops.
 	if (!exp_flag("emberdraw0")) {
-		extern int ember_draw_install(void);
-		debugPrintf("ember draw loops: %s\n", ember_draw_install() ? "installed" : "NOT installed");
+		extern int ember_draw_install(gml_func_entry *table);
+		debugPrintf("ember draw loops: %s\n", ember_draw_install(table) ? "installed" : "NOT installed");
 	}
 	// update_region natively (exact; region_native.c): moving particles and every explosion particle call it from their
 	// draw event, 120-270 calls per frame in the bike chase's helicopter volleys at ~21 us each

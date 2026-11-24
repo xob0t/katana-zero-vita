@@ -25,10 +25,12 @@
  *
  * Both loops keep their original code; only their iterator calls (YYGML_NewWithIterator / YYGML_WithIteratorNext) go
  * through veneers in the code cave to wrappers (as in bike_draw.c):
- * - The first ember loop of a frame runs the runner's iterator, steps over the embers whose parent is certainly not
- *   other.id and records every ember it visits, in order, with its parent value (the frame's ember list, below).
- * - The other loops of the frame, while that list is current, visit only the recorded embers whose parent might
- *   equal their other.id and that are still active, in the recorded order, without the runner's list.
+ * - The first ember loop of a Draw event runs the runner's iterator, steps over the embers whose parent is certainly
+ *   not other.id and records every ember it visits, in order, with a pointer to its parent variable (the ember list,
+ *   below).
+ * - The later loops of the same event, while that list is current, visit the recorded embers that are still active,
+ *   in the recorded order, without the runner's list, and step over those whose parent (read live, when the loop gets
+ *   to them, as the original reads it) is certainly not other.id.
  * For an ember stepped over, the original body only read parent and other.id and compared them: no write, no call
  * with side effects (the temporaries it fills are the event's scratch RValues: the id it reads, never refcounted, which
  * nothing reads before writing them again; the epilogue frees only refcounted kinds). Embers whose parent might equal
@@ -36,9 +38,10 @@
  * comparison and calls event_user(15) itself. So the embers drawn, their order and every variable stay as before.
  *
  * exp_emberdraw0 keeps the original. Debug mode, [EMBERDRAW] report line:
- * - exp_emberdrawverify: the recording loops step over nothing and count, for every ember they would have stepped
- *   over, whether the runner's YYCompareVal says equal; every loop served from the list also runs the runner's own
- *   iterator and compares the embers whose parent equals other.id, in order, with the list's. Mismatches must stay 0.
+ * - exp_emberdrawverify: the recording loops step over nothing and check, for every ember they would have stepped
+ *   over, that the runner's YYCompareVal says not equal ("step-overs"). Every loop served from the list also runs the
+ *   runner's own iterator first and compares, in order, all the embers it visits with the list's ("lists") and those
+ *   whose parent equals other.id with the list's ("drawn"). Mismatches must stay 0.
  * - exp_emberdrawab: the wrappers pass everything through in every other report window (in-run A/B).
  * - the time from each loop's NewWithIterator to its last iterator call is reported per frame.
  */
@@ -50,8 +53,7 @@
 
 #include "main.h"
 #include "so_util.h"
-
-extern int debugMode;
+#include "katana_internal.h"
 
 #define ABI __attribute__((pcs("aapcs")))
 typedef struct { double value; uint32_t flags, kind; } RV;
@@ -70,13 +72,16 @@ static const int *var_parent, *var_id; // {name, id}: ids are filled at game sta
 static int verify;
 
 int ember_draw_ab, ember_draw_ab_off;
-unsigned ember_draw_loops, ember_draw_kept, ember_draw_skipped, ember_draw_verified, ember_draw_mismatch, ember_draw_odd;
+unsigned ember_draw_loops, ember_draw_kept, ember_draw_skipped, ember_draw_odd, ember_draw_nested;
+// verify mode: the recording loops' step-overs (YYCompareVal), the cached loops' whole lists and drawn embers
+unsigned ember_draw_cmp_ok, ember_draw_cmp_bad, ember_draw_list_ok, ember_draw_list_bad, ember_draw_drawn_ok,
+	ember_draw_drawn_bad;
 uint32_t ember_draw_us;
 
 #define KIND(v) ((v)->kind & 0xffffff)
 
 // The other.id the loop compares against, read once per loop (its other, the corpse or the player, is the same
-// instance for the whole loop)
+// instance for the whole loop, and an instance's id never changes)
 static void *id_other;
 static RV id_value;
 
@@ -108,38 +113,65 @@ static int differs(const RV *parent, const RV *id) {
 	return 0;
 }
 
+// The ember's parent variable (YYObjectBase::InternalGetYYVarRef, which creates it if missing, as reading it does)
 static RV *parent_of(void *ember) {
 	return var_parent[1] < 0 ? NULL : (*(var_fn *)(*(uint8_t **)ember + 8))(ember, var_parent[1]);
 }
 
-// ---- The frame's ember list ----
-// The first ember loop of a frame runs the runner's iterator and records the embers it visits, in that order, with
-// their parent values. YYGML_NewWithIteratorEx builds its list from the object's instance list, the pending instance
-// changes and the pending (de)activations, filtered by the active flags ((+0x7c & 0x100007) == 4), and leaves nothing
-// behind (it resets the instance link fields it borrows). So while no instance has been created
-// (CInstance::ms_CurrentCreateCounter) and the change and (de)activation arrays hold as many entries as when the list
-// was recorded, in the same frame, the runner would visit the recorded embers again in the same order, minus any that
-// stopped being active (destroyed or deactivated in between: their flags tell, and they are still allocated until the
-// frame's cleanup). Nothing in the Draw event writes an ember's parent (obj_enemycorpse's Step sets it right after
-// creating the ember), so the recorded parents hold too. Later loops of the frame then visit only the embers whose
-// recorded parent might equal their other.id, without the runner's list (allocated and filled with every ember for
-// every loop) and without walking it.
+// ---- The ember list of one obj_drawactors Draw event ----
+// The first ember loop of the event runs the runner's iterator and records the embers it visits, in that order, with
+// a pointer to each one's parent variable. YYGML_NewWithIteratorEx builds its list when the loop starts, from the
+// object's instance list, the pending instance changes (g_InstanceChangeArray) and the pending (de)activations
+// (g_InstanceActivateDeactive), filtered by the active flags ((+0x7c & 0x100007) == 4), and leaves nothing behind (it
+// resets the instance link fields it borrows); YYGML_WithIteratorNext then walks that list without looking at the
+// instances again. The record serves a later loop only while nothing that list depends on has changed since the
+// recording loop started (runner of APK 1.1.10, checked in its code):
+// - The same Draw event invocation (draw_epoch). The instance lists and the pending arrays are only rebuilt
+//   (UpdateActiveLists) and instances only freed (CRoom::RemoveMarked / DeleteInstance) from the main loop
+//   (DoAStep_*, Draw_Room / DrawTheRoom between draw passes, StartRoom / EndRoom), never from inside an event, so within
+//   one event the recorded instances stay allocated and the arrays only grow.
+// - No instance created: every path that adds an instance to the room (instance_create_* through CRoom::AddInstance,
+//   instance_copy) takes its id as ++room_maxid. CInstance::ms_CurrentCreateCounter is compared too.
+// - No instance (de)activated or changed into another object (ember_draw_set_gen): CInstance::Activate, Deactivate and
+//   SetDeactivated are the only writers of the deactivated flag, and ChangeObjectIndex (instance_change) the only
+//   writer of g_InstanceChangeArray; each is entry-hooked to count. That catches an ember reactivated without a new
+//   queue entry and an instance changed while already queued, which the array counts miss.
+// - The change and (de)activation arrays hold as many entries as when the list was recorded.
+// An ember destroyed (or deactivated) since is still allocated and its flags tell: a cached loop visits the recorded
+// embers active when it starts, as the runner's list would hold them. Parents are read live through the recorded
+// pointers: an instance variable is a pool-allocated RValue that the instance's variable map points to, so it stays put
+// while the instance lives (the map's rehash moves only the pointers; no game code calls variable_instance_remove).
 #define EMBER_MAX 1024
 static struct {
 	int valid;
-	uint32_t frame, creates[2], changes, activations;
+	uint32_t epoch, gen, maxid, creates[2], changes, activations;
 	int n;
 	void *inst[EMBER_MAX];
-	RV parent[EMBER_MAX]; // kind 0xffffff: no such variable (always visited)
+	RV *parent[EMBER_MAX]; // NULL: no such variable (always visited)
 } rec;
+static int cache_ok; // the Draw event wrapper and the four hooks are installed
 static int recording, rec_overflow;
-static uint32_t snap_creates[2], snap_changes, snap_activations;
+static uint32_t snap_epoch, snap_gen, snap_maxid, snap_creates[2], snap_changes, snap_activations;
 static uint32_t *create_counter, *change_array, *activation_array; // the arrays' count is word 2
-extern uint32_t *frame_count;
-unsigned ember_draw_cached_loops, ember_draw_recorded_loops, ember_draw_verify_loops;
+static const int *room_maxid;
+unsigned ember_draw_cached_loops, ember_draw_recorded_loops;
+uint32_t ember_draw_set_gen; // instances (de)activated or changed into another object (hooks below)
+static uint32_t draw_epoch;  // obj_drawactors Draw entries and exits
+static int draw_depth;
+
+static void snapshot(void) {
+	snap_epoch = draw_epoch;
+	snap_gen = ember_draw_set_gen;
+	snap_maxid = (uint32_t)*room_maxid;
+	snap_creates[0] = create_counter[0];
+	snap_creates[1] = create_counter[1];
+	snap_changes = change_array[2];
+	snap_activations = activation_array[2];
+}
 
 static int rec_current(void) {
-	return create_counter && rec.valid && rec.frame == *frame_count && rec.creates[0] == create_counter[0] &&
+	return rec.valid && draw_depth && rec.epoch == draw_epoch && rec.gen == ember_draw_set_gen &&
+		rec.maxid == (uint32_t)*room_maxid && rec.creates[0] == create_counter[0] &&
 		rec.creates[1] == create_counter[1] && rec.changes == change_array[2] && rec.activations == activation_array[2];
 }
 
@@ -147,43 +179,84 @@ static int active(void *inst) {
 	return (*(uint32_t *)((uint8_t *)inst + 0x7c) & 0x100007) == 4;
 }
 
-// Our own iteration over a cached loop's candidates (the runner's list pointer stays 0: its WithIteratorNext would
-// return 0 and DeleteWithIterator frees nothing, only puts self and other back)
-static void *own_iterator;
+typedef void ABI (*inst_fn)(void *inst);
+typedef void ABI (*inst_int_fn)(void *inst, int arg);
+static inst_fn orig_activate, orig_deactivate;
+static inst_int_fn orig_set_deactivated, orig_change_index;
+static void ABI hook_activate(void *inst) {
+	ember_draw_set_gen++;
+	orig_activate(inst);
+}
+static void ABI hook_deactivate(void *inst) {
+	ember_draw_set_gen++;
+	orig_deactivate(inst);
+}
+static void ABI hook_set_deactivated(void *inst, int deactivated) {
+	ember_draw_set_gen++;
+	orig_set_deactivated(inst, deactivated);
+}
+static void ABI hook_change_index(void *inst, int index) {
+	ember_draw_set_gen++;
+	orig_change_index(inst, index);
+}
+
+// The patched loop in progress (NULL: none). A loop on any other iterator meanwhile is nested in it (reached from an
+// ember's or a corpse's event): it gets the runner's iterator untouched and leaves the state below alone.
+static void *cur_it;
+static int cur_own, cur_off; // served from the list; A/B off (read once per loop)
+
+// A cached loop's candidates: the recorded embers active when it started (the runner's list pointer stays 0: its
+// WithIteratorNext would return 0 and DeleteWithIterator frees nothing, only puts self and other back)
 static int own_n, own_pos;
 static void *own_list[EMBER_MAX];
+static RV *own_parent[EMBER_MAX];
 
 static uint32_t loop_start;
 
 static void loop_done(void) {
+	cur_it = NULL;
 	if (debugMode)
 		ember_draw_us += sceKernelGetProcessTimeLow() - loop_start;
 }
 
+// The next candidate whose parent (read now, when the original body would read it) might equal other.id
+static int own_next(void **self) {
+	while (own_pos < own_n) {
+		RV *parent = own_parent[own_pos];
+		void *ember = own_list[own_pos++];
+		if (parent && differs(parent, &id_value)) {
+			ember_draw_skipped++;
+			continue;
+		}
+		*self = ember;
+		ember_draw_kept++;
+		return 1;
+	}
+	return 0;
+}
+
 // The runner's iteration (recording, or the A/B off state): steps over embers certainly not other's
 static int skip(int r, void *iterator, void **self, void **other) {
-	int off = ember_draw_ab && ember_draw_ab_off;
 	while (r > 0) {
+		if (cur_off)
+			break;
 		RV *parent = *self ? parent_of(*self) : NULL;
 		if (recording) {
 			if (rec.n < EMBER_MAX) {
 				rec.inst[rec.n] = *self;
-				if (parent)
-					rec.parent[rec.n] = *parent;
-				else
-					rec.parent[rec.n].kind = 0xffffff;
+				rec.parent[rec.n] = parent;
 				rec.n++;
 			} else {
 				rec_overflow = 1;
 			}
 		}
-		if (off || !parent || !*other || var_id[1] < 0 || !differs(parent, other_id(*other)))
+		if (!parent || !*other || var_id[1] < 0 || !differs(parent, other_id(*other)))
 			break;
 		if (verify) {
 			if (compare(parent, other_id(*other), *epsilon, 0) == 0)
-				ember_draw_mismatch++;
+				ember_draw_cmp_bad++;
 			else
-				ember_draw_verified++;
+				ember_draw_cmp_ok++;
 			break;
 		}
 		ember_draw_skipped++;
@@ -197,7 +270,9 @@ static int skip(int r, void *iterator, void **self, void **other) {
 		recording = 0;
 		if (!rec_overflow) {
 			rec.valid = 1;
-			rec.frame = *frame_count;
+			rec.epoch = snap_epoch;
+			rec.gen = snap_gen;
+			rec.maxid = snap_maxid;
 			rec.creates[0] = snap_creates[0];
 			rec.creates[1] = snap_creates[1];
 			rec.changes = snap_changes;
@@ -211,45 +286,58 @@ static int skip(int r, void *iterator, void **self, void **other) {
 typedef void ABI (*delete_fn)(void *iterator, void **self, void **other);
 static delete_fn delete_with;
 
-// Verify mode: the embers the runner's own loop would draw for this caller (parent compares equal to other.id), in
-// order, against the cached candidates that compare equal
+// Verify mode, for a loop served from the list (before it runs): the runner's own loop for this caller must visit
+// exactly the candidates, in order, and so draw the same embers (parent compares equal to other.id)
 static void verify_loop(const void *target, void *caller) {
 	uint32_t it[4];
 	void *s = caller, *o = NULL;
 	int r = new_with(it, &s, &o, target);
 	const RV *id = other_id(caller);
-	int k = 0, ok = 1;
+	int k = 0, d = 0, list_ok = 1, drawn_ok = 1;
 	while (r > 0) {
+		if (k >= own_n || own_list[k] != s)
+			list_ok = 0;
+		k++;
 		RV *parent = parent_of(s);
 		if (parent && compare(parent, id, *epsilon, 0) == 0) {
-			while (k < own_n && !(parent_of(own_list[k]) && compare(parent_of(own_list[k]), id, *epsilon, 0) == 0))
-				k++;
-			if (k >= own_n || own_list[k] != s)
-				ok = 0;
+			while (d < own_n && !(own_parent[d] && compare(own_parent[d], id, *epsilon, 0) == 0))
+				d++;
+			if (d >= own_n || own_list[d] != s)
+				drawn_ok = 0;
 			else
-				k++;
+				d++;
 		}
 		r = next_with(it, &s, &o);
 	}
-	for (; k < own_n; k++)
-		if (parent_of(own_list[k]) && compare(parent_of(own_list[k]), id, *epsilon, 0) == 0)
-			ok = 0;
+	if (k != own_n)
+		list_ok = 0;
+	for (; d < own_n; d++)
+		if (own_parent[d] && compare(own_parent[d], id, *epsilon, 0) == 0)
+			drawn_ok = 0;
 	delete_with(it, &s, &o);
-	ember_draw_verify_loops++;
-	if (ok)
-		ember_draw_verified++;
-	else if (ember_draw_mismatch++ < 8)
-		debugPrintf("[EMBERDRAW] mismatch: a cached loop's embers differ from the runner's\n");
+	if (list_ok)
+		ember_draw_list_ok++;
+	else if (ember_draw_list_bad++ < 8)
+		debugPrintf("[EMBERDRAW] mismatch: a cached loop's ember list differs from the runner's\n");
+	if (drawn_ok)
+		ember_draw_drawn_ok++;
+	else if (ember_draw_drawn_bad++ < 8)
+		debugPrintf("[EMBERDRAW] mismatch: a cached loop's drawn embers differ from the runner's\n");
 }
 
 static int ABI ember_new_with(void *iterator, void **self, void **other, const void *target) {
+	if (cur_it && cur_it != iterator) { // nested in a patched loop
+		ember_draw_nested++;
+		return new_with(iterator, self, other, target);
+	}
 	if (debugMode)
 		loop_start = sceKernelGetProcessTimeLow();
 	ember_draw_loops++;
 	id_other = NULL; // the id is read again for each loop
-	own_iterator = NULL;
-	int off = ember_draw_ab && ember_draw_ab_off;
-	if (!off && var_id[1] >= 0 && rec_current()) {
+	recording = 0;
+	cur_it = NULL;
+	cur_off = ember_draw_ab && ember_draw_ab_off;
+	if (!cur_off && cache_ok && var_id[1] >= 0 && rec_current()) {
 		// As YYGML_NewWithIterator starts: the saved self and other, no list; then other = the caller and self = the
 		// first ember visited
 		void *caller = *self;
@@ -258,57 +346,63 @@ static int ABI ember_new_with(void *iterator, void **self, void **other, const v
 		it[1] = (uint32_t)*other;
 		it[2] = 0;
 		it[3] = 0;
-		const RV *id = other_id(caller);
+		other_id(caller);
 		own_n = 0;
-		for (int k = 0; k < rec.n; k++) {
-			if (KIND(&rec.parent[k]) != 0xffffff && differs(&rec.parent[k], id)) {
-				ember_draw_skipped++;
-				continue;
+		for (int k = 0; k < rec.n; k++)
+			if (active(rec.inst[k])) {
+				own_list[own_n] = rec.inst[k];
+				own_parent[own_n++] = rec.parent[k];
 			}
-			if (active(rec.inst[k]))
-				own_list[own_n++] = rec.inst[k];
-		}
 		ember_draw_cached_loops++;
 		if (verify)
 			verify_loop(target, caller);
-		if (!own_n) {
+		own_pos = 0;
+		if (!own_next(self)) {
 			loop_done();
 			return 0;
 		}
-		own_iterator = iterator;
-		own_pos = 1;
+		cur_it = iterator;
+		cur_own = 1;
 		*other = caller;
-		*self = own_list[0];
-		ember_draw_kept++;
 		return 1;
 	}
-	recording = 0;
-	if (!off && create_counter) {
+	if (!cur_off && cache_ok && draw_depth) {
 		recording = 1;
 		rec_overflow = 0;
 		rec.valid = 0;
 		rec.n = 0;
-		snap_creates[0] = create_counter[0];
-		snap_creates[1] = create_counter[1];
-		snap_changes = change_array[2];
-		snap_activations = activation_array[2];
+		snapshot();
 		ember_draw_recorded_loops++;
 	}
+	cur_it = iterator;
+	cur_own = 0;
 	return skip(new_with(iterator, self, other, target), iterator, self, other);
 }
 
 static int ABI ember_next_with(void *iterator, void **self, void **other) {
-	if (own_iterator && iterator == own_iterator) {
-		if (own_pos < own_n) {
-			*self = own_list[own_pos++];
-			ember_draw_kept++;
+	if (!cur_it || iterator != cur_it)
+		return next_with(iterator, self, other);
+	if (cur_own) {
+		if (own_next(self))
 			return 1;
-		}
-		own_iterator = NULL;
 		loop_done();
 		return 0;
 	}
 	return skip(next_with(iterator, self, other), iterator, self, other);
+}
+
+// obj_drawactors' Draw event: the ember list lives for one invocation
+static event_func orig_drawactors_draw;
+static void drawactors_draw(void *self, void *other) {
+	if (!draw_depth) { // a loop left unfinished (an exception thrown through the event) ends here
+		cur_it = NULL;
+		recording = 0;
+	}
+	draw_depth++;
+	draw_epoch++;
+	orig_drawactors_draw(self, other);
+	draw_epoch++;
+	draw_depth--;
 }
 
 // bl from site can reach target (A32: PC + 8, +-32 MB)
@@ -333,7 +427,7 @@ static void patch_call(uintptr_t site, uintptr_t wrapper, uint32_t *veneer) {
 	kuKernelFlushCaches((void *)site, 4);
 }
 
-int ember_draw_install(void) {
+int ember_draw_install(gml_func_entry *table) {
 	// ELF addresses in APK 1.1.10: the event, the two with targets (mov r0, #0x99 = 153, obj_corpsefire), their
 	// iterator call sites and the PLT entries
 	enum { EVENT = 0x3ccf400, CORPSE_TARGET = 0x3cd17a4, CORPSE_NEW = 0x3cd17c4, CORPSE_NEXT = 0x3cd18ac,
@@ -351,8 +445,7 @@ int ember_draw_install(void) {
 	create_counter = (uint32_t *)so_symbol(&yoyoloader_mod, "_ZN9CInstance23ms_CurrentCreateCounterE");
 	change_array = (uint32_t *)so_symbol(&yoyoloader_mod, "g_InstanceChangeArray");
 	activation_array = (uint32_t *)so_symbol(&yoyoloader_mod, "g_InstanceActivateDeactive");
-	if (!change_array || !activation_array || !frame_count)
-		create_counter = NULL; // no ember list: every loop steps over the other corpses' embers itself
+	room_maxid = (const int *)so_symbol(&yoyoloader_mod, "room_maxid"); // Room_Get_maxid's global
 	if (!entry || !delete_with || !new_with || !next_with || !variable_get || !compare || !epsilon || !var_parent || !var_id)
 		return 0;
 	// The prologue may be relocated by a profiling entry hook; the body must be the 1.1.10 one
@@ -379,11 +472,26 @@ int ember_draw_install(void) {
 #undef AT
 	for (int k = 0; k < NSITES; k++)
 		patch_call(sites[k], k & 1 ? (uintptr_t)&ember_next_with : (uintptr_t)&ember_new_with, veneers[k]);
+	// The ember list needs the Draw event wrapper and the four instance-set hooks; without them every loop steps over
+	// the other corpses' embers itself, from the runner's iterator
+	if (table && create_counter && change_array && activation_array && room_maxid) {
+		uintptr_t act = so_symbol(&yoyoloader_mod, "_ZN9CInstance8ActivateEv"),
+			deact = so_symbol(&yoyoloader_mod, "_ZN9CInstance10DeactivateEv"),
+			set_deact = so_symbol(&yoyoloader_mod, "_ZN9CInstance14SetDeactivatedEb"),
+			change = so_symbol(&yoyoloader_mod, "_ZN9CInstance17ChangeObjectIndexEi");
+		if ((orig_activate = (inst_fn)entry_hook(act, hook_activate)) &&
+				(orig_deactivate = (inst_fn)entry_hook(deact, hook_deactivate)) &&
+				(orig_set_deactivated = (inst_int_fn)entry_hook(set_deact, hook_set_deactivated)) &&
+				(orig_change_index = (inst_int_fn)entry_hook(change, hook_change_index)) &&
+				(orig_drawactors_draw = gml_replace(table, "gml_Object_obj_drawactors_Draw_0", drawactors_draw)))
+			cache_ok = 1;
+	}
 	if (debugMode) {
 		verify = exp_flag("emberdrawverify");
 		ember_draw_ab = exp_flag("emberdrawab");
 	}
-	debugPrintf("ember draw: the corpse and player ember loops step over other corpses' embers%s%s\n",
-		verify ? " (verify mode)" : "", ember_draw_ab ? " (A/B per report window)" : "");
+	debugPrintf("ember draw: the corpse and player ember loops step over other corpses' embers%s%s%s\n",
+		cache_ok ? ", ember list per Draw event" : " (no ember list)", verify ? " (verify mode)" : "",
+		ember_draw_ab ? " (A/B per report window)" : "");
 	return 1;
 }
