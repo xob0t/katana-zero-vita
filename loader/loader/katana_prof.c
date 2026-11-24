@@ -941,6 +941,8 @@ void katana_prof_report(int frames) {
 	held_native_report(frames);
 	extern void smokedraw_native_report(int frames);
 	smokedraw_native_report(frames);
+	extern void smoke_create_report(int frames);
+	smoke_create_report(frames);
 	extern void fog_skip_report(int frames);
 	fog_skip_report(frames);
 	static int builtins_hooked = 0;
