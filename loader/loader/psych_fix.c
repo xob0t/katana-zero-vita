@@ -21,7 +21,8 @@
  * to the colour it already holds. The calls are redirected (bl veneers at the call sites) so that the target switch
  * and the clear are deferred: the first user event inside the pass replays them first, and a pass that drew nothing
  * skips them when the surface is known to hold exactly that clear already (its last pass was such a clear, and no
- * set_target, copy, free, create or resize touched it since). The rest of the event runs unchanged, including the
+ * free, create, resize or copy touched it since; only this object's events use global.attack_surface). The rest of
+ * the event runs unchanged, including the
  * draw of the surface (with its random numbers). Part 3: 12 -> 10 scenes per frame, 49.2 -> 51.9 fps.
  * exp_psychlazy0 turns this off; exp_psychlazyverify (debug) replays every skipped pass after reading the surface back
  * and checking every pixel against the clear (exp_psychlazyfault: a negative control that paints the surface white
@@ -61,7 +62,6 @@
 
 #define ABI __attribute__((pcs("aapcs")))
 typedef int ABI (*set_target_fn)(int surf, int depth);
-typedef int ABI (*set_target_ext_fn)(int index, int surf, int depth);
 typedef int ABI (*reset_target_fn)(void);
 typedef void ABI (*event_user_fn)(void *self, void *other, int n);
 typedef gml_rvalue *ABI (*legacy_fn)(void *self, void *other, gml_rvalue *result, int argc, int funcid, gml_rvalue **argv);
@@ -72,7 +72,6 @@ static set_target_fn real_set_target;
 static reset_target_fn real_reset_target;
 static event_user_fn real_event_user;
 static legacy_fn real_legacy;
-static set_target_ext_fn orig_set_target_ext;
 static surf_int_fn surf_width, surf_height, surf_texture;
 static surf_get_fn surf_get;
 static int fid_draw_clear_alpha = -1;
@@ -107,12 +106,6 @@ static void forget_surface(int surf) {
 	for (unsigned i = 0; i < sizeof(passes) / sizeof(passes[0]); i++)
 		if (passes[i]->known && passes[i]->known_surf == surf)
 			passes[i]->known = 0;
-}
-
-// Every set_target, from anywhere: the surface may be drawn on now
-static int ABI set_target_ext_hook(int index, int surf, int depth) {
-	forget_surface(surf);
-	return orig_set_target_ext(index, surf, depth);
 }
 
 static void lazy_flush(lazy_pass *p) {
@@ -211,7 +204,7 @@ static int ABI lazy_reset(lazy_pass *p) {
 				// Negative control: paint the surface white behind the tracking's back (no forget)
 				gml_rvalue r = {0, 0, 5}, white[2] = {{16777215.0, 0, 0}, {1.0, 0, 0}};
 				gml_rvalue *wargv[2] = {&white[0], &white[1]};
-				orig_set_target_ext(0, surf, surf); // as YYGML_surface_set_target(surf, -1) calls it
+				real_set_target(surf, -1);
 				real_legacy(p->cself, p->cother, &r, 2, fid_draw_clear_alpha, wargv);
 				int b0;
 				uint32_t painted = read_pixel_check(1, 1, 0, &b0);
@@ -645,7 +638,6 @@ void psych_fix_late_install(void) {
 	surf_get = (surf_get_fn)so_symbol(&yoyoloader_mod, "_Z14GR_Surface_Geti");
 	room_find = (int (*)(const char *))so_symbol(&yoyoloader_mod, "_Z9Room_FindPKc");
 	const int *fclear = (const int *)so_symbol(&yoyoloader_mod, "g_FUNC_draw_clear_alpha");
-	uintptr_t set_ext = so_symbol(&yoyoloader_mod, "_Z28YYGML_surface_set_target_extiii");
 	if (fclear)
 		fid_draw_clear_alpha = fclear[1];
 	lazy_verify = debugMode && exp_flag("psychlazyverify");
@@ -672,17 +664,15 @@ void psych_fix_late_install(void) {
 	}
 	int base_ok = real_set_target && real_reset_target && real_event_user && real_legacy && surf_width && surf_height &&
 		surf_texture && surf_get && fid_draw_clear_alpha >= 0 && f_create && f_free && f_exists && f_resize && f_copy &&
-		f_copy_part && bi_set_target && bi_reset_target && bi_draw_clear_alpha && set_ext;
+		f_copy_part && bi_set_target && bi_reset_target && bi_draw_clear_alpha;
 	if (!base_ok) {
 		debugPrintf("psychiatrist fight fixes: NOT installed (symbols)\n");
 		return;
 	}
-	// Anything that may change a surface makes the passes forget what it holds
-	orig_set_target_ext = (set_target_ext_fn)entry_hook(set_ext, (void *)set_target_ext_hook);
-	if (!orig_set_target_ext) {
-		debugPrintf("psychiatrist fight fixes: NOT installed (set_target hook)\n");
-		return;
-	}
+	// Builtins that free, create, resize or copy into a surface make the pass forget what it holds. Nothing else can
+	// draw into the attack surface: only the battle object's Create, Draw and CleanUp read global.attack_surface (GOT
+	// xrefs in APK 1.1.10), and its Draw's target switches go through the wrappers. No entry hook on the runner's
+	// surface_set_target_ext: virtual_capture.c hooks it and checks its prologue.
 	orig_surface_free = f_free->func; f_free->func = surface_free_pool;
 	orig_surface_create = f_create->func; f_create->func = surface_create_pool;
 	orig_surface_exists = f_exists->func; f_exists->func = surface_exists_pool;
