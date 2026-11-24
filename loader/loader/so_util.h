@@ -29,6 +29,7 @@ typedef struct so_module {
   uint32_t *hash;
   uint32_t *gnu_hash; // .gnu.hash (Android's libyoyo.so has no SysV .hash)
   size_t hash_words, gnu_hash_words;
+  int gnu_hash_checked; // 0 not yet, 1 a .gnu.hash miss proves absence, -1 it doesn't (so_util.c)
 
   int num_dynamic;
   int num_dynsym;
@@ -62,6 +63,7 @@ uintptr_t so_alloc_near(so_module *so, uintptr_t site, size_t sz);
 uintptr_t *so_got_slot(so_module *mod, const char *symbol);
 extern volatile unsigned so_hook_generation;
 int exp_flag(const char *name);
+void exp_flag_boot_end(void); // exp_flag checks the files again from now on (so_util.c)
 extern int text_phycont_result;
 
 #define SO_CONTINUE(type, h, ...) ({ \

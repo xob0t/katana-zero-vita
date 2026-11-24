@@ -17,6 +17,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <sys/types.h>
 
 #define MT_SLOTS 64
@@ -148,17 +149,45 @@ static int mt_restore(FILE *f, mt_slot *s) {
 	return s && ftello(f) != s->pos ? fseeko(f, s->pos, SEEK_SET) : 0;
 }
 
+long apk_prefetch_serve(uint64_t pos, void *buf, size_t n);
+int apk_prefetch_wait(uint64_t pos, size_t n);
+
 size_t mt_fread(void *buf, size_t size, size_t count, FILE *f) {
-	if (!mt_lock_apk(f))
-		return fread(buf, size, count, f);
-	mt_slot *s = mt_find(f, 0);
-	size_t ret = 0;
-	if (!mt_restore(f, s)) {
-		ret = fread(buf, size, count, f);
-		mt_record(f, s);
+	for (;;) {
+		if (!mt_lock_apk(f))
+			return fread(buf, size, count, f);
+		mt_slot *s = mt_find(f, 0);
+		size_t ret = 0;
+		if (!mt_restore(f, s)) {
+			// Bytes the prefetcher already read (apk_prefetch.c): copied, then the FILE moves to where fread would leave it
+			off_t pos = size == 1 && count ? ftello(f) : -1;
+			long got = pos >= 0 ? apk_prefetch_serve((uint64_t)pos, buf, count) : 0;
+			if (got < 0) {
+				pthread_mutex_unlock(&mt_lock);
+				if (apk_prefetch_wait((uint64_t)pos, count))
+					continue;
+				if (!mt_lock_apk(f))
+					return fread(buf, size, count, f);
+				s = mt_find(f, 0);
+				if (mt_restore(f, s)) {
+					pthread_mutex_unlock(&mt_lock);
+					return 0;
+				}
+				got = 0;
+			}
+			if (got > 0 && fseeko(f, pos + got, SEEK_SET)) {
+				// Can't move the FILE past the copied bytes: read them again from the card
+				fseeko(f, pos, SEEK_SET);
+				got = 0;
+			}
+			ret = got;
+			if ((size_t)got < count)
+				ret += fread((char *)buf + got, size, count - got, f);
+			mt_record(f, s);
+		}
+		pthread_mutex_unlock(&mt_lock);
+		return ret;
 	}
-	pthread_mutex_unlock(&mt_lock);
-	return ret;
 }
 
 int mt_fgetc(FILE *f) {

@@ -2,7 +2,10 @@
 
 - keeps only what the loader needs: AndroidManifest.xml, the armeabi-v7a runner and assets
 - moves the Netflix build's assets/assets/* up to assets/*, where the runner looks for them
-- stores every entry uncompressed so nothing is inflated at load time
+- deflates the two entries the loader reads first (DEFLATED below) and stores everything else. The Vita's memory card
+  reads only ~11 MB/s, and the loader inflates these while it reads them, on other cores (loader/loader/runner_inflate.c,
+  apk_prefetch.c): the runner (80 MB -> ~26 MB) loads in ~2.9 s instead of ~6.3 s, game.droid shrinks from 75 to
+  ~51 MB. The audio groups, OGG songs and the rest barely compress and stay stored
 - recompresses game.droid texture pages from bzip2 to LZ4 (bzip2 decoding on the Vita CPU makes
   startup very slow). Pages stay in the runner's "2zoq" container with an "LZ4H"-marked payload,
   which the loader decodes by replacing BZ2_bzBuffToBuffDecompress (loader/loader/katana.c). Plain QOI
@@ -28,6 +31,7 @@ from extract_art import FLAT_GAME, NESTED_GAME, game_data_member, unpack_gm_text
 from vita_glyphs import encode_gm_qoi, patched_pages
 
 KEEP_LIB = "lib/armeabi-v7a/libyoyo.so"
+DEFLATED = {KEEP_LIB, FLAT_GAME}
 MANIFEST = "AndroidManifest.xml"
 REQUIRED_OUTPUT = {MANIFEST, FLAT_GAME, KEEP_LIB}
 TEXTURE_ALIGN = 128
@@ -228,7 +232,11 @@ def prepare(src, dst, vita_glyphs=True, *, log=print):
                     payload = recompress_textures(payload, vita_glyphs)
                     log(f"game.droid: {before / 1e6:.1f}MB -> {len(payload) / 1e6:.1f}MB (textures recompressed to LZ4"
                         + (", Vita button glyphs)" if vita_glyphs else ")"))
-                zo.writestr(zipfile.ZipInfo(out_name, (2020, 1, 1, 0, 0, 0)), payload)
+                if out_name in DEFLATED:
+                    zo.writestr(zipfile.ZipInfo(out_name, (2020, 1, 1, 0, 0, 0)), payload,
+                                compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+                else:
+                    zo.writestr(zipfile.ZipInfo(out_name, (2020, 1, 1, 0, 0, 0)), payload)
     log(f"wrote {dst} ({len(entries)} entries)")
 
 
