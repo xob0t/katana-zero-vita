@@ -11,8 +11,9 @@
  * loop. The framebuffer is released before returning: vglInit sizes its pools from all free CDRAM, so holding it
  * through vglInit would take 2 MB of VRAM from the game. The display goes black until the loader's splash.
  *
- * v/00 is created last, so a first launch closed partway through resumes on the next launch instead of leaving
- * vitaGL with missing folders (vitaGL's own loop creates v/00 first and never retries).
+ * v/00 is created last, and only when every other folder exists, so a first launch closed partway through (or one
+ * where a folder couldn't be created) resumes on the next launch instead of leaving vitaGL with missing folders
+ * (vitaGL's own loop creates v/00 first and never retries). If a folder fails, vglInit runs its own loop as before.
  */
 
 #include <vitasdk.h>
@@ -48,6 +49,8 @@ extern int debugMode;
 #define FL_BAR_X ((FL_W - FL_BAR_W) / 2)
 #define FL_BAR_Y 318
 
+#define FL_EEXIST 0x80010011 // SCE_ERROR_ERRNO_EEXIST
+
 static uint32_t *fl_fb;
 
 static void fl_rect(int x, int y, int w, int h, uint32_t color) {
@@ -78,7 +81,11 @@ static SceUID fl_show(void) {
 	SceUID block = sceKernelAllocMemBlock("first_launch_fb", SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, FL_FB_ALLOC, NULL);
 	if (block < 0)
 		return block;
-	sceKernelGetMemBlockBase(block, (void **)&fl_fb);
+	if (sceKernelGetMemBlockBase(block, (void **)&fl_fb) < 0 || !fl_fb) {
+		sceKernelFreeMemBlock(block);
+		fl_fb = NULL;
+		return -1;
+	}
 
 	fl_rect(0, 0, FL_W, FL_H, FL_BG);
 	fl_text(222, 2, FL_TEXT, "First launch: preparing the graphics cache.");
@@ -112,31 +119,41 @@ static void fl_screenshot_check(void) {
 	if (fd < 0)
 		return;
 	uint32_t header[3] = {FL_W, FL_H, FL_W};
-	sceIoWrite(fd, header, sizeof(header));
-	sceIoWrite(fd, fl_fb, FL_FB_SIZE);
-	sceIoClose(fd);
+	int ok = sceIoWrite(fd, header, sizeof(header)) == (int)sizeof(header);
+	ok = ok && sceIoWrite(fd, fl_fb, FL_FB_SIZE) == FL_FB_SIZE;
+	ok = sceIoClose(fd) >= 0 && ok;
+	if (!ok) { // never publish a truncated image
+		sceIoRemove("ux0:data/gms/shared/screenshot.tmp");
+		return;
+	}
 	sceIoRemove("ux0:data/gms/shared/screenshot.raw");
 	sceIoRename("ux0:data/gms/shared/screenshot.tmp", "ux0:data/gms/shared/screenshot.raw");
 }
 
 static void fl_hide(SceUID block) {
-	// Black out the display and let it finish scanning the buffer before freeing it
-	sceDisplaySetFrameBuf(NULL, SCE_DISPLAY_SETBUF_NEXTFRAME);
-	sceDisplayWaitVblankStart();
-	sceDisplayWaitVblankStart();
+	// Black out the display and let it finish scanning the buffer before freeing it. If the display can't be
+	// blanked, keep the buffer: 2 MB less VRAM is better than vitaGL reusing memory the display still scans.
+	if (sceDisplaySetFrameBuf(NULL, SCE_DISPLAY_SETBUF_NEXTFRAME) < 0 || sceDisplayWaitVblankStart() < 0 ||
+		sceDisplayWaitVblankStart() < 0) {
+		debugPrintf("First launch: display not blanked, status buffer kept\n");
+		fl_fb = NULL;
+		return;
+	}
 	sceKernelFreeMemBlock(block);
 	fl_fb = NULL;
 }
 
 void first_launch_prepare(void) {
 	// Same title id and paths as vglInitWithCustomSizes (the loader doesn't call vglSetShaderCachePath)
-	char titleid[12];
-	sceAppMgrAppParamGetString(0, 12, titleid, 256);
+	char titleid[12] = "";
+	if (sceAppMgrAppParamGetString(0, 12, titleid, sizeof(titleid)) < 0 || !titleid[0])
+		return; // vglInit makes the folders itself
+	titleid[sizeof(titleid) - 1] = 0;
 	char root[128], path[160];
 	snprintf(root, sizeof(root), "ux0:data/shader_cache/%s/v%d", titleid, VGL_SHADER_CACHE_MAGIC);
 	snprintf(path, sizeof(path), "%s/v/00", root);
 	SceIoStat st;
-	if (sceIoGetstat(path, &st) >= 0)
+	if (sceIoGetstat(path, &st) >= 0 && SCE_S_ISDIR(st.st_mode))
 		return;
 
 	uint64_t t0 = sceKernelGetProcessTimeWide();
@@ -148,10 +165,19 @@ void first_launch_prepare(void) {
 	snprintf(path, sizeof(path), "ux0:data/shader_cache/%s", titleid);
 	sceIoMkdir(path, 0777);
 	sceIoMkdir(root, 0777);
-	snprintf(path, sizeof(path), "%s/v", root);
-	sceIoMkdir(path, 0777);
-	snprintf(path, sizeof(path), "%s/f", root);
-	sceIoMkdir(path, 0777);
+	int failed = 0;
+	for (int i = 0; i < 2; i++) {
+		snprintf(path, sizeof(path), "%s/%c", root, i ? 'f' : 'v');
+		int r = sceIoMkdir(path, 0777);
+		if (r < 0 && r != FL_EEXIST) {
+			// The cache can't be made here (full card, a file in the way): leave it to vglInit, which gives up
+			// after one failed folder, instead of trying 512 times on every launch
+			debugPrintf("First launch: can't create %s (0x%08X), leaving the cache to vitaGL\n", path, r);
+			if (block >= 0)
+				fl_hide(block);
+			return;
+		}
+	}
 
 	// v/01-FF, f/00-FF, then v/00 last (the "cache exists" marker for vitaGL and for the check above)
 	const int total = 512;
@@ -165,8 +191,12 @@ void first_launch_prepare(void) {
 			dir = 'f';
 			sub = i - 255;
 		}
+		if (i == total - 1 && failed) // v/00 would mark the incomplete cache as ready
+			break;
 		snprintf(path, sizeof(path), "%s/%c/%02X", root, dir, sub);
-		sceIoMkdir(path, 0777);
+		int r = sceIoMkdir(path, 0777);
+		if (r < 0 && r != FL_EEXIST && failed++ == 0)
+			debugPrintf("First launch: can't create %s (0x%08X)\n", path, r);
 		if (fl_fb)
 			fl_progress(i + 1, total);
 		uint64_t now = sceKernelGetProcessTimeWide();
@@ -181,6 +211,10 @@ void first_launch_prepare(void) {
 
 	if (block >= 0)
 		fl_hide(block);
-	debugPrintf("First launch: shader cache folders created in %.1f s\n",
-		(sceKernelGetProcessTimeWide() - t0) / 1000000.0);
+	if (failed)
+		debugPrintf("First launch: %d folders failed in %.1f s; v/00 not created, vglInit retries them\n", failed,
+			(sceKernelGetProcessTimeWide() - t0) / 1000000.0);
+	else
+		debugPrintf("First launch: shader cache folders created in %.1f s\n",
+			(sceKernelGetProcessTimeWide() - t0) / 1000000.0);
 }
