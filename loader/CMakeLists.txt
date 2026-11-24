@@ -77,6 +77,7 @@ add_executable(YoYoLoader
   loader/katana_display.c
   loader/katana_t30.c
   loader/fx_rate.c
+  loader/rain_cheap.c
   loader/glow_rest.c
   loader/wobble_rest.c
   loader/blood_drops.c

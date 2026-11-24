@@ -102,7 +102,7 @@ int uncached_mem = 0;
 int double_buffering = 0;
 int frame_skip = 0; // opt-in: frameSkip=1 in yyl.cfg
 int replays = 0; // replays=1 in yyl.cfg: leave replay recording to the game's own option
-int rain_level = 0; // rain=0 none (default), 1 half, 2 full
+int rain_level = 1; // rain=1 cheap rain drawn by the loader (default), 0 none, 2 the game's rain
 int rope_lights = 0; // ropeLights=1: clotheslines keep their light tint (costs ~7 fps near them)
 int screen_w = 960, screen_h = 544;
 int heavy_profiling = 0; // debugMode + ux0:data/gms/shared/profile: event/stage/GL profilers

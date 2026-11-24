@@ -708,6 +708,8 @@ void katana_prof_report(int frames) {
 	katana_cloth_report(frames);
 	extern void fx_rate_report(int frames);
 	fx_rate_report(frames);
+	extern void rain_cheap_report(int frames);
+	rain_cheap_report(frames);
 	extern void glow_rest_report(int frames);
 	glow_rest_report(frames);
 	extern void wobble_rest_report(int frames);
