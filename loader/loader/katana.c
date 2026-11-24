@@ -842,6 +842,11 @@ void katana_late_install(void) {
 	gcalloc_install();
 	dissolve_install();
 	fog_install();
+	// With cheap rain or none, the rain drops the game would destroy in their Create aren't created (rain_skip.c,
+	// exact): their GC churn drove ~3 old-generation collections a second in room_factory_0. exp_rainskip0 creates and
+	// destroys them as before.
+	extern void rain_skip_install(void);
+	rain_skip_install();
 	if (!exp_flag("dossiernative0")) {
 		extern int dossier_native_install(void *(*hook)(uintptr_t entry, void *replacement));
 		debugPrintf("native dossier burn steps: %s\n", dossier_native_install(entry_hook) ? "installed" : "NOT installed");
@@ -990,6 +995,7 @@ static int screen_btn_nodraw_install(void) {
  * (rain_cheap.c) destroys them the same way.
  */
 static event_func orig_rain_create;
+int rain_none_installed; // rain=0: drops are destroyed after their Create (rain_skip.c checks it)
 static void (*instance_destroy_fn)(void *self, void *other, int argc, void **args);
 
 static void rain_create(void *self, void *other) {
@@ -1163,8 +1169,10 @@ static void patch_performance() {
 	extern int rain_cheap_install(gml_func_entry *table, void *destroy);
 	if (rain_level == 1 && !(instance_destroy_fn && rain_cheap_install(table, instance_destroy_fn)))
 		rain_level = 0;
-	if (rain_level == 0 && instance_destroy_fn && (orig = gml_replace(table, "gml_Object_obj_rain_Create_0", rain_create)))
+	if (rain_level == 0 && instance_destroy_fn && (orig = gml_replace(table, "gml_Object_obj_rain_Create_0", rain_create))) {
 		orig_rain_create = orig;
+		rain_none_installed = 1;
+	}
 
 	// Skipped by default (buttons are used on Vita); exp_touchui brings the virtual controls back
 	if (!exp_flag("touchui"))

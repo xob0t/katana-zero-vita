@@ -79,6 +79,7 @@ add_executable(YoYoLoader
   loader/title_pages.c
   loader/fx_rate.c
   loader/rain_cheap.c
+  loader/rain_skip.c
   loader/glow_rest.c
   loader/wobble_rest.c
   loader/blood_drops.c
