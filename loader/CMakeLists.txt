@@ -81,6 +81,7 @@ add_executable(YoYoLoader
   loader/fx_rate.c
   loader/rain_cheap.c
   loader/touch_controls.c
+  loader/rain_skip.c
   loader/glow_rest.c
   loader/corpse_rest.c
   loader/wobble_rest.c
