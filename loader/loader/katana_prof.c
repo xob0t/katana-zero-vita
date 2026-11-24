@@ -930,6 +930,8 @@ void katana_prof_report(int frames) {
 	touch_controls_report(frames);
 	extern void glow_rest_report(int frames);
 	glow_rest_report(frames);
+	extern void corpse_rest_report(int frames);
+	corpse_rest_report(frames);
 	extern void wobble_rest_report(int frames);
 	wobble_rest_report(frames);
 	extern void blood_drops_report(int frames);

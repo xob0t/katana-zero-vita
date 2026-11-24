@@ -81,6 +81,7 @@ add_executable(YoYoLoader
   loader/rain_cheap.c
   loader/touch_controls.c
   loader/glow_rest.c
+  loader/corpse_rest.c
   loader/wobble_rest.c
   loader/blood_drops.c
   loader/room_lighting.c

@@ -1450,6 +1450,8 @@ static void patch_performance() {
 	fx_rate_install(table);
 	extern void glow_rest_install(gml_func_entry *table);
 	glow_rest_install(table);
+	extern void corpse_rest_install(gml_func_entry *table);
+	corpse_rest_install(table);
 	extern void wobble_rest_install(gml_func_entry *table);
 	wobble_rest_install(table);
 	extern void blood_drops_install(gml_func_entry *table);
