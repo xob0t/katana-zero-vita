@@ -30,6 +30,9 @@ back the original.
 - **No lighting on distant rockets in the helicopter fight.** The rockets rising in the background are drawn in
   their plain colour, without light tint or rim shading. With 15-25 of them on screen the shading cost 15-35 ms per
   frame. `farRocketLights=1`.
+- **Smaller rocket explosions in the helicopter fight.** Each falling rocket explodes into 10 particles instead of 30.
+  The cloud is thinner; hits are unchanged, since the particles are only visual. Volleys
+  run at about 52 fps instead of 40 at their worst. `fullExplosions=1`.
 - **No shadows under the traffic cones in the motorcycle chase.** About 100 cones each drew a shadow out of ~20
   strips. Without them the cone stretch runs at 53-58 fps instead of 40-53. `coneShadows=1`.
 - **No dust in the cathedral's window light.** 41 fps with it, 59 without. `cathedralDust=1`.

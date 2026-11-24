@@ -605,6 +605,21 @@ void katana_prof_report(int frames) {
 		last_fallback = trail_lights_fallback;
 	}
 	{
+		extern unsigned explosion_particles_created, explosion_particles_skipped, explosion_regions_skipped;
+		static unsigned last_c, last_s, last_r;
+		if (frames > 0 && (explosion_particles_created != last_c || explosion_particles_skipped != last_s))
+			debugPrintf("[EXPLOSION] particles per frame: %.1f created, %.1f skipped | %.1f update_region skipped%c",
+				(float)(explosion_particles_created - last_c) / frames, (float)(explosion_particles_skipped - last_s) / frames,
+				(float)(explosion_regions_skipped - last_r) / frames, 10);
+		extern unsigned loop_draws_explosions, loop_draws_bad;
+		if (frames > 0 && loop_draws_explosions && explosion_particles_created != last_c)
+			debugPrintf("[EXPLORNG] explosion loops checked %u, with a draw count other than 120: %u%c", loop_draws_explosions,
+				loop_draws_bad, 10);
+		last_c = explosion_particles_created;
+		last_s = explosion_particles_skipped;
+		last_r = explosion_regions_skipped;
+	}
+	{
 		extern unsigned cone_shadows_skipped, cone_shadows_drawn;
 		static unsigned last_s, last_d;
 		if (frames > 0 && (cone_shadows_skipped != last_s || cone_shadows_drawn != last_d))
