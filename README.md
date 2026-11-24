@@ -24,6 +24,19 @@ With `debugMode=1` in `yyl.cfg` the log goes to `ux0:data/gms/shared/yyl.log`.
 The game's own controller layout. L and R act as the triggers: L is slow motion, R is roll. The rear touch
 panel is unused.
 
+## Compromises
+
+To run near 60 fps, the port changes a few things:
+
+- **Enemies think every other frame.** Hits still land on time; in testing nobody noticed. **GRAPHICS → ENEMY AI**.
+- **No end-of-level replay and no death rewind.** With them on, memory runs out after a while in one room.
+- **No rain.**
+- **Simpler effects in heavy scenes:** less lighting on particles and in a few rooms, lighter smoke, fog and
+  explosions.
+
+Each can be undone in `ux0:data/gms/katanazero/yyl.cfg`. [docs/compromises.md](docs/compromises.md) lists every change
+and its setting.
+
 ## About the port
 
 The game's Android runner (`libyoyo.so`) runs on the Vita through
@@ -38,19 +51,6 @@ logic runs on one core and can't be split across more. A 500 MHz profile in PSVs
 To get there, the loader patches the game in over 50 places for performance, most of them by replacing hot game code
 with native code that gives identical results. It also fixes vitaGL, the port's OpenGL layer, which could free
 video memory the GPU was still using; that caused a freeze and a crash.
-
-## Compromises
-
-To run near 60 fps, the port changes a few things:
-
-- **Enemies think every other frame.** Hits still land on time; in testing nobody noticed. **GRAPHICS → ENEMY AI**.
-- **No end-of-level replay and no death rewind.** With them on, memory runs out after a while in one room.
-- **No rain.**
-- **Simpler effects in heavy scenes:** less lighting on particles and in a few rooms, lighter smoke, fog and
-  explosions.
-
-Each can be undone in `ux0:data/gms/katanazero/yyl.cfg`. [docs/compromises.md](docs/compromises.md) lists every change
-and its setting.
 
 ## Building (Windows, Git Bash, no WSL)
 
