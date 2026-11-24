@@ -577,7 +577,8 @@ void katana_goto_check(void) {
 		if (command_create)
 			command_create(608, 0.0f, 0.0f);
 	}
-	// Debug: ux0:data/gms/shared/create_object (an object index) creates that object at (0, 0)
+	// Debug: ux0:data/gms/shared/create_object (an object index) creates that object at (0, 0); "smoke" bursts a smoke
+	// vial there
 	char text[16];
 	if (debug_request_take(DEBUG_REQUEST_CREATE_OBJECT, text, sizeof(text))) {
 		void *(*command_create)(int object, float x, float y) = (void *)so_symbol(&yoyoloader_mod, "_Z14Command_Createiff");
@@ -587,9 +588,26 @@ void katana_goto_check(void) {
 			x = global_real(var_xview, 0) + global_real(var_wview, 0) / 2;
 			y = global_real(var_yview, 0) + global_real(var_hview, 0) / 2;
 		}
-		debugPrintf("create_object: object %d at %.0f,%.0f\n", atoi(text), x, y);
-		if (command_create)
-			command_create(atoi(text), x, y);
+		if (!strncmp(text, "smoke", 5)) {
+			// "smoke [view]": a smoke vial's burst there, create_smokescreen(x, y, 260) as obj_throwable's Destroy calls
+			// it (260 is its gs_constArg8), from an obj_throwable_smoke_vial (1015) created there
+			typedef void (*script_fn)(void *self, void *other, gml_rvalue *result, int argc, gml_rvalue **args);
+			script_fn smokescreen = (script_fn)so_symbol(&yoyoloader_mod,
+				"_Z29gml_Script_create_smokescreenP9CInstanceS0_R8YYRValueiPPS1_");
+			const gml_rvalue *count = (const gml_rvalue *)so_symbol(&yoyoloader_mod, "gs_constArg8_387073A9");
+			void *vial = command_create && smokescreen && count ? command_create(1015, x, y) : NULL;
+			if (vial) {
+				gml_rvalue result = {0, 0, 5}, a[3] = {{x, 0, 0}, {y, 0, 0}, *count};
+				gml_rvalue *args[3] = {&a[0], &a[1], &a[2]};
+				uint32_t t0 = sceKernelGetProcessTimeLow();
+				smokescreen(vial, vial, &result, 3, args);
+				debugPrintf("create_object: smoke burst at %.0f,%.0f took %u us\n", x, y, sceKernelGetProcessTimeLow() - t0);
+			}
+		} else {
+			debugPrintf("create_object: object %d at %.0f,%.0f\n", atoi(text), x, y);
+			if (command_create)
+				command_create(atoi(text), x, y);
+		}
 	}
 	// Debug: ux0:data/gms/shared/destroy_object (an object name or index) runs instance_destroy(object): every instance
 	// of it and of its children, with their Destroy events (e.g. "obj_enemy" clears a room of enemies, no corpses)

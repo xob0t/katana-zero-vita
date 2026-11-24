@@ -38,6 +38,22 @@
  * variable getters, a managed object, builtin ids, getters or setters it doesn't expect, or a bypassed runner
  * helper that is hooked (checked once per frame).
  *
+ * Visual settings (yyl.cfg; they need this native, so exp_smokedraw0 also restores the original look):
+ * - smokeClouds=N (default 2; 1 = original): only clouds whose instance id is a multiple of N submit sprites, at
+ *   sqrt(N) times their size, so the smoke covers about the same area with 1/N of the sprites (a burst from a smoke
+ *   vial is 131 clouds). The other clouds still run the whole event except draw_sprite_recolored and the sprite
+ *   submissions: update_light_array, inside_screen (in_screen gates the cloud's contacts in its Step), the
+ *   x/y/image_index/image_angle/image_blend/image_alpha writes and every variable write happen as before (a skipped
+ *   draw_self still clears the +0x9c frame offset, as draw_self does), and collision masks, positions, lifetimes and
+ *   the random state are untouched. The drawn size goes through the draw arguments (draw_self: the instance's scale
+ *   fields for the call, put back right after; raw field writes, so no bounding-box update). What it skips only
+ *   writes draw_sprite_recolored's light variables on the cloud (light_col/r/g/b/alpha, prev_recolor_timer_val),
+ *   which only that script and the base layer's colour read, and the rdist scratch value of the lights it visits
+ *   (written before every read).
+ * exp_smokelookab (debugMode) switches it off and on every report window ([SMOKELOOK] in the profiling report).
+ * exp_smokeverify + exp_smokelookverify compares the original with the native at smokeClouds: everything above
+ * except the submissions, draw_sprite_recolored's call and those light variables.
+ *
  * exp_smokedraw0 keeps the original event. Debug (profiling report, [SMOKEDRAW]): exp_smokeab switches the native
  * off and on every report window; exp_smokeprof times the event; exp_smokeverify (debug builds) runs the original with
  * its draws recorded but not submitted, puts the cloud's variables and image fields back, runs the native and compares
@@ -203,6 +219,41 @@ unsigned smokedraw_reject_line[8], smokedraw_reject_count[8];
 unsigned smokedraw_prof_us, smokedraw_prof_calls;
 unsigned smokedraw_verified, smokedraw_mismatches, smokedraw_verify_records, smokedraw_verify_skipped;
 unsigned smokedraw_verify_unrecorded;
+
+#ifndef SMOKEDRAW_TEST
+int smoke_clouds = 2;    // smokeClouds (yyl.cfg): one cloud in N draws, sqrt(N) times larger; 1 = original
+#else
+int smoke_clouds = 1;    // the fixture checks the exact event
+#endif
+static int look_ab, look_off, look_verify;
+static float draw_scale = 1.0f, cloud_scale = 1.0f; // cloud_scale: sqrt(smokeClouds), set at install
+static unsigned look_drawn, look_hidden;
+
+// draw_self for this cloud: nothing if hidden, else at draw_scale times the instance's size (its scale fields for
+// the call, then the same bits back)
+static int hidden;
+static void draw_cloud(void *self) {
+	if (hidden) { // what YYGML_draw_self leaves besides the submission: the frame offset at +0x9c consumed
+		memset((uint8_t *)self + 0x9c, 0, 4);
+		return;
+	}
+	float k = draw_scale;
+	if (k == 1.0f) {
+		((draw_self_fn)calls[C_DRAW_SELF])(self);
+		return;
+	}
+	uint8_t *inst = (uint8_t *)self;
+	float xs, ys, sxs, sys;
+	memcpy(&xs, inst + 0xa4, 4);
+	memcpy(&ys, inst + 0xa8, 4);
+	sxs = xs * k;
+	sys = ys * k;
+	memcpy(inst + 0xa4, &sxs, 4);
+	memcpy(inst + 0xa8, &sys, 4);
+	((draw_self_fn)calls[C_DRAW_SELF])(self);
+	memcpy(inst + 0xa4, &xs, 4);
+	memcpy(inst + 0xa8, &ys, 4);
+}
 
 static int reject(unsigned line) {
 	for (int i = 0; i < 8; i++)
@@ -460,6 +511,17 @@ static void native_event(void *self, void *other) {
 	angle_copy.kind = 0xffffff;
 	RV b; // builtin getter output (the original's per-variable stack slots; only value and kind are written)
 
+	// smokeClouds: whether this cloud makes its submissions (every other effect stays)
+	hidden = 0;
+	draw_scale = 1.0f;
+	if (!look_off && (!smokedraw_verify || look_verify)) {
+		if (smoke_clouds > 1) {
+			if (word(self, 0x80) % (unsigned)smoke_clouds)
+				hidden = 1;
+			else
+				draw_scale = cloud_scale;
+		}
+	}
 	tr.line = 15;
 	RV zero = real(0);
 	int c = compare(get_std(self, V_UPDATE_LIGHT_TIMER), &zero, 1);
@@ -558,13 +620,17 @@ static void native_event(void *self, void *other) {
 			bget_field(self, 0xbc, &img[3]);
 			bget_field(self, 0xa4, &img[4]);
 			bget_field(self, 0xa8, &img[5]);
+			if (draw_scale != 1.0f) { // the light layer at the drawn size
+				img[4].v.d = (double)(field(self, 0xa4) * draw_scale);
+				img[5].v.d = (double)(field(self, 0xa8) * draw_scale);
+			}
 			bget_field(self, 0xac, &img[6]);
 			for (int i = 0; i < 7; i++) {
 				img[i].flags = 0;
 				assign_rv(&arg[i], &img[i]);
 			}
 			assign_rv(&arg[7], const_false);
-			if (!BUG(4))
+			if (!BUG(4) && !hidden)
 				((script_fn)calls[C_RECOLORED])(self, other, &result, 8, args);
 
 			tr.line = 47;
@@ -576,7 +642,7 @@ static void native_event(void *self, void *other) {
 				alpha = real(1.0);
 				bset(self, V_IMAGE_ALPHA, &alpha);
 				tr.line = 51;
-				((draw_self_fn)calls[C_DRAW_SELF])(self);
+				draw_cloud(self);
 				tr.line = 52;
 				blend = real(0.0);
 				bset(self, V_IMAGE_BLEND, &blend);
@@ -584,7 +650,7 @@ static void native_event(void *self, void *other) {
 				alpha = real(0.75);
 				bset(self, V_IMAGE_ALPHA, &alpha);
 				tr.line = 54;
-				((draw_self_fn)calls[C_DRAW_SELF])(self);
+				draw_cloud(self);
 				tr.line = 55;
 				alpha = real(1.0);
 				bset(self, V_IMAGE_ALPHA, &alpha);
@@ -609,8 +675,9 @@ static void native_event(void *self, void *other) {
 					rot = field(self, 0xac);
 				int colour = (int)((int64_fn)calls[C_INT64])(light_col);
 				bget_field(self, 0xb0, &a);
-				((draw_ext_fn)calls[C_DRAW_EXT])(self, sprite, (float)subimg, x, y, xs, ys, rot, colour,
-					(float)(BUG(5) ? a.v.d * 0.5 : a.v.d));
+				if (!hidden)
+					((draw_ext_fn)calls[C_DRAW_EXT])(self, sprite, (float)subimg, x, y, xs * draw_scale, ys * draw_scale,
+						rot, colour, (float)(BUG(5) ? a.v.d * 0.5 : a.v.d));
 			}
 		} else {
 			tr.line = 69;
@@ -618,7 +685,7 @@ static void native_event(void *self, void *other) {
 			alpha_product(ra, get(other, V_ALPHA), &alpha);
 			bset(self, V_IMAGE_ALPHA, &alpha);
 			tr.line = 70;
-			((draw_self_fn)calls[C_DRAW_SELF])(self);
+			draw_cloud(self);
 		}
 
 		tr.line = 72;
@@ -647,7 +714,7 @@ static void native_event(void *self, void *other) {
 			free_rv(&diff);
 			bset(self, V_IMAGE_ALPHA, &alpha);
 			tr.line = 80;
-			((draw_self_fn)calls[C_DRAW_SELF])(self);
+			draw_cloud(self);
 			tr.line = 81;
 			blend = real(16777215.0);
 			bset(self, V_IMAGE_BLEND, &blend);
@@ -686,6 +753,10 @@ static void native_event(void *self, void *other) {
 	free_rv(&angle_copy);
 	for (int i = 0; i < 8; i++)
 		free_rv(&arg[i]);
+	if (hidden)
+		look_hidden++;
+	else
+		look_drawn++;
 	*trace_start = tr.prev;
 }
 
@@ -846,6 +917,17 @@ static int snapshot_vars(void *self, Slot *out) {
 #define FIELDS_TO 0xc0
 static int verify_hooks(void);
 static int verify_hooked;
+// exp_smokelookverify: the comparison with smokeClouds on. Everything is compared except the
+// submissions, draw_sprite_recolored's call and the cloud variables only it writes.
+static const char *const light_var_names[6] = {"g_VAR_light_col", "g_VAR_light_r", "g_VAR_light_g", "g_VAR_light_b",
+	"g_VAR_light_alpha", "g_VAR_prev_recolor_timer_val"};
+static const int32_t *light_vars[6];
+static int is_light_var(uint32_t key) {
+	for (int i = 0; i < 6; i++)
+		if (light_vars[i] && key == (uint32_t)light_vars[i][1] + 1)
+			return 1;
+	return 0;
+}
 static void verify_event(void *self, void *other) {
 	static Slot before[MAX_SLOTS], after_gml[MAX_SLOTS], after_native[MAX_SLOTS];
 	if (!verify_hooked && !(verify_hooked = verify_hooks())) {
@@ -888,6 +970,14 @@ static void verify_event(void *self, void *other) {
 	capture = -1;
 
 	int nn = snapshot_vars(self, after_native);
+	if (look_verify) // the look settings change only the light layer script call and the submissions
+		for (int c = 0; c < 2; c++) {
+			int n = 0, total = record_count[c] < MAX_RECORDS ? record_count[c] : MAX_RECORDS;
+			for (int k = 0; k < total; k++)
+				if (records[c][k].kind != R_SPRITE && records[c][k].kind != R_SCRIPT + 3)
+					records[c][n++] = records[c][k];
+			record_count[c] = record_count[c] > MAX_RECORDS ? MAX_RECORDS + 1 : n;
+		}
 	int records_ok = record_count[0] == record_count[1] && record_count[0] <= MAX_RECORDS &&
 		!memcmp(records[0], records[1], sizeof(Record) * record_count[0]);
 	int fields_ok = !memcmp((uint8_t *)self + FIELDS_FROM, fields_gml, sizeof(fields_gml));
@@ -897,6 +987,9 @@ static void verify_event(void *self, void *other) {
 		const Slot *a = &after_gml[i], *n = &after_native[i];
 		int loose = a->key == (uint32_t)id[V_AY] + 1 || a->key == (uint32_t)id[V_AX] + 1 ||
 			a->key == (uint32_t)id[V_ANGLE] + 1;
+		if (look_verify && is_light_var(a->key))
+			continue; // written by draw_sprite_recolored only, read by it and the base layer's colour
+
 		if (a->key != n->key || a->slot != n->slot || a->value.kind != n->value.kind ||
 				memcmp(&a->value.v, &n->value.v, 8) || (!loose && a->value.flags != n->value.flags))
 			bad_slot = i;
@@ -939,6 +1032,8 @@ static void *hook_or_chain(uintptr_t entry, void *replacement) {
 
 // exp_smokeverify at install: what the comparison needs. 0 if the RNG or the draw instance is missing.
 static int verify_install(void) {
+	for (int i = 0; i < 6; i++)
+		light_vars[i] = (const int32_t *)so_symbol(&yoyoloader_mod, light_var_names[i]);
 	rng_state = (uint32_t *)so_symbol(&yoyoloader_mod, "state");
 	rng_index = (uint32_t *)so_symbol(&yoyoloader_mod, "g_RndIndex");
 	draw_instance = (void **)so_symbol(&yoyoloader_mod, "_ZN15CSkeletonSprite15ms_drawInstanceE");
@@ -980,6 +1075,13 @@ void smokedraw_native_report(int frames) {
 		debugPrintf("[SMOKEDRAW] verify: %u events compared (%u script calls and sprite draws), %u mismatches, "
 			"%u skipped%s\n", smokedraw_verified, smokedraw_verify_records, smokedraw_mismatches,
 			smokedraw_verify_skipped, smokedraw_verify_unrecorded ? ", some scripts not recorded" : "");
+	if (smoke_clouds != 1 || look_ab)
+		debugPrintf("[SMOKELOOK] smokeClouds %d: drawn %.1f hidden %.1f per frame%s\n", smoke_clouds,
+			(float)look_drawn / frames, (float)look_hidden / frames,
+			look_ab ? (look_off ? " | A/B: off" : " | A/B: on") : "");
+	look_drawn = look_hidden = 0;
+	if (look_ab)
+		look_off = !look_off;
 	smokedraw_native_calls = smokedraw_fallbacks = smokedraw_prof_us = smokedraw_prof_calls = 0;
 	memset(smokedraw_reject_line, 0, sizeof(smokedraw_reject_line));
 	memset(smokedraw_reject_count, 0, sizeof(smokedraw_reject_count));
@@ -1080,8 +1182,16 @@ int smokedraw_native_install(void *(*rx_alloc)(size_t)) {
 	// Debug only: the A/B switch flips in the profiling report, which runs with debugMode
 	smokedraw_ab = debugMode && exp_flag("smokeab");
 	smokedraw_prof = debugMode && exp_flag("smokeprof");
+	look_ab = debugMode && exp_flag("smokelookab");
+	if (smoke_clouds < 1)
+		smoke_clouds = 1;
+	cloud_scale = (float)smoke_clouds; // sqrt by Newton steps (no libm call)
+	for (int i = 0; i < 20; i++)
+		cloud_scale = 0.5f * (cloud_scale + (float)smoke_clouds / cloud_scale);
+	debugPrintf("smoke look: smokeClouds %d\n", smoke_clouds);
 	if (debugMode && exp_flag("smokeverify")) {
 		smokedraw_verify = verify_install();
+		look_verify = smokedraw_verify && exp_flag("smokelookverify");
 		debugPrintf("smoke cloud Draw verify: %s\n", smokedraw_verify ? "on" : "NOT available");
 	}
 	hook_addr(entry, (uintptr_t)smokedraw_event);
