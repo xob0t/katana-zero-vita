@@ -15,8 +15,16 @@ edits). A "tick" is one game step at `global.fr = 1` (60 per second; slow-mo sca
 >
 > **What the port does with it:**
 > - Gun timing (items 3-5) is PC by default since #94 (`enemyTiming`, **GAME → ENEMY TIMING**).
-> - Melee and slash rules, plus the level timer and slow-mo meter, are being switched to PC under their own options.
+> - Items 6, 7, 8, 13 and 15 are PC by default under the same switch (`loader/loader/enemy_timing.c`, `pc_rules.c`).
+> - Items 1 and 2 are PC by default under **GAME → TIMER & SLOW-MO** (`timerSlowmo`, `loader/loader/timer_slowmo.c`).
 > - The rest stays as in the Android release.
+>
+> **Corrections found while doing that** (both binaries re-read, then checked in Vita3K):
+> - Item 1: `obj_init` Create also sets `global.max_time` on Android (L224, 9000; PC L171, 6000); the variable index
+>   behind this table missed it. All 92 statements that set it are listed in `timer_slowmo.c`.
+> - Item 15 is not only constants: PC runs the ramp `if (gameover_timer > 5)`, Android `if (global.fr != 0)`. So PC
+>   starts it on the 6th frame after death, during the hit freeze, and Android once the freeze ends (Vita3K: frame 6
+>   against about 21).
 
 ## 1. Real gameplay differences, by player impact
 

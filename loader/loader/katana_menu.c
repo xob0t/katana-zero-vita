@@ -1,7 +1,7 @@
 /*
  * katana_menu.c
  *
- * GAME menu rows ENEMY AI and ENEMY TIMING, and the yes/no prompt's starting selection.
+ * GAME menu rows ENEMY AI, ENEMY TIMING and TIMER & SLOW-MO, and the yes/no prompt's starting selection.
  */
 
 #include <vitasdk.h>
@@ -54,13 +54,26 @@
  * var_zoom_mode shows 1 ("2X ZOOM", relabelled PC) or 2 ("3X ZOOM", ANDROID) through Step and Draw and holds the stored
  * value otherwise (put back after each, and around SAVE); any change Step makes to the shown value picks the other
  * choice. options_menu_sync reads global.zoom_mode once per frame, and AI_init applies the timing to enemies created
- * after that: the next room, or a restart.
+ * after that: the next room, or a restart (the slash, smoke and death slow-mo rules of pc_rules.c: the next frame).
+ *
+ * TIMER & SLOW-MO (PC / ANDROID: timer_slowmo.c), added after ENEMY TIMING, is the PC build's VSYNC row with its value
+ * in the PC build's VSYNC option, global.vsync, the same way. Its code is there too: Create copies global.vsync to
+ * var_vsync and prev_var_vsync, Step toggles var_vsync = !BOOL(var_vsync), Draw shows the game's "ON"/"OFF" for it,
+ * SAVE copies it back and save_options/load_options keep it (load_variable returns file_text_read_real as it is: no
+ * clamp, no bool). Its only effects are display_reset calls (below), which the guard keeps as they were; nothing else
+ * reads global.vsync (obj_init and the reset scripts set it to false). Saves hold 0 or, from TEXT SMOOTHING (below),
+ * 1 or 2: all of these mean "not chosen" and follow timerSlowmo from yyl.cfg (0, PC, by default). The menu stores 4
+ * (PC) or 5 (ANDROID). var_vsync shows false (PC) or true (ANDROID) through Step and Draw, any change Step makes picks
+ * the other choice, and the game's OFF/ON at the row's c (as for ENEMY AI) is relabelled PC/ANDROID.
+ * options_menu_sync reads global.vsync once per frame and rewrites the constants; the game uses them the next time it
+ * sets the values (the time limit at the next room or restart, the slow-mo meter at the next spawn).
  *
  * Saves from versions up to 1.1.1 may hold 1 or 2 in the PC build's VSYNC option (global.vsync): the TEXT SMOOTHING
  * row (removed) stored its choice there. The game passes it to display_reset(aa, vsync) from load_options at boot; F_DisplayReset stores it
  * in g_Sync (the runner's frame limiter, MainLoop_Process: g_SyncInterval). The display_reset guard keeps that boot call
  * with vsync false, what every save had before (g_Sync 1 -> 0, one GR_D3D_Reset before the first room), and drops the
- * calls obj_optionsmenu Destroy makes, which would free every surface the next frame.
+ * calls obj_optionsmenu Destroy makes (when global.vsync != prev_var_vsync), which would free every surface the next
+ * frame. TIMER & SLOW-MO is installed only with the guard.
  */
 static int enemy_half_cfg = -1; // enemyHalfRate from yyl.cfg, kept once enemy_half_rate follows the menu (-1: no row)
 static int *var_show_crap_settings, *var_var_show_crap_settings, *var_var_fullscreen;
@@ -74,14 +87,32 @@ static double enemy_label_c = -1; // its c when it asked for the "FULLSCREEN" la
 static builtin_fn orig_display_reset;
 static void (*yy_create_string)(gml_rvalue *, const char *);
 static void (*yy_free_rvalue)(gml_rvalue *);
-static int timing_row; // the menu shows ENEMY TIMING
-static int *var_zoom_mode, *var_var_zoom_mode;
 extern int enemy_timing_cfg, enemy_timing_android; // enemy_timing.c
 int enemy_timing_available(void);
+extern int timer_slowmo_cfg; // timer_slowmo.c
+int timer_slowmo_available(void);
+void timer_slowmo_apply(int android);
+static int timer_slowmo_android;
 
-// ENEMY TIMING's stored value -> ANDROID timing: 4 PC, 5 ANDROID, anything else (not chosen) yyl.cfg's enemyTiming
-static int timing_android_of(double v) {
-	return v == 4.0 ? 0 : v == 5.0 ? 1 : enemy_timing_cfg != 0;
+// ENEMY TIMING and TIMER & SLOW-MO: a PC / ANDROID choice kept in a PC option the Android build doesn't use
+typedef struct {
+	const char *option;         // the PC row's add_pausemenu_choice key
+	int *var_global, *var_menu; // global.<option> (saved) and obj_optionsmenu's var_<option>
+	double shown[2];            // var_<option> through Step and Draw: [0] PC, [1] ANDROID
+	const int *cfg;             // yyl.cfg's choice while the menu has none (nonzero: ANDROID)
+	int *android;               // what applies now (options_menu_sync)
+	int row;                    // the menu shows it
+} choice_row;
+enum { ROW_TIMING, ROW_TIMER, NCHOICE };
+static choice_row choices[NCHOICE] = {
+	{ "WINDOW ZOOM", NULL, NULL, { 1.0, 2.0 }, &enemy_timing_cfg, &enemy_timing_android, 0 },
+	{ "VSYNC", NULL, NULL, { 0.0, 1.0 }, &timer_slowmo_cfg, &timer_slowmo_android, 0 },
+};
+static double timer_label_c = -1; // the Draw's c when it asked for the "VSYNC" label
+
+// A stored choice -> ANDROID: 4 PC, 5 ANDROID, anything else (not chosen) yyl.cfg's
+static int android_of(const choice_row *r, double v) {
+	return v == 4.0 ? 0 : v == 5.0 ? 1 : *r->cfg != 0;
 }
 
 static const char *rv_string(const gml_rvalue *v) {
@@ -100,9 +131,10 @@ static void *menu_add_pausemenu_choice(void *self, void *other, void *result, in
 	const char *key = argc == 2 ? rv_string(args[0]) : NULL;
 	if (key && !strcmp(key, "SLOWDOWN CONTROL")) { // the GAME page only (obj_options_main_menu Step)
 		extern int eh_available(void);
-		static const char *const rows[2] = { "FULLSCREEN", "WINDOW ZOOM" }; // ENEMY AI, ENEMY TIMING
-		const int shown[2] = { enemy_row && eh_available(), timing_row };
-		for (int i = 0; i < 2; i++) {
+		// ENEMY AI, ENEMY TIMING, TIMER & SLOW-MO
+		const char *const rows[3] = { "FULLSCREEN", choices[ROW_TIMING].option, choices[ROW_TIMER].option };
+		const int shown[3] = { enemy_row && eh_available(), choices[ROW_TIMING].row, choices[ROW_TIMER].row };
+		for (int i = 0; i < 3; i++) {
 			if (!shown[i])
 				continue;
 			gml_rvalue name = {0}, res = {0};
@@ -138,17 +170,26 @@ static void *menu_translate_option(void *self, void *other, void *result, int ar
 	const char *key = argc >= 1 ? rv_string(args[0]) : NULL, *text = NULL;
 	if (!key)
 		return orig_translate_option(self, other, result, argc, args);
-	if (timing_row && !strcmp(key, "WINDOW ZOOM"))
+	int in_draw = menu_draw_self && self == menu_draw_self;
+	if (choices[ROW_TIMING].row && !strcmp(key, "WINDOW ZOOM"))
 		text = "ENEMY TIMING";
-	else if (timing_row && strstr(key, "X ZOOM") && strlen(key) == 7) // "1X ZOOM".."4X ZOOM": var_zoom_mode shows 1 or 2
+	else if (choices[ROW_TIMING].row && strstr(key, "X ZOOM") && strlen(key) == 7) // "1X ZOOM".."4X ZOOM": shows 1 or 2
 		text = key[0] == '3' || key[0] == '4' ? "ANDROID" : "PC";
-	else if (enemy_row && !strcmp(key, "FULLSCREEN")) {
+	else if (choices[ROW_TIMER].row && !strcmp(key, "VSYNC")) {
+		text = "TIMER & SLOW-MO";
+		if (in_draw)
+			timer_label_c = menu_draw_c(self);
+	} else if (enemy_row && !strcmp(key, "FULLSCREEN")) {
 		text = "ENEMY AI";
-		if (menu_draw_self && self == menu_draw_self)
+		if (in_draw)
 			enemy_label_c = menu_draw_c(self);
-	} else if (menu_draw_self && self == menu_draw_self && enemy_label_c >= 0.0 &&
-			(!strcmp(key, "ON") || !strcmp(key, "OFF")) && menu_draw_c(self) == enemy_label_c) {
-		text = key[1] == 'N' ? "HALF RATE" : "FULL RATE"; // var_fullscreen shows half-rate on (enemy_show)
+	} else if (in_draw && (enemy_label_c >= 0.0 || timer_label_c >= 0.0) &&
+			(!strcmp(key, "ON") || !strcmp(key, "OFF"))) {
+		double c = menu_draw_c(self);
+		if (c == enemy_label_c)
+			text = key[1] == 'N' ? "HALF RATE" : "FULL RATE"; // var_fullscreen shows half-rate on (enemy_show)
+		else if (c == timer_label_c)
+			text = key[1] == 'N' ? "ANDROID" : "PC"; // var_vsync shows true for ANDROID (choice_show)
 	}
 	if (!text)
 		return orig_translate_option(self, other, result, argc, args);
@@ -179,42 +220,49 @@ static void enemy_unshow(void *self, enemy_shown was) {
 	}
 }
 
-// var_zoom_mode showing ENEMY TIMING's choice (1 PC, 2 ANDROID) through a Step or Draw; the stored value goes back
-// after, or the other choice (4/5) if the shown value changed
-typedef struct { int set; double stored, shown; unsigned kind; } timing_shown;
+// The choice rows' var_<option> showing their choices (shown[0] PC, shown[1] ANDROID) through a Step or Draw; the
+// stored value goes back after, or the other choice (4/5) if the shown value changed
+typedef struct { int set, android; double stored; unsigned kind; } choice_shown;
+typedef struct { choice_shown row[NCHOICE]; } choices_shown;
 
-static timing_shown timing_show(void *self) {
-	timing_shown was = {0};
-	gml_rvalue *z = timing_row ? instance_num(self, var_var_zoom_mode) : NULL;
-	if (!z)
-		return was;
-	was = (timing_shown){ 1, z->val, timing_android_of(z->val) ? 2.0 : 1.0, z->kind };
-	z->val = was.shown;
-	z->kind = VALUE_REAL;
+static choices_shown choice_show(void *self) {
+	choices_shown was = {0};
+	for (int i = 0; i < NCHOICE; i++) {
+		const choice_row *r = &choices[i];
+		gml_rvalue *z = r->row ? instance_num(self, r->var_menu) : NULL;
+		if (!z)
+			continue;
+		was.row[i] = (choice_shown){ 1, android_of(r, z->val), z->val, z->kind };
+		z->val = r->shown[was.row[i].android];
+		z->kind = VALUE_REAL;
+	}
 	return was;
 }
 
 // The value to store now: the other choice if the shown value was changed (a toggle), else the one stored before
-static double timing_stored(const timing_shown *was, const gml_rvalue *z) {
-	if (z->val == was->shown)
+static double choice_stored(int i, const choice_shown *was, const gml_rvalue *z) {
+	if (z->val == choices[i].shown[was->android])
 		return was->stored;
-	return was->shown == 2.0 ? 4.0 : 5.0;
+	return was->android ? 4.0 : 5.0;
 }
 
-static void timing_unshow(void *self, timing_shown was) {
-	gml_rvalue *z = was.set ? instance_num(self, var_var_zoom_mode) : NULL; // looked up again: events add variables
-	if (!z)
-		return;
-	double v = timing_stored(&was, z);
-	z->kind = v == was.stored ? was.kind : VALUE_REAL;
-	z->val = v;
+static void choice_unshow(void *self, const choices_shown *was) {
+	for (int i = 0; i < NCHOICE; i++) {
+		// looked up again: events add variables
+		gml_rvalue *z = was->row[i].set ? instance_num(self, choices[i].var_menu) : NULL;
+		if (!z)
+			continue;
+		double v = choice_stored(i, &was->row[i], z);
+		z->kind = v == was->row[i].stored ? was->row[i].kind : VALUE_REAL;
+		z->val = v;
+	}
 }
 
-// The obj_optionsmenu whose Step runs with var_fullscreen showing ENEMY AI and var_zoom_mode showing ENEMY TIMING,
-// and what they held before
+// The obj_optionsmenu whose Step runs with var_fullscreen showing ENEMY AI and the choice rows' variables showing
+// their choices, and what they held before
 static void *step_show_self;
 static enemy_shown step_show;
-static timing_shown step_timing;
+static choices_shown step_choices;
 static event_func orig_optionsmenu_save;
 
 // SAVE (user event 0, run by Step on the SAVE choice) copies var_fullscreen to global.fullscreen: it runs with the
@@ -229,40 +277,49 @@ static void enemy_optionsmenu_save(void *self, void *other) {
 		f->val = step_show.val;
 		f->kind = step_show.kind;
 	}
-	// ENEMY TIMING the same way: SAVE copies var_zoom_mode to global.zoom_mode, so it gets the value to store
-	gml_rvalue *z = step_show_self == self && step_timing.set ? instance_num(self, var_var_zoom_mode) : NULL;
-	double zoom_shown = 0.0;
-	if (z) {
-		zoom_shown = z->val;
-		z->val = timing_stored(&step_timing, z);
-		z->kind = VALUE_REAL;
+	// The choice rows the same way: SAVE copies var_<option> to global.<option>, so it gets the value to store
+	double choice_was[NCHOICE];
+	unsigned choice_kind[NCHOICE];
+	int choice_set[NCHOICE];
+	for (int i = 0; i < NCHOICE; i++) {
+		gml_rvalue *z = step_show_self == self && step_choices.row[i].set ? instance_num(self, choices[i].var_menu) : NULL;
+		choice_set[i] = z != NULL;
+		if (z) {
+			choice_was[i] = z->val;
+			choice_kind[i] = z->kind;
+			z->val = choice_stored(i, &step_choices.row[i], z);
+			z->kind = VALUE_REAL;
+		}
 	}
 	orig_optionsmenu_save(self, other);
 	if (f && (f = instance_num(self, var_var_fullscreen))) { // looked up again: events add variables
 		f->val = shown;
 		f->kind = shown_kind;
 	}
-	if (z && (z = instance_num(self, var_var_zoom_mode))) {
-		z->val = zoom_shown;
-		z->kind = VALUE_REAL;
+	for (int i = 0; i < NCHOICE; i++) {
+		gml_rvalue *z = choice_set[i] ? instance_num(self, choices[i].var_menu) : NULL;
+		if (z) {
+			z->val = choice_was[i];
+			z->kind = choice_kind[i];
+		}
 	}
 }
 
 // ENEMY AI: two values; the game's var_fullscreen = !var_fullscreen flips the shown value; store the other value (1 or 2).
 static void enemy_optionsmenu_step(void *self, void *other) {
 	enemy_shown enemy = enemy_show(self);
-	timing_shown timing = timing_show(self);
+	choices_shown shown_choices = choice_show(self);
 	void *prev_self = step_show_self;
 	enemy_shown prev_show = step_show;
-	timing_shown prev_timing = step_timing;
+	choices_shown prev_choices = step_choices;
 	step_show_self = self;
 	step_show = enemy;
-	step_timing = timing;
+	step_choices = shown_choices;
 	orig_optionsmenu_step(self, other);
 	step_show_self = prev_self;
 	step_show = prev_show;
-	step_timing = prev_timing;
-	timing_unshow(self, timing);
+	step_choices = prev_choices;
+	choice_unshow(self, &shown_choices);
 	if (enemy.set) {
 		gml_rvalue *e = instance_num(self, var_var_show_crap_settings);
 		int shown = e ? enemy_half_of(e->val) : 0;
@@ -284,27 +341,34 @@ void options_menu_sync(void) {
 		gml_rvalue *e = global_var(var_show_crap_settings);
 		enemy_half_rate = enemy_half_of(e && (e->kind == VALUE_REAL || e->kind == VALUE_BOOL) ? e->val : 0.0);
 	}
-	if (timing_row) {
-		gml_rvalue *z = global_var(var_zoom_mode);
-		enemy_timing_android = timing_android_of(z && z->kind == VALUE_REAL ? z->val : 0.0);
+	for (int i = 0; i < NCHOICE; i++) {
+		if (!choices[i].row)
+			continue;
+		gml_rvalue *z = global_var(choices[i].var_global);
+		double v = z && (z->kind == VALUE_REAL || z->kind == VALUE_BOOL) ? z->val : 0.0;
+		*choices[i].android = android_of(&choices[i], v);
 	}
+	timer_slowmo_apply(timer_slowmo_android); // rewrites the constants on a change only
+	extern void pc_rules_apply(int android);
+	pc_rules_apply(enemy_timing_android); // the enemy_hurt guards, on a change only
 }
 
-// ENEMY AI is drawn with var_fullscreen showing its value (enemy_show), and fps_translate_option relabels the value
-// (the game's ON/OFF if it can't). Draw only reads var_fullscreen and runs no user event (SAVE), so the stored value
-// never sees the change.
+// ENEMY AI is drawn with var_fullscreen showing its value (enemy_show), and menu_translate_option relabels the value
+// (the game's ON/OFF if it can't); TIMER & SLOW-MO the same with var_vsync. Draw only reads those variables and runs
+// no user event (SAVE), so the stored values never see the change.
 static void enemy_optionsmenu_draw(void *self, void *other) {
 	enemy_shown enemy = enemy_show(self);
-	timing_shown timing = timing_show(self);
+	choices_shown shown_choices = choice_show(self);
 	void *prev_self = menu_draw_self;
-	double prev_c = enemy_label_c;
+	double prev_c = enemy_label_c, prev_timer_c = timer_label_c;
 	menu_draw_self = self;
-	enemy_label_c = -1.0;
+	enemy_label_c = timer_label_c = -1.0;
 	orig_optionsmenu_draw(self, other);
 	menu_draw_self = prev_self;
 	enemy_label_c = prev_c;
+	timer_label_c = prev_timer_c;
 	enemy_unshow(self, enemy);
-	timing_unshow(self, timing); // Draw doesn't change var_zoom_mode: puts the stored value back
+	choice_unshow(self, &shown_choices); // Draw doesn't change the variables: puts the stored values back
 }
 
 // display_reset is forwarded only from load_options, with vsync false: what the boot call did with every save before
@@ -352,18 +416,25 @@ void options_menu_install(gml_func_entry *table) {
 			guarded_display_reset);
 	debugPrintf("display_reset guard: %s\n", orig_display_reset ? "on" : "NOT installed");
 
-	int want_timing = enemy_timing_available();
-	var_zoom_mode = (int *)so_symbol(&yoyoloader_mod, "g_VAR_zoom_mode");
-	var_var_zoom_mode = (int *)so_symbol(&yoyoloader_mod, "g_VAR_var_zoom_mode");
-	if ((want_enemy || want_timing) && yy_create_string && yy_free_rvalue)
+	int want_timing = enemy_timing_available(), want_timer = timer_slowmo_available();
+	timer_slowmo_android = timer_slowmo_cfg != 0;
+	choices[ROW_TIMING].var_global = (int *)so_symbol(&yoyoloader_mod, "g_VAR_zoom_mode");
+	choices[ROW_TIMING].var_menu = (int *)so_symbol(&yoyoloader_mod, "g_VAR_var_zoom_mode");
+	choices[ROW_TIMER].var_global = (int *)so_symbol(&yoyoloader_mod, "g_VAR_vsync");
+	choices[ROW_TIMER].var_menu = (int *)so_symbol(&yoyoloader_mod, "g_VAR_var_vsync");
+	if ((want_enemy || want_timing || want_timer) && yy_create_string && yy_free_rvalue)
 		orig_translate_option = entry_hook(so_symbol(&yoyoloader_mod,
 			"_Z27gml_Script_translate_optionP9CInstanceS0_R8YYRValueiPPS1_"), menu_translate_option);
 	// In this order, so a row is never added without its labels and its Step, Draw and SAVE hooks
 	int enemy_ok = want_enemy && orig_translate_option && var_show_crap_settings && var_var_show_crap_settings &&
 		var_var_fullscreen && var_c;
-	int timing_ok = want_timing && orig_translate_option && var_zoom_mode && var_var_zoom_mode;
-	// Both rows need SAVE to see the values to store
-	if (enemy_ok || timing_ok)
+	int timing_ok = want_timing && orig_translate_option && choices[ROW_TIMING].var_global &&
+		choices[ROW_TIMING].var_menu;
+	// TIMER & SLOW-MO also needs the display_reset guard (Destroy and load_options pass global.vsync to display_reset)
+	int timer_ok = want_timer && orig_translate_option && orig_display_reset && choices[ROW_TIMER].var_global &&
+		choices[ROW_TIMER].var_menu && var_c;
+	// Every row needs SAVE to see the values to store
+	if (enemy_ok || timing_ok || timer_ok)
 		orig_optionsmenu_save = gml_replace(table, "gml_Object_obj_optionsmenu_Other_10", enemy_optionsmenu_save);
 	if (orig_optionsmenu_save)
 		orig_optionsmenu_step = gml_replace(table, "gml_Object_obj_optionsmenu_Step_0", enemy_optionsmenu_step);
@@ -373,13 +444,16 @@ void options_menu_install(gml_func_entry *table) {
 		orig_add_pausemenu_choice = entry_hook(so_symbol(&yoyoloader_mod,
 			"_Z31gml_Script_add_pausemenu_choiceP9CInstanceS0_R8YYRValueiPPS1_"), menu_add_pausemenu_choice);
 	enemy_row = enemy_ok && orig_add_pausemenu_choice;
-	timing_row = timing_ok && orig_add_pausemenu_choice;
+	choices[ROW_TIMING].row = timing_ok && orig_add_pausemenu_choice;
+	choices[ROW_TIMER].row = timer_ok && orig_add_pausemenu_choice;
 	if (enemy_row)
 		enemy_half_cfg = enemy_half_rate; // from here on options_menu_sync owns enemy_half_rate
 	debugPrintf("enemy AI menu: %s (yyl.cfg enemyHalfRate %d)\n", enemy_row ? "on" : want_enemy ? "NOT installed" : "off",
 		enemy_half_rate);
-	debugPrintf("enemy timing menu: %s (yyl.cfg enemyTiming %d)\n", timing_row ? "on" : want_timing ? "NOT installed" :
-		"off", enemy_timing_cfg);
+	debugPrintf("enemy timing menu: %s (yyl.cfg enemyTiming %d)\n", choices[ROW_TIMING].row ? "on" : want_timing ?
+		"NOT installed" : "off", enemy_timing_cfg);
+	debugPrintf("timer & slow-mo menu: %s (yyl.cfg timerSlowmo %d)\n", choices[ROW_TIMER].row ? "on" : want_timer ?
+		"NOT installed" : "off", timer_slowmo_cfg);
 }
 
 // obj_interaction is the yes/no prompt behind interact_binary (pause, title and level-select confirms, interactable

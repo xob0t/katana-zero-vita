@@ -29,7 +29,9 @@ Defaults come from the variable definitions in the file listed. "Nonzero" means 
 
 | Key | Default | Values | Effect | Defined in |
 |---|---|---|---|---|
-| `enemyHalfRate` | 1 | 0, nonzero = 1 | Enemy Steps every other tick. The GRAPHICS menu's ENEMY AI row overrides this once a player picks FULL RATE or HALF RATE there (the choice is saved in the game options). | `enemy_half_rate.c`, `katana_menu.c` |
+| `enemyHalfRate` | 1 | 0, nonzero = 1 | Enemy Steps every other tick. The GAME menu's ENEMY AI row overrides this once a player picks FULL RATE or HALF RATE there (the choice is saved in the game options). | `enemy_half_rate.c`, `katana_menu.c` |
+| `enemyTiming` | 0 | 0, nonzero | 1 plays the Android release's enemy timing and combat rules: later first attacks and shots, 4 frames longer melee cooldowns, slashes through temporary doors, door-opening slashes deadly 2-3 frames longer, smoked enemies falling 3 more frames, the death slow-mo starting after the hit freeze and ramping faster. 0 the PC version's. The GAME menu's ENEMY TIMING row overrides this once a player picks PC or ANDROID there (saved in the game options). | `enemy_timing.c`, `pc_rules.c`, `katana_menu.c` |
+| `timerSlowmo` | 0 | 0, nonzero | 1 keeps the Android release's level time limits (1.5 times the PC ones) and slow-mo meter (twice the PC one). 0 the PC version's. The GAME menu's TIMER & SLOW-MO row overrides this once a player picks PC or ANDROID there (saved in the game options). | `timer_slowmo.c`, `katana_menu.c` |
 | `smokeClouds` | 2 | 1 to 3; below 1 counts as 1, above 3 as 3 | One smoke cloud in N is drawn, larger. Needs the native smoke Draw: with `exp_smokedraw0` every cloud is drawn as in the original. | `smokedraw_native.c` |
 | `trailLights` | 0 | 0, nonzero | 1 keeps the light tint on roll dust and afterimages everywhere. | `fog_trail.c`, `trail_lights.c` |
 | `fogTrailLights` | 0 | 0, nonzero | 1 keeps the roll dust's light tint in the fog rooms only. Afterimages are not affected. | `fog_trail.c` |

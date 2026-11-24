@@ -42,7 +42,11 @@ Each can be undone in `ux0:data/gms/katanazero/yyl.cfg`; [docs/changes.md](docs/
 
 Enemies attack on the PC version's timing. The Android release delays their first attack and every shot by a few
 frames, which also hides the bullet in the first room's tutorial slow-mo. **GAME → ENEMY TIMING: ANDROID**
-(or `enemyTiming=1`) brings back the Android timing.
+(or `enemyTiming=1`) brings back the Android timing, along with its longer melee cooldowns and its slash, smoke and
+death slow-mo rules.
+
+Level time limits and the slow-mo meter are the PC version's too: the Android release makes the time limits 1.5 times
+as long and the meter twice as long. **GAME → TIMER & SLOW-MO: ANDROID** (or `timerSlowmo=1`) brings them back.
 
 ## Building (Windows, no WSL)
 
