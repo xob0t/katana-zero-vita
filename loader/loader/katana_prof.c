@@ -583,6 +583,32 @@ void katana_prof_report(int frames) {
 		last_fallback = trail_lights_fallback;
 	}
 	{
+		// obj_drawactors' ember loops (ember_draw.c): embers run by the original body / stepped over, and the loops'
+		// time; exp_emberdrawab: stepping over off in every other window
+		extern unsigned ember_draw_loops, ember_draw_kept, ember_draw_skipped, ember_draw_verified, ember_draw_mismatch,
+			ember_draw_odd;
+		extern uint32_t ember_draw_us;
+		extern unsigned ember_draw_cached_loops, ember_draw_recorded_loops;
+		extern int ember_draw_ab, ember_draw_ab_off;
+		static unsigned last_loops, last_kept, last_skipped, last_cached, last_recorded;
+		if (frames > 0 && (ember_draw_kept != last_kept || ember_draw_skipped != last_skipped || ember_draw_mismatch))
+			debugPrintf("[EMBERDRAW] per frame: %.1f loops (%.1f from the ember list, %.1f recording it) %.3f ms, embers "
+				"%.1f run %.1f stepped over | other kinds %u | verify ok %u mismatch %u%s\n",
+				(float)(ember_draw_loops - last_loops) / frames, (float)(ember_draw_cached_loops - last_cached) / frames,
+				(float)(ember_draw_recorded_loops - last_recorded) / frames,
+				ember_draw_us / 1000.0f / frames, (float)(ember_draw_kept - last_kept) / frames,
+				(float)(ember_draw_skipped - last_skipped) / frames, ember_draw_odd, ember_draw_verified, ember_draw_mismatch,
+				ember_draw_ab ? (ember_draw_ab_off ? " | A/B: off" : " | A/B: on") : "");
+		last_loops = ember_draw_loops;
+		last_cached = ember_draw_cached_loops;
+		last_recorded = ember_draw_recorded_loops;
+		last_kept = ember_draw_kept;
+		last_skipped = ember_draw_skipped;
+		ember_draw_us = 0;
+		if (ember_draw_ab)
+			ember_draw_ab_off = !ember_draw_ab_off;
+	}
+	{
 		static unsigned last_kept, last_skipped;
 		extern unsigned bike_draw_kept, bike_draw_skipped, bike_draw_verified, bike_draw_mismatch, bike_draw_odd;
 		if (frames > 0 && (bike_draw_kept != last_kept || bike_draw_skipped != last_skipped))

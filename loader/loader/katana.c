@@ -1208,6 +1208,12 @@ static void patch_performance() {
 		extern int bike_draw_install(void);
 		debugPrintf("bike draw loops: %s\n", bike_draw_install() ? "installed" : "NOT installed");
 	}
+	// Burning corpses' embers: every corpse's ember with-loop in obj_drawactors steps over the other corpses' embers
+	// (exact; ember_draw.c)
+	if (!exp_flag("emberdraw0")) {
+		extern int ember_draw_install(void);
+		debugPrintf("ember draw loops: %s\n", ember_draw_install() ? "installed" : "NOT installed");
+	}
 	// update_light_array's loop body runs natively per light (exact; light_array_native.c): particles' Create events
 	if (!exp_flag("lightarray0")) {
 		extern int light_array_install(void *(*rx_alloc)(size_t));
