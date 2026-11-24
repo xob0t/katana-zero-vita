@@ -12,6 +12,8 @@ minute. Nothing to install on your computer, and your APK isn't uploaded anywher
 2. Open the web builder, drop in the Katana ZERO APK (Netflix Android release, version 1.1.10) and save the
    `KatanaZero.vpk` it makes.
 3. Copy the VPK to `ux0:VPK/` and install it with VitaShell.
+4. For the best experience, overclock: install [PSVshell](https://github.com/Electry/PSVshell) and give the game a
+   500 MHz CPU profile. Without it the heavy rooms drop more frames (the loader alone sets 444 MHz).
 
 The first launch prepares the graphics cache (`ux0:data/shader_cache/KTNZ00001`) and takes about 3 minutes; a
 progress bar shows it. Later launches reach the title screen in about a minute. To update, build a new VPK and
@@ -26,8 +28,8 @@ The game's Android runner (`libyoyo.so`) runs on the Vita through
 
 Most rooms run at 60 fps. A few of the heaviest dip into the 30s, and as in the original, the game slows down with
 the frame rate. The Vita's CPU is the limit. To get this far, the loader patches the game in over 50 places, most of
-them with identical results, and fixes vitaGL bugs that caused a freeze and a crash. A 500 MHz profile in PSVshell
-adds a few fps (the loader runs at 444 MHz).
+them with identical results, and fixes vitaGL bugs that caused a freeze and a crash. For the best experience, overclock to
+500 MHz with PSVshell: it adds a few fps where it matters most.
 
 Some of the speedups change what you see or play:
 
