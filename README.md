@@ -30,7 +30,8 @@ The game's Android runner (`libyoyo.so`) runs on the Vita through
 [YoYo Loader Vita](https://github.com/Rinnegatamante/yoyoloader_vita), vendored in `loader/` from upstream commit
 `e32f68f`.
 
-Most rooms run at 60 fps. Heavy rooms dip below it, to about 40 in the busiest fights. The CPU is the limit: the game
+Most rooms run at 60 fps. Heavy rooms dip below it in busy moments, and a few of the heaviest drop into the 30s. As in
+the original, the game's speed follows the frame rate, so those moments play slower. The CPU is the limit: the game
 logic runs on one core and can't be split across more. A 500 MHz profile in PSVshell adds a few fps in heavy rooms
 (the loader runs at 444 MHz).
 
