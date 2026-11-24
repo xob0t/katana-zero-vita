@@ -137,8 +137,8 @@ Noise classes removed (each verified on examples):
   (parents, masks, persistence), sprite collision masks, sounds and timelines were not, apart from the
   obj_tempdoor parent chain.
 - **Unresolved values.** The exact numbers of the obj_opto_master Other_15 low-FPS profile, the default of
-  `global.controller_threshold`, the runtime value of `global.gamepadMode` on Vita, and the meaning of
-  `gsp` (item 15).
+  `global.controller_threshold` and the meaning of `gsp` (item 15). `global.gamepadMode` on Vita: false until the
+  first stick move; since `gamepad_prompts.c` it is true from the start with touchControls=0 (item 14 then matches PC).
 - **Function extents.** On PC, a function's extent is the code up to the next gml function. The last function,
   `init_lines` (dialogue text), was capped at 1 MB.
 

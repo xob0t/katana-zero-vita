@@ -1161,6 +1161,9 @@ static void patch_performance() {
 	// touchControls=0 (the default): no touch input, and the controls' per-frame events stop (touch_controls.c)
 	extern void touch_controls_install(gml_func_entry *table);
 	touch_controls_install(table);
+	// touchControls=0: the game starts in its gamepad mode, so prompts show buttons at once (gamepad_prompts.c)
+	extern void gamepad_prompts_install(gml_func_entry *table);
+	gamepad_prompts_install(table);
 	katana_menu_install(table);
 
 	katana_display_install();
