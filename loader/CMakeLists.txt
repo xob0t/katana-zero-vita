@@ -83,6 +83,7 @@ add_executable(YoYoLoader
   loader/wobble_rest.c
   loader/blood_drops.c
   loader/room_lighting.c
+  loader/tutorial_shot.c
   loader/fog_skip.c
   loader/katana_menu.c
   loader/sound_limit.c

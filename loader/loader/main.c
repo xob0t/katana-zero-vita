@@ -209,6 +209,7 @@ void loadConfig(const char *game) {
 			else if (strcmp("letterGlow", buffer) == 0) { extern int letter_glow; letter_glow = value; }
 			else if (strcmp("cathedralDust", buffer) == 0) { extern int cathedral_dust; cathedral_dust = value; }
 			else if (strcmp("roomLighting", buffer) == 0) { extern int room_lighting; room_lighting = value; }
+			else if (strcmp("pcTutorialShot", buffer) == 0) { extern int pc_tutorial_shot; pc_tutorial_shot = value; }
 			else if (strcmp("waveStrips", buffer) == 0) { extern int wave_strips; wave_strips = value; }
 			else if (strcmp("dynamicRes", buffer) == 0) { extern int dynamic_res; dynamic_res = value; }
 			else if (strcmp("skipNetflixLogo", buffer) == 0) { extern int skip_netflix_logo; skip_netflix_logo = value; }

@@ -32,5 +32,11 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Dossier burn | No small decorative burn circles; the burn spreads the same | `dossierCircles=1` |
 | Motorcycle chase | No cone shadows; distant rockets unlit; explosions with a third of the particles | `coneShadows=1`, `farRocketLights=1`, `fullExplosions=1` |
 
+**Changed back to the PC version**
+
+| Where | Change | Undo with |
+|---|---|---|
+| First room's tutorial | The gunman fires on the PC version's timing, so his bullet hangs visibly in front of Zero during the slow-mo. The Android release delays every enemy's shot by 6 frames (`sec_attack_timer`); here that puts the shot so late in the slow-down that the bullet stops inside the muzzle flash. Other rooms keep the Android timing | `pcTutorialShot=0` |
+
 Over a long session video memory fills up. When it does, the next room load pauses for about a second while the
 textures reload.

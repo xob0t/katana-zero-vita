@@ -1431,6 +1431,8 @@ static void patch_performance() {
 	blood_drops_install(table);
 	extern void room_lighting_install(gml_func_entry *table);
 	room_lighting_install(table); // after blood_drops_install: chains its opto_master Room Start
+	extern void tutorial_shot_install(gml_func_entry *table);
+	tutorial_shot_install(table); // after enemy_half_rate_install: wraps its obj_enemy Step
 
 	// Frame skipping (and its guard stubs) only when opted in with frameSkip=1
 	uintptr_t *draw_slot = frame_skip ? so_got_slot(&yoyoloader_mod, "_Z12DoAStep_Drawv") : NULL;
