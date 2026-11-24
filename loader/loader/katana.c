@@ -1184,6 +1184,8 @@ static void patch_performance() {
 
 	// Texture pages repacked by prepare_apk.py as LZ4 inside the runner's "2zoq" container
 	install_lz4_pages();
+	extern void title_pages_install(void);
+	title_pages_install();
 	install_nursery_align();
 	if (!exp_flag("letternative0")) {
 		extern int letter_native_install(void *(*rx_alloc)(size_t));
