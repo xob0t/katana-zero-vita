@@ -75,7 +75,7 @@ static void *eh_override_control_init(void *self, void *other, void *result, int
 	return orig_override_control_init(self, other, result, argc, args);
 }
 
-// Once per frame (katana_after_swap): a change of the setting (GRAPHICS menu) starts a fresh table, so no enemy
+// Once per frame (katana_after_swap): a change of the setting (GAME menu) starts a fresh table, so no enemy
 // covers more than two ticks
 void enemy_half_rate_update(void) {
 	static int seen = -1;
@@ -87,7 +87,7 @@ void enemy_half_rate_update(void) {
 		debugPrintf("Half-rate enemies %s\n", enemy_half_rate ? "on" : "off");
 }
 
-// At the first enemy Step or when the GRAPHICS page is built (the object table and the function registry aren't
+// At the first enemy Step or when the GAME page is built (the object table and the function registry aren't
 // loaded at install): the object indices of the hurt sources and collision_rectangle's registry index. Without all
 // of them half-rate is off for the session; while the registry is still empty it is asked again later.
 static int eh_resolve_sources(void) {

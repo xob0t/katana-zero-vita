@@ -1,7 +1,7 @@
 /*
  * katana_menu.c
  *
- * GRAPHICS menu rows ENEMY AI and ENEMY TIMING, and the yes/no prompt's starting selection.
+ * GAME menu rows ENEMY AI and ENEMY TIMING, and the yes/no prompt's starting selection.
  */
 
 #include <vitasdk.h>
@@ -20,9 +20,14 @@
 #include "katana_internal.h"
 
 /*
- * ENEMY AI (FULL RATE / HALF RATE: half-rate enemies, enemy_half_rate.c), added after BLOOD SPRAY
- * (add_pausemenu_choice, GRAPHICS page only), is the PC build's FULLSCREEN row with its value stored in the PC
- * build's LOW-END OPTIONS flag:
+ * The rows go on the GAME page after its last gameplay row, SLOWDOWN CONTROL. obj_options_main_menu Step builds each
+ * page in an obj_optionsmenu instance (add_pausemenu_choice: SCREENSHAKE, HITPAUSE, RESPONSE TIME, TEXT SPEED,
+ * SKIP REWIND, SLOWDOWN CONTROL, SAVE, CANCEL on GAME); only that unit passes "SLOWDOWN CONTROL" to
+ * add_pausemenu_choice. obj_optionsmenu Step, Draw and SAVE are the same for every page: Step and SAVE never read
+ * menu_title, and Draw reads it only for the title and the layout.
+ *
+ * ENEMY AI (FULL RATE / HALF RATE: half-rate enemies, enemy_half_rate.c) is the PC build's FULLSCREEN row with its
+ * value stored in the PC build's LOW-END OPTIONS flag:
  * - FULLSCREEN has a working row: Step toggles var_fullscreen = !var_fullscreen, Draw shows the game's "ON"/"OFF" for
  *   it. global.fullscreen is no use as storage: obj_miscmaster Room Start sets it to window_get_fullscreen() (always
  *   true on Android), and Destroy runs window_set_fullscreen and display_reset when it changes.
@@ -93,7 +98,7 @@ static void rv_free(gml_rvalue *v) {
 static void *menu_add_pausemenu_choice(void *self, void *other, void *result, int argc, void **args) {
 	void *r = orig_add_pausemenu_choice(self, other, result, argc, args);
 	const char *key = argc == 2 ? rv_string(args[0]) : NULL;
-	if (key && !strcmp(key, "BLOOD SPRAY")) { // the GRAPHICS page only (obj_options_main_menu Step)
+	if (key && !strcmp(key, "SLOWDOWN CONTROL")) { // the GAME page only (obj_options_main_menu Step)
 		extern int eh_available(void);
 		static const char *const rows[2] = { "FULLSCREEN", "WINDOW ZOOM" }; // ENEMY AI, ENEMY TIMING
 		const int shown[2] = { enemy_row && eh_available(), timing_row };

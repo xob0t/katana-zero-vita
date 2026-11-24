@@ -31,7 +31,7 @@ adds a few fps (the loader runs at 444 MHz).
 
 Some of the speedups change what you see or play:
 
-- Enemies think every other frame. Hits still land on time. **GRAPHICS → ENEMY AI** turns it off.
+- Enemies think every other frame. Hits still land on time. **GAME → ENEMY AI** turns it off.
 - No end-of-level replay and no death rewind.
 - No touch controls: the front touch screen does nothing.
 - Simpler effects in heavy scenes: less lighting, lighter smoke, fog and explosions.
@@ -39,7 +39,7 @@ Some of the speedups change what you see or play:
 Each can be undone in `ux0:data/gms/katanazero/yyl.cfg`; [docs/compromises.md](docs/compromises.md) lists them all.
 
 Enemies attack on the PC version's timing. The Android release delays their first attack and every shot by a few
-frames, which also hides the bullet in the first room's tutorial slow-mo. **GRAPHICS → ENEMY TIMING: ANDROID**
+frames, which also hides the bullet in the first room's tutorial slow-mo. **GAME → ENEMY TIMING: ANDROID**
 (or `enemyTiming=1`) brings back the Android timing.
 
 ## Building (Windows, no WSL)
