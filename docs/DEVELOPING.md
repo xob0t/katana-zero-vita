@@ -2,7 +2,7 @@
 
 A map of the loader for contributors: which file does what, how to switch each change off, the debug files on the
 Vita, the rules for hooking the runner, and how to build and check a change. Settings are in
-[settings.md](settings.md), the player-facing compromises in [compromises.md](compromises.md).
+[settings.md](settings.md), the player-facing changes in [changes.md](changes.md).
 
 The port-owned code is in `loader/loader/`. Each port file starts with a comment that explains the change, what it
 was measured at and how to turn it off; read it before changing the file. Upstream YoYo Loader files are `main.c`
@@ -22,7 +22,7 @@ the original. They fall in two kinds:
 - Skips: work whose result is thrown away is not done (an event at rest, an off-screen light, a puff that would be
   destroyed before it is seen).
 
-Visible changes (compromises) each have a `yyl.cfg` key that brings back the original, listed in compromises.md.
+Visible changes each have a `yyl.cfg` key that brings back the original, listed in [changes.md](changes.md).
 A few older ones in `katana.c` have no key, only an `exp_*` switch or none: they are marked below.
 
 ## Experiment switches (exp_*)
@@ -58,7 +58,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Prison fog: one puff in N | `katana.c` (`fog_install`), `fog_skip.c` (discarded puffs are never created) | `fogScale` | `exp_fogskip0` (create and destroy instead) | `exp_fogskipverify` | Visible; `fog_skip.c` exact |
 | Roll dust without light tint | `fog_trail.c` | `trailLights`, `fogTrailLights` | none | `exp_fogtrailab`, `exp_fogtrailsample` | Visible |
 | obj_particle draw event native | `particle_native.c` | none | `exp_particlenative0` | `exp_particleverify`, `exp_particleab` | Exact native |
-| Particles past the first 20 per frame drawn on alternate frames | `katana.c` (`particle_draw`) | none | none | | Visible, not in compromises.md |
+| Particles past the first 20 per frame drawn on alternate frames | `katana.c` (`particle_draw`) | none | none | | Visible, not in changes.md |
 | Explosion particles skip `update_light_array` | `particle_lights.c` | none | `exp_particlelights0` | `exp_particlelightsverify` | Exact skip |
 
 ### Lighting
@@ -96,7 +96,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 
 | Feature | Files | yyl.cfg | Off-switch | Other switches | Kind |
 |---|---|---|---|---|---|
-| Cloth at 30 Hz, paused far from view | `katana.c` | none | `exp_clothall` (no pausing; 30 Hz stays) | | Visible, not in compromises.md |
+| Cloth at 30 Hz, paused far from view | `katana.c` | none | `exp_clothall` (no pausing; 30 Hz stays) | | Visible, not in changes.md |
 | Rope solver native | `rope_fast.c` | none | `exp_ropefast0` | | Exact native |
 | Bounding-box fast path | `collision_native.c` | none | `exp_nativebbox0` | | Exact native |
 | Tile and door glow fades at rest | `glow_rest.c` | none | `exp_glowrest0` | `exp_glowverify` | Exact skip |
@@ -337,7 +337,7 @@ The test saves in `work/testsaves/` are not in the repository either.
    registry), and state in a comment at the call any order it depends on.
 5. If it is exact, add the file to `loader/exact_sources.cmake`.
 6. If it has a `yyl.cfg` key: parse it in `loadConfig`, add a row to [settings.md](settings.md), and if it changes what
-   the player sees or hears, a row to [compromises.md](compromises.md).
+   the player sees or hears, a row to [changes.md](changes.md).
 7. Use the hook helpers above and check the `[HOOKS]` line: nothing new under "not installed", and no other feature's
    `NOT installed` line in `yyl.log`.
 8. In the pull request, give the verifier you ran (the `exp_*verify` switch and the scene, or the offline harness) and

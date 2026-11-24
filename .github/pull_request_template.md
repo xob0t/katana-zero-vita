@@ -4,7 +4,7 @@
 
 ## Checklist
 
-- [ ] Exact or visible? A visible change has a row in `docs/compromises.md`; any new `yyl.cfg` key has a row in
+- [ ] Exact or visible? A visible change has a row in `docs/changes.md`; any new `yyl.cfg` key has a row in
       `docs/settings.md` (default, range, effect).
 - [ ] Off-switch: the `exp_*` flag (or setting) that turns the change off is named here and in the file's header
       comment.

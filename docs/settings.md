@@ -1,6 +1,6 @@
 # Settings
 
-Every key the loader reads from `yyl.cfg`, with its default and what it does. [compromises.md](compromises.md) is the
+Every key the loader reads from `yyl.cfg`, with its default and what it does. [changes.md](changes.md) is the
 player-facing list of what the port changes; this page covers all keys, including the debug and upstream ones.
 
 ## The file
@@ -59,7 +59,7 @@ Defaults come from the variable definitions in the file listed. "Nonzero" means 
 | `debugMode` | 0 | 0, nonzero | 1 writes the log to `ux0:data/gms/shared/yyl.log` and turns on the debug request files, the profiling report and the freeze locator ([DEVELOPING.md](DEVELOPING.md#debug-files)). | `main.c` |
 | `memOverlay` | 0 | 0, nonzero | 1 shows YoYo Loader's memory overlay. Only with `debugMode=1`. | `main.c` |
 
-Settings marked visible in [compromises.md](compromises.md) change what you see or hear. `frameSkip` and
+Settings marked visible in [changes.md](changes.md) change what you see or hear. `frameSkip` and
 `dynamicRes` also change the picture when they act; `renderRes` changes sharpness.
 
 ## Upstream YoYo Loader settings
