@@ -8,7 +8,8 @@ on:
   push:
     tags: ['v*']
   pull_request:
-    paths: ['loader/**', 'patches/**', 'scripts/**', 'web/**', 'livearea/template.xml', '.github/workflows/web-builder.yml']
+    paths: ['loader/**', 'patches/**', 'scripts/**', 'web/**', 'tests/**', 'livearea/template.xml', 'build.py',
+            'pyproject.toml', 'uv.lock', '.github/workflows/web-builder.yml']
   workflow_dispatch:
 
 permissions:
@@ -23,20 +24,21 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Dependencies (vitaGL, openal-soft, vitaShaRK, SceShaccCgExt, opensles)
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          BUILD_DIR="$RUNNER_TEMP/deps" bash scripts/setup-deps.sh
+      - uses: astral-sh/setup-uv@v10.4.0
+
+      - name: Tests
+        run: uv run --locked python -m unittest discover -s tests
 
       - name: Loader
         run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           # The app build packs LiveArea art, which is game art and not in the repository. The web builder draws its
           # own from the user's APK, so 1x1 placeholders do here.
           for f in icon0 bg0 startup; do
             echo iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg== | base64 -d > livearea/$f.png
           done
-          cmake -S loader -B build/app -DKATANA_APP=1
-          cmake --build build/app -j "$(nproc)"
+          # The container's softfp VitaSDK ($VITASDK) is used as it is; build.py builds the dependencies into it
+          uv run --locked build.py --deps-dir "$RUNNER_TEMP/deps"
           test -s build/app/eboot.bin && test -s build/app/KatanaZero.vpk_param.sfo
 
       - name: Site

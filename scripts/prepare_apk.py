@@ -6,7 +6,7 @@
 - recompresses game.droid texture pages from bzip2 to LZ4 (bzip2 decoding on the Vita CPU makes
   startup very slow). Pages stay in the runner's "2zoq" container with an "LZ4H"-marked payload,
   which the loader decodes by replacing BZ2_bzBuffToBuffDecompress (loader/loader/katana.c). Plain QOI
-  would decode fastest but keeps ~25 MB more of game.droid resident in RAM. Needs `pip install lz4`.
+  would decode fastest but keeps ~25 MB more of game.droid resident in RAM. Needs lz4 (pyproject.toml).
 - redraws the Xbox button glyphs as PS Vita buttons (scripts/vita_glyphs.py; --xbox-glyphs keeps them)
 - rewrites the runner's PLT calls into direct branches (scripts/patch_plt_calls.py)
 

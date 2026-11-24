@@ -1,0 +1,14 @@
+# Python environment for the build (build.py) and the APK scripts in scripts/: `uv run build.py "<Katana ZERO APK>"`
+[project]
+name = "katana-zero-vita"
+version = "0"
+requires-python = ">=3.12"
+dependencies = [
+    "cmake>=3.28",
+    "lz4",
+    "pillow",
+    "pyelftools",
+]
+
+[tool.uv]
+package = false

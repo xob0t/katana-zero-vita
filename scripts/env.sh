@@ -1,5 +1,6 @@
 # Source from Git Bash: . scripts/env.sh
-# On Windows this points at the softfp VitaSDK from setup-sdk.sh and provides a plain `make`. Elsewhere (the CI
+# For running cmake, make or the toolchain by hand; build.py sets up the same environment itself.
+# On Windows this points at the softfp VitaSDK that build.py installs and provides a plain `make`. Elsewhere (the CI
 # container, which sets VITASDK itself) it leaves the environment as it is.
 if [ -z "${VITASDK:-}" ] || [ -d /c/vitasdk-softfp ]; then
 	export VITASDK="C:/vitasdk-softfp"
