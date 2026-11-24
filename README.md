@@ -12,51 +12,39 @@ logic runs on one core and can't be split across more. A 500 MHz profile in PSVs
 
 ## Compromises
 
-Most items below are a setting in `ux0:data/gms/katanazero/yyl.cfg`, and the value at the end of the item brings
-back the original.
+To run near 60 fps, the port changes a few things. The setting next to each brings back the original; settings go
+in `ux0:data/gms/katanazero/yyl.cfg`.
 
-- **Optional 30 fps in heavy rooms.** In GameMaker the game's speed follows the frame rate, so a room that can't
-  hold 60 fps plays in slow motion. The port can run such rooms at 30 fps with the game's clock doubled. They play at
-  full speed, but less smoothly, and input is read 30 times a second. Pick the mode in the game's settings, under
-  **GRAPHICS → FPS MODE**.
-  - **NATIVE** (default). Never switches to 30, like the original game. Most rooms hold 60, and heavy ones slow down
-    instead: 45 fps plays at three-quarters speed. A few of the heaviest scenes, like the dossier burning, play at
-    about half speed. This mode has the smoothest picture and the game's exact timing. The slowdown is easy to live
-    with, and in busy fights it gives you extra time.
-  - **DYNAMIC**. A room drops to 30 after about two seconds under 50 fps and goes back to 60 when it can hold it
-    again. The heaviest rooms start at 30 as soon as their opening cutscene ends. You get full speed everywhere and
-    60 wherever the Vita can manage it. `fpsMode=1`.
-  - **30 FPS**. Every room runs at 30. Pick it if the switching bothers you or you want the same feel and timing in
-    every room. `fpsMode=2`.
-- **Enemy AI at half rate.** At 60 fps each enemy thinks and moves every other frame, half of them on even frames
-  and half on odd ones. Hits still land on the frame they would have. It saves 2-3 ms per frame in fights; in
-  testing nobody noticed a difference. **GRAPHICS → ENEMY AI**, or `enemyHalfRate=0`.
-- **Smoke updates every 4th frame.** Smoke clouds that have settled update on every 4th frame, a quarter of them on
-  each frame, and burning-corpse embers do the same. It looks the same and saves about 2 ms per frame in smoky rooms.
-- **No rain.** Rainy levels run about 20% faster without it. `rain=2`, or `rain=1` for half the drops.
-- **No replays.** No end-of-level VHS replay and no death rewind. With them on, memory runs out after a few minutes
-  in one room and heavy rooms lose about 2 fps. `replays=1` leaves it to the game's own graphics option.
-- **No coloured light tint on clotheslines.** It cost about 7 fps near them. `ropeLights=1`.
-- **No rim glow on club dancers.** It's about 285 extra draws per frame, 44 fps with it and 52-56 without. The light
-  show stays. `dancerGlow=1` (on the first dance floor, club_0, also `roomLighting=1`).
-- **No dust in the cathedral's window light.** 41 fps with it, 59 without. `cathedralDust=1`.
-- **No lamp glow in haunted_cart2 and club_0.** The coloured glow that lamps and spotlights throw on walls and floors
-  is off in those two rooms: 38 -> 40 fps in the minecart room, 55-57 -> 60 fps on the club's dance floor.
-  `roomLighting=1`.
-- **Lower resolution in GPU-heavy rooms.** A room where the GPU can't keep up at 960x540, so frames miss the screen
-  refresh while the CPU has time to spare, drops to 640x360 until the next room. `dynamicRes=0`.
-- **Coarser laser deaths.** The body is cut into 4 times fewer, 4 times thicker slices. `dissolveChunkScale=1`.
-- **Thinner prison fog.** One puff in 4 is kept and drawn denser. `fogScale=1`.
-- **Unlit roll dust in fog.** In the foggy rooms (the prison, the neighbour's party) the dust clouds a roll kicks up
-  get one fixed pale tint instead of being lit by the lights around them. Rolling there: 57 -> 59 fps. `fogTrailLights=1`.
-- **Sound limits.** At most 3 copies of one sound and 32 voices at once. Laser deaths start dozens of identical
-  sounds and stalled the game mixing them. `sameSoundLimit=0` and `maxVoices=0`.
-- **Lighting updates 30 times a second** in rooms that run at 60. No setting.
-- **Checkpoints are saved in the background.** The game no longer waits for the memory card, which stuttered it for
-  20-90 ms at every checkpoint. If the Vita crashes or loses power right after a checkpoint, that checkpoint can be
-  lost and you continue from the one before; a save is never left half-written. `asyncSave=0`.
-- **Pauses at some room loads.** The game never unloads its texture pages, so over a session it runs out of video
-  memory. The loader then clears them all, which costs 1-1.5 s at the next room load. No setting.
+**Everywhere**
+
+| Change | Undo with |
+|---|---|
+| Enemies think and move every other frame; hits still land on the frame they would have | `enemyHalfRate=0`, or **GRAPHICS → ENEMY AI** |
+| Settled smoke and burning-corpse embers update every 4th frame | — |
+| Lighting updates 30 times a second | — |
+| Roll dust is unlit, and afterimages have no light tint | `trailLights=1` |
+| No glow around highlighted words in dialogue | `letterGlow=1` |
+| The wavy dialogue backgrounds sway in coarser steps | `waveStrips=1` |
+| Laser deaths cut the body into fewer, thicker slices | `dissolveChunkScale=1` |
+| At most 3 copies of one sound and 32 voices at once | `sameSoundLimit=0`, `maxVoices=0` |
+| Checkpoints are saved in the background: a crash right after one can lose it, never corrupt it | `asyncSave=0` |
+| Rooms the GPU can't keep up with drop to 640x360 | `dynamicRes=0` |
+| No rain | `rain=2` (`rain=1`: half the drops) |
+| No end-of-level replay and no death rewind | `replays=1` |
+
+**In some rooms**
+
+| Where | Change | Undo with |
+|---|---|---|
+| Club | No rim glow on the dancers | `dancerGlow=1` (in club_0 also `roomLighting=1`) |
+| club_0, haunted_cart2 | No lamp glow on walls and floors | `roomLighting=1` |
+| Clotheslines | No coloured light on them | `ropeLights=1` |
+| Cathedral | No dust in the window light | `cathedralDust=1` |
+| Prison | Thinner fog | `fogScale=1` |
+| Motorcycle chase | No cone shadows; distant rockets unlit; explosions with a third of the particles | `coneShadows=1`, `farRocketLights=1`, `fullExplosions=1` |
+
+Over a long session video memory fills up. When it does, the next room load pauses for about a second while the
+textures reload.
 
 ## Installing on a Vita
 
