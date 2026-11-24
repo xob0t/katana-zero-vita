@@ -16,7 +16,7 @@ minute. Nothing to install on your computer, and your APK isn't uploaded anywher
    500 MHz CPU profile. Without it the heavy rooms drop more frames (the loader alone sets 444 MHz).
 
 The first launch prepares the graphics cache (`ux0:data/shader_cache/KTNZ00001`) and takes about 3 minutes; a
-progress bar shows it. Later launches reach the title screen in about 30 seconds. To update, build a new VPK and
+progress bar shows it. Later launches start the game in about 20 seconds. To update, build a new VPK and
 install it over the old one. Saves are kept.
 
 With `debugMode=1` in `yyl.cfg` the log goes to `ux0:data/gms/shared/yyl.log`.
