@@ -1,3 +1,126 @@
+diff --git a/source/custom_shaders.c b/source/custom_shaders.c
+index 3b91d11..dd5c36d 100644
+--- a/source/custom_shaders.c
++++ b/source/custom_shaders.c
+@@ -35,6 +35,38 @@
+ #include "utils/xxhash_utils.h"
+ #ifdef HAVE_SHADER_CACHE
+ char vgl_shader_cache_path[256];
++// katana-vita: flat cache layout, every shader in one folder as <v|f><hash>.gxp (vgl.c makes only that folder; the
++// v/00-FF and f/00-FF layout cost 512 mkdirs, about 3 minutes on a memory card). Stats for the loader's log: cache
++// hits, misses, lookup+load us, compile+save us.
++uint32_t vgl_shader_cache_stats[4];
++void unserialize_shader(void *in, size_t sz, shader *s, GLboolean load_bindings);
++static void shader_cache_fname(char *fname, GLenum type, const void *src, uint32_t size) {
++	uint64_t hash = XXH3_64bits(src, size);
++	sprintf(fname, "%s/%c%016llX.gxp", vgl_shader_cache_path, type == GL_VERTEX_SHADER ? 'v' : 'f', hash);
++}
++static GLboolean shader_cache_load(const char *fname, shader *s, GLboolean load_bindings, GLboolean free_source) {
++	uint64_t t = sceKernelGetProcessTimeWide();
++	SceUID f = sceIoOpen(fname, SCE_O_RDONLY, 0777);
++	if (f < 0) {
++		vgl_shader_cache_stats[1]++;
++		vgl_shader_cache_stats[2] += (uint32_t)(sceKernelGetProcessTimeWide() - t);
++		return GL_FALSE;
++	}
++	if (free_source) {
++		vgl_free(s->source);
++		s->source = NULL;
++	}
++	size_t sz = sceIoLseek(f, 0, SCE_SEEK_END);
++	sceIoLseek(f, 0, SCE_SEEK_SET);
++	void *buf = vglMalloc(sz);
++	sceIoRead(f, buf, sz);
++	sceIoClose(f);
++	unserialize_shader(buf, sz, s, load_bindings);
++	vgl_free(buf);
++	vgl_shader_cache_stats[0]++;
++	vgl_shader_cache_stats[2] += (uint32_t)(sceKernelGetProcessTimeWide() - t);
++	return GL_TRUE;
++}
+ #endif
+ #ifdef HAVE_TEX_CACHE
+ char vgl_file_cache_path[256];
+@@ -727,6 +759,7 @@ void unserialize_shader(void *in, size_t sz, shader *s, GLboolean load_bindings)
+ #ifdef HAVE_SHADER_CACHE
+ #define vgl_compile_shader(shd, sv) compile_shader(shd, sv, fname)
+ static inline __attribute__((always_inline)) void compile_shader(shader *s, GLboolean save_bindings, const char *cache_fname) {
++	uint64_t cache_t0 = sceKernelGetProcessTimeWide();
+ #else
+ #define vgl_compile_shader(shd, sv) compile_shader(shd, sv)
+ static inline __attribute__((always_inline)) void compile_shader(shader *s, GLboolean save_bindings) {
+@@ -778,6 +811,7 @@ static inline __attribute__((always_inline)) void compile_shader(shader *s, GLbo
+ 	sceIoWrite(f, buf, sz);
+ 	sceIoClose(f);
+ 	vgl_free(buf);
++	vgl_shader_cache_stats[3] += (uint32_t)(sceKernelGetProcessTimeWide() - cache_t0);
+ #endif
+ }
+ 
+@@ -1999,22 +2033,9 @@ void glCompileShader(GLuint handle) {
+ 	
+ #ifdef HAVE_SHADER_CACHE
+ 	char fname[256];
+-	uint64_t hash = XXH3_64bits(s->source, s->size);
+-	uint8_t subdir_hash = hash >> 56;
+-	sprintf(fname, "%s/%s/%02X/%llX.gxp", vgl_shader_cache_path, s->type == GL_VERTEX_SHADER ? "v" : "f", subdir_hash, hash);
+-	SceUID f = sceIoOpen(fname, SCE_O_RDONLY, 0777);
+-	if (f >= 0) {
+-		vgl_free(s->source);
+-		s->source = NULL;
+-		size_t sz = sceIoLseek(f, 0, SCE_SEEK_END);
+-		sceIoLseek(f, 0, SCE_SEEK_SET);
+-		void *buf = vglMalloc(sz);
+-		sceIoRead(f, buf, sz);
+-		sceIoClose(f);
+-		unserialize_shader(buf, sz, s, GL_FALSE);
+-		vgl_free(buf);
++	shader_cache_fname(fname, s->type, s->source, s->size);
++	if (shader_cache_load(fname, s, GL_FALSE, GL_TRUE))
+ 		return;
+-	}
+ #endif
+ 
+ 	if (s->is_glsl) {
+@@ -2385,34 +2406,12 @@ void glLinkProgram(GLuint progr) {
+ 		char frag_fname[256], vert_fname[256];
+ 		char *fname;
+ 		if (!p->vshader->prog) {
+-			uint64_t hash = XXH3_64bits(p->vshader->source, p->vshader->size);
+-			uint8_t subdir_hash = hash >> 56;
+-			sprintf(vert_fname, "%s/v/%02X/%llX.gxp", vgl_shader_cache_path, subdir_hash, hash);
+-			SceUID f = sceIoOpen(vert_fname, SCE_O_RDONLY, 0777);
+-			if (f >= 0) {
+-				size_t sz = sceIoLseek(f, 0, SCE_SEEK_END);
+-				sceIoLseek(f, 0, SCE_SEEK_SET);
+-				void *buf = vglMalloc(sz);
+-				sceIoRead(f, buf, sz);
+-				sceIoClose(f);
+-				unserialize_shader(buf, sz, p->vshader, GL_TRUE);
+-				vgl_free(buf);
+-			}
++			shader_cache_fname(vert_fname, GL_VERTEX_SHADER, p->vshader->source, p->vshader->size);
++			shader_cache_load(vert_fname, p->vshader, GL_TRUE, GL_FALSE);
+ 		}
+ 		if (!p->fshader->prog) {
+-			uint64_t hash = XXH3_64bits(p->fshader->source, p->fshader->size);
+-			uint8_t subdir_hash = hash >> 56;
+-			sprintf(frag_fname, "%s/f/%02X/%llX.gxp", vgl_shader_cache_path, subdir_hash, hash);
+-			SceUID f = sceIoOpen(frag_fname, SCE_O_RDONLY, 0777);
+-			if (f >= 0) {
+-				size_t sz = sceIoLseek(f, 0, SCE_SEEK_END);
+-				sceIoLseek(f, 0, SCE_SEEK_SET);
+-				void *buf = vglMalloc(sz);
+-				sceIoRead(f, buf, sz);
+-				sceIoClose(f);
+-				unserialize_shader(buf, sz, p->fshader, GL_TRUE);
+-				vgl_free(buf);
+-			}
++			shader_cache_fname(frag_fname, GL_FRAGMENT_SHADER, p->fshader->source, p->fshader->size);
++			shader_cache_load(frag_fname, p->fshader, GL_TRUE, GL_FALSE);
+ 		}
+ #endif
+ 		if (!p->vshader->prog || !p->fshader->prog) {
 diff --git a/source/framebuffers.c b/source/framebuffers.c
 index 15e59ea..468db45 100644
 --- a/source/framebuffers.c
@@ -924,7 +1047,7 @@ index 80f3f86..87c26f7 100644
  
  void vgl_mem_init(size_t size_ram, size_t size_cdram, size_t size_phycont, size_t size_cdlg);
 diff --git a/source/vgl.c b/source/vgl.c
-index 014e790..af034cd 100644
+index 014e790..c0dfbb3 100644
 --- a/source/vgl.c
 +++ b/source/vgl.c
 @@ -21,6 +21,7 @@
@@ -935,7 +1058,38 @@ index 014e790..af034cd 100644
  #include "texture_callbacks.h"
  #include "vitaGL.h"
  
-@@ -606,6 +607,7 @@ void *vglMalloc(uint32_t size) {
+@@ -202,27 +203,10 @@ GLboolean vglInitWithCustomSizes(int pool_size, int width, int height, int ram_p
+ 	if (!shader_cache_root[0])
+ 		sprintf(shader_cache_root, "ux0:data/shader_cache/%s", titleid);
+ 	sceIoMkdir(shader_cache_root, 0777);
+-	sprintf(vgl_shader_cache_path, "%s/v%d", shader_cache_root, SHADER_CACHE_MAGIC);
++	// katana-vita: flat layout (custom_shaders.c), one folder instead of the 512 v/00-FF and f/00-FF folders. The
++	// new name keeps the old v<magic> trees from being read.
++	sprintf(vgl_shader_cache_path, "%s/flat%d", shader_cache_root, SHADER_CACHE_MAGIC);
+ 	sceIoMkdir(vgl_shader_cache_path, 0777);
+-	sprintf(fname, "%s/v", vgl_shader_cache_path);
+-	sceIoMkdir(fname, 0777);
+-	char dirname[256];
+-	sprintf(dirname, "%s/00", fname);
+-	GLboolean skip_creation = sceIoMkdir(dirname, 0777) != 0;
+-	if (!skip_creation) {
+-		for (int i = 1; i <= 0xFF; i++) {
+-			sprintf(dirname, "%s/%02X", fname, i);
+-			sceIoMkdir(dirname, 0777);
+-		}
+-	}
+-	sprintf(fname, "%s/f", vgl_shader_cache_path);
+-	sceIoMkdir(fname, 0777);
+-	if (!skip_creation) {
+-		for (int i = 0; i <= 0xFF; i++) {
+-			sprintf(dirname, "%s/%02X", fname, i);
+-			sceIoMkdir(dirname, 0777);
+-		}
+-	}
+ #endif
+ 	// Check if framebuffer size is valid
+ 	GLboolean res_fallback = GL_FALSE;
+@@ -606,6 +590,7 @@ void *vglMalloc(uint32_t size) {
  		vgl_log("%s:%d: vglMalloc failed allocating %u bytes (Call generated from 0x%08X). Attempting to recover enough memory to go past it.\n", __FILE__, __LINE__, size, __builtin_return_address(0));
  		unsafe_allocator_counter = 0;
  		res = gpu_alloc_mapped_aligned_unsafe_for_cpu(MEM_ALIGNMENT, size);
@@ -943,7 +1097,7 @@ index 014e790..af034cd 100644
  #ifdef LOG_ERRORS
  		if (!res) {
  			vgl_log("%s:%d vglMalloc failed with a requested size of %u bytes.\n", __FILE__, __LINE__, size);
-@@ -650,6 +652,7 @@ void *vglMemalign(uint32_t alignment, uint32_t size) {
+@@ -650,6 +635,7 @@ void *vglMemalign(uint32_t alignment, uint32_t size) {
  		vgl_log("%s:%d: vglMemalign failed allocating 0x%X bytes with 0x%X alignment.\n", __FILE__, __LINE__, size, alignment);
  		unsafe_allocator_counter = 0;
  		res = gpu_alloc_mapped_aligned_unsafe_for_cpu(alignment, size);
@@ -951,7 +1105,7 @@ index 014e790..af034cd 100644
  #ifdef LOG_ERRORS
  		if (!res) {
  			vgl_log("%s:%d vglMemalign failed with a requested size of %u bytes.\n", __FILE__, __LINE__, size);
-@@ -690,6 +693,7 @@ void *vglCalloc(uint32_t nmember, uint32_t size) {
+@@ -690,6 +676,7 @@ void *vglCalloc(uint32_t nmember, uint32_t size) {
  		vgl_log("%s:%d: vglCalloc failed allocating 0x%X blocks of 0x%X bytes.\n", __FILE__, __LINE__, nmember, size);
  		unsafe_allocator_counter = 0;
  		res = gpu_alloc_mapped_aligned_unsafe_for_cpu(MEM_ALIGNMENT, size * nmember);
