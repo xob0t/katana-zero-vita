@@ -537,6 +537,8 @@ void katana_prof_report(int frames) {
 			last_fallback = light_array_fallback;
 			last_us = light_array_us;
 			light_array_max_us = 0;
+			extern void light_array_fast_report(int frames);
+			light_array_fast_report(frames);
 		}
 		extern unsigned shadow_native_fast, shadow_native_slow, shadow_native_rows;
 		if (shadow_native_fast || shadow_native_slow)

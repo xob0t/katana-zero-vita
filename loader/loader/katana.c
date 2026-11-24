@@ -585,6 +585,33 @@ void katana_goto_check(void) {
 			x = global_real(var_xview, 0) + global_real(var_wview, 0) / 2;
 			y = global_real(var_yview, 0) + global_real(var_hview, 0) / 2;
 		}
+		// "smoke player": at the player (the first obj_player instance, through instance_find and the id table)
+		if (!strncmp(text, "smoke", 5) && strstr(text, "player")) {
+			void (*instance_find)(gml_rvalue *result, void *self, void *other, int argc, gml_rvalue *args) =
+				(void *)so_symbol(&yoyoloader_mod, "_Z14F_InstanceFindR6RValueP9CInstanceS2_iPS_");
+			int (*object_find)(const char *name) = (void *)so_symbol(&yoyoloader_mod, "_Z11Object_FindPKc");
+			const uint32_t *id_map = (const uint32_t *)so_symbol(&yoyoloader_mod, "_ZN9CInstance14ms_ID2InstanceE");
+			int player = object_find ? object_find("obj_player") : -1;
+			if (instance_find && id_map && id_map[0] && player >= 0) {
+				gml_rvalue found = {0, 0, 5}, a[2] = {{0, 0, 15}, {0, 0, 0}};
+				uint32_t ref[2] = {(uint32_t)player, 0x01000000}; // an object reference, as YYC passes obj_*
+				memcpy(&a[0].val, ref, 8);
+				instance_find(&found, NULL, NULL, 2, a);
+				int id = -4;
+				if ((found.kind & 0xffffff) == 0)
+					id = (int)found.val;
+				else if ((found.kind & 0xffffff) == 15)
+					memcpy(&id, &found.val, 4);
+				const uint32_t *e = id >= 0 ? (const uint32_t *)(uintptr_t)((const uint32_t *)(uintptr_t)id_map[0])
+					[(id_map[1] & (uint32_t)id) * 2] : NULL;
+				for (; e; e = (const uint32_t *)(uintptr_t)e[1])
+					if ((int)e[2] == id) {
+						memcpy(&x, (const char *)(uintptr_t)e[3] + 0xb8, 4);
+						memcpy(&y, (const char *)(uintptr_t)e[3] + 0xbc, 4);
+						break;
+					}
+			}
+		}
 		if (!strncmp(text, "smoke", 5)) {
 			// "smoke [view]": a smoke vial's burst there, create_smokescreen(x, y, 260) as obj_throwable's Destroy calls
 			// it (260 is its gs_constArg8), with an obj_throwable_smoke_vial (1015) created there as self. The burst's

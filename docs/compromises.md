@@ -8,7 +8,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Change | Undo with |
 |---|---|
 | Enemies think and move every other frame; hits still land on the frame they would have | `enemyHalfRate=0`, or **GRAPHICS → ENEMY AI** |
-| Settled smoke and burning-corpse embers update every 4th frame | — |
+| Settled smoke and burning-corpse embers update every 4th frame, smoke also while you stand still in it | `smokePlayerStill=0` (only the standing-still part) |
 | Smoke is drawn with half the clouds, each one larger; the hidden ones still block sight and get pushed | `smokeClouds=1` (`smokeClouds=3`: a third, larger still; 1 to 3) |
 | Swaying smoke no longer reshuffles the game's collision order every frame. Hit areas are the same; when two enemies stand in one cloud, which one it holds back can differ (in the original it changed from frame to frame) | `smokeWobble=0` |
 | Lighting updates 30 times a second | — |
