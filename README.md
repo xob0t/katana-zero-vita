@@ -27,6 +27,11 @@ back the original.
 - **No coloured light tint on clotheslines.** It cost about 7 fps near them. `ropeLights=1`.
 - **No rim glow on club dancers.** It's about 285 extra draws per frame, 44 fps with it and 52-56 without. The light
   show stays. `dancerGlow=1` (on the first dance floor, club_0, also `roomLighting=1`).
+- **No lighting on distant rockets in the helicopter fight.** The rockets rising in the background are drawn in
+  their plain colour, without light tint or rim shading. With 15-25 of them on screen the shading cost 15-35 ms per
+  frame. `farRocketLights=1`.
+- **No shadows under the traffic cones in the motorcycle chase.** About 100 cones each drew a shadow out of ~20
+  strips. Without them the cone stretch runs at 53-58 fps instead of 40-53. `coneShadows=1`.
 - **No dust in the cathedral's window light.** 41 fps with it, 59 without. `cathedralDust=1`.
 - **No lamp glow in haunted_cart2 and club_0.** The coloured glow that lamps and spotlights throw on walls and floors
   is off in those two rooms: 38 -> 40 fps in the minecart room, 55-57 -> 60 fps on the club's dance floor.

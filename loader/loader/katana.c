@@ -1214,6 +1214,33 @@ static void patch_performance() {
 		extern int bike_draw_install(void);
 		debugPrintf("bike draw loops: %s\n", bike_draw_install() ? "installed" : "NOT installed");
 	}
+	// update_region natively (exact; region_native.c): moving particles and every explosion particle call it from their
+	// draw event, 120-270 calls per frame in the bike chase's helicopter volleys at ~21 us each
+	if (!exp_flag("regionnative0")) {
+		extern int region_native_install(void *(*hook)(uintptr_t entry, void *replacement));
+		debugPrintf("native update_region: %s\n", region_native_install(entry_hook) ? "installed" : "NOT installed");
+	}
+	// Explosion particles skip update_light_array in their inherited Create: they never read the light list (exact;
+	// particle_lights.c). Bike chase volleys: 60-90 particles per explosion frame, ~40 us each.
+	if (!exp_flag("particlelights0")) {
+		extern int particle_lights_install(void *(*hook)(uintptr_t entry, void *replacement));
+		debugPrintf("explosion particle lights: %s\n", particle_lights_install(entry_hook) ? "installed" : "NOT installed");
+	}
+	// Bike chase traffic cones: drawn without their draw_shadow (cone_shadow.c), 4.5-6 ms per frame with ~100 cones even
+	// with the native shadow. coneShadows=1 keeps them.
+	extern int cone_shadows;
+	if (!cone_shadows) {
+		extern int cone_shadow_install(void);
+		debugPrintf("cone shadows off: %s%c", cone_shadow_install() ? "installed" : "NOT installed", 10);
+	}
+	// Bike chase helicopter fight: the rockets rising in the background (obj_heli_mortar_far) are drawn unlit; their
+	// light list, light tint and rim shading cost 15-37 ms of render-target flushes per frame while 15-25 are on
+	// screen (far_rocket.c). farRocketLights=1 keeps them lit.
+	extern int far_rocket_lights;
+	if (!far_rocket_lights) {
+		extern int far_rocket_install(void);
+		debugPrintf("far rockets unlit: %s\n", far_rocket_install() ? "installed" : "NOT installed");
+	}
 	// update_light_array's loop body runs natively per light (exact; light_array_native.c): particles' Create events
 	if (!exp_flag("lightarray0")) {
 		extern int light_array_install(void *(*rx_alloc)(size_t));
