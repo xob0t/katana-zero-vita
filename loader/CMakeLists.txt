@@ -80,6 +80,9 @@ add_executable(YoYoLoader
   loader/fx_rate.c
   loader/rain_cheap.c
   loader/glow_rest.c
+  loader/psych_fix.c
+  loader/psych_ground.c
+  loader/psych_petal.c
   loader/wobble_rest.c
   loader/blood_drops.c
   loader/room_lighting.c

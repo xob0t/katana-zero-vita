@@ -279,6 +279,8 @@ void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
 	// The title pages' state as the next frame starts, after any recovery flush above
 	extern void title_pages_snapshot(void);
 	title_pages_snapshot();
+	extern void psych_fix_frame(void);
+	psych_fix_frame();
 }
 
 static void after_swap(uint32_t swap_us, uint32_t work_us) {
