@@ -36,9 +36,15 @@
  * close_light_array entries (see compare_passes; [LIGHTARRAY] report, mismatches must stay 0).
  *
  * lightArrayFast (yyl.cfg, default 1): a light's distance, rdist store and compare inline instead of through
- * F_PointDistance, InternalGetYYVarRefL/InternalGetYYVarRef and YYCompareVal (see body; exact, checked by the verify
- * above; exp_lightarrayfastfault breaks it on purpose). A smoke vial's new clouds each build their list on their first
- * two Draws: 131 calls of ~96 us on the Vita in each of those frames, ~78 us with this.
+ * F_PointDistance, InternalGetYYVarRefL/InternalGetYYVarRef and YYCompareVal (see body), PushContextStack/
+ * PopContextStack and BOOL_RValue of the argument inline, and a close light's two writes straight to the runner's
+ * Variable_GetValue_Direct / Variable_SetValue_Direct, which is where YYGML_Variable_GetValue/SetValue of an instance
+ * end up (see close_light), without the Other() call and its RValue. Exact, checked by the verify above;
+ * exp_lightarrayfastfault (rdist) and exp_lightarrayclosefault (array index) break it on purpose.
+ * Where the time went (Vita, a vial's 131 new clouds, ~22 lights and ~9 close ones per call): the with-iterator is a
+ * few instructions per light (YYGML_WithIteratorNext), NewWithIterator ~7 us per call; the rest was the per-light body
+ * (~2.5 us) and the close-light writes (~3.5 us each through YYGML_Variable_* and Other()). A smoke vial's new clouds
+ * each build their list on their first two Draws: ~96 us per call before this, ~55 us with it.
  */
 #include <stdint.h>
 #include <stddef.h>
@@ -192,7 +198,60 @@ static int call_ok(void) {
 typedef struct { int distance, close; RV rdist; } Outcome;
 
 // other.close_light_array[other.close_lights] = id; other.close_lights += 1 (the original's runner calls)
+static int fast, close_fault;
+extern unsigned light_array_close_fast;
+typedef int ABI (*getdirect_fn)(void *owner, int id, int index, RV *out, int, int);
+typedef int ABI (*setdirect_fn)(void *owner, int id, int index, RV *value);
+static getdirect_fn get_direct;
+static setdirect_fn set_direct;
+static void **context_stack_base;
+static int *context_top, *context_max;
+static const uint8_t *garbage_collection;
+// PushContextStack(owner) (0xecc284): with garbage collection on, append; the runner's own call when it must grow.
+// PopContextStack(1) (0xecc33c): top - 1, not below 0. (As smokedraw_native.c does them.)
+static inline void push_inline(void *owner) {
+	if (!*garbage_collection)
+		return;
+	int top = *context_top;
+	if (top == *context_max) {
+		push_context(owner);
+		return;
+	}
+	((void **)*(void ***)context_stack_base)[top] = owner;
+	*context_top = top + 1;
+}
+static inline void pop_inline(void) {
+	int top = *context_top - 1;
+	*context_top = top < 0 ? 0 : top;
+}
+
 static void close_light(void *light, void *caller) {
+	if (fast && get_direct && set_direct) {
+		// The same writes without the call plumbing (lightArrayFast): YYGML_Variable_GetValue of an instance (kind 6) is
+		// Variable_GetValue_Direct(light, id, index, out, false, false) (0xf89f24); Other() in the with body is the
+		// caller, and YYGML_Variable_SetValue of a kind-6 target is Variable_SetValue_Direct(caller, ...) (0xf8a070);
+		// INT32_RValue of a real is vcvt.s32.f64 (0xec7c6c); operator+=(int) of a real adds (double)n (0xbae58c).
+		Table tc;
+		RV *count = table(caller, &tc) ? peek(&tc, CLOSE_LIGHTS) : NULL;
+		if (count && (count->kind & 0xffffff) == 0 && count->value > -2147483648.0 && count->value < 2147483648.0) {
+			RV id = {0, 0, 5};
+			if (get_direct(light, VAR_ID(ID), (int)0x80000000, &id, 0, 0)) {
+				int n = (int)count->value + close_fault; // close_fault: negative control (exp_lightarrayclosefault)
+				set_direct(caller, VAR_ID(CLOSE_LIGHT_ARRAY), n, &id);
+				RV *c = peek(&tc, CLOSE_LIGHTS);
+				if (c && (c->kind & 0xffffff) == 0)
+					c->value = c->value + 1.0;
+				else
+					add_eq(standard_ref(caller, VAR_ID(CLOSE_LIGHTS)), 1);
+				if (refcounted(&id))
+					release(&id);
+				light_array_close_fast++;
+				return;
+			}
+			if (refcounted(&id))
+				release(&id);
+		}
+	}
 	RV *count = standard_get(caller, VAR_ID(CLOSE_LIGHTS));
 	RV inst = {0, 0, 6}, id = {0, 0, 5}, res = {0, 0, 5};
 	memcpy(&inst.value, &light, sizeof(light));
@@ -212,8 +271,8 @@ static void close_light(void *light, void *caller) {
  * that code). exp_lightarrayfastab flips it every report window ([LIGHTARRAY] fast count).
  */
 int light_array_fast_on = 1;
-static int fast, fast_ab, fast_fault; // exp_lightarrayfastfault (negative control for exp_lightarrayverify): rdist + 0.5
-unsigned light_array_fast;
+static int fast_ab, fast_fault; // exp_lightarrayfastfault (negative control for exp_lightarrayverify): rdist + 0.5
+unsigned light_array_fast, light_array_close_fast;
 
 // The loop body for one light (self) and the caller (other). dry: compute without writing (unused since the
 // two-pass verifier).
@@ -229,7 +288,7 @@ static int body(void *light, void *caller, int dry, Outcome *o) {
 	const RV *a0 = cur.args[0];
 	REQUIRE((a0->kind & 0xffffff) == 0 || (a0->kind & 0xffffff) == 13);
 	RV *region = NULL, *caller_region = NULL, *bypass = NULL;
-	if (bool_value(a0)) {
+	if (fast ? a0->value > 0.5 : bool_value(a0)) { // BOOL_RValue of a real or bool (kinds checked above)
 		region = peek(&tl, REGION);
 		caller_region = peek(&tc, REGION);
 		bypass = peek(&tl, BYPASS);
@@ -276,11 +335,11 @@ static int body(void *light, void *caller, int dry, Outcome *o) {
 			o->rdist.value = (double)r + (fast_fault ? 0.5 : 0.0);
 			o->rdist.flags = 0;
 			o->rdist.kind = 0;
-			push_context(light);
+			push_inline(light);
 			if (refcounted(slot))
 				release(slot);
 			*slot = o->rdist;
-			pop_context(1);
+			pop_inline();
 			RV limit = real(radius->value * 1.25);
 			double d = slot->value - limit.value;
 			int c = d == d ? (fabs(d) <= *epsilon ? 0 : d < 0 ? -1 : 1) : compare(slot, &limit, *epsilon, 1);
@@ -574,8 +633,17 @@ int light_array_install(void *(*rx_alloc)(size_t)) {
 	for (int i = 0; i < 34 && fast; i++)
 		if (pd[i] ? pdc[i] != pd[i] : (pdc[i] >> 24) != 0xeb)
 			fast = 0;
+	get_direct = (getdirect_fn)so_symbol(&yoyoloader_mod, "_Z24Variable_GetValue_DirectP12YYObjectBaseiiP6RValuebb");
+	set_direct = (setdirect_fn)so_symbol(&yoyoloader_mod, "_Z24Variable_SetValue_DirectP12YYObjectBaseiiP6RValue");
+	context_stack_base = (void **)so_symbol(&yoyoloader_mod, "g_ContextStack");
+	context_top = (int *)so_symbol(&yoyoloader_mod, "g_ContextStackTop");
+	context_max = (int *)so_symbol(&yoyoloader_mod, "g_ContextStackMax");
+	garbage_collection = (const uint8_t *)so_symbol(&yoyoloader_mod, "g_fGarbageCollection");
+	if (!context_stack_base || !context_top || !context_max || !garbage_collection)
+		fast = 0;
 	fast_ab = fast && exp_flag("lightarrayfastab");
 	fast_fault = fast && verify && exp_flag("lightarrayfastfault");
+	close_fault = fast && verify && exp_flag("lightarrayclosefault");
 	uint32_t *new_veneer = veneer_for(AT(NEW_SITE)), *next_veneer = new_veneer ? veneer_for(AT(NEXT_SITE)) : NULL;
 	if (!next_veneer) {
 		debugPrintf("light array: no room for the iterator veneers\n");
@@ -592,9 +660,10 @@ int light_array_install(void *(*rx_alloc)(size_t)) {
 
 void light_array_fast_report(int frames) {
 	if (light_array_fast || fast_ab)
-		debugPrintf("[LIGHTARRAYFAST] lightArrayFast %d: %.1f lights inline per frame%s\n", fast,
-			(float)light_array_fast / (frames > 0 ? frames : 1), fast_ab ? (fast ? " | A/B: on" : " | A/B: off") : "");
-	light_array_fast = 0;
+		debugPrintf("[LIGHTARRAYFAST] lightArrayFast %d: %.1f lights, %.1f close-light writes inline per frame%s\n", fast,
+			(float)light_array_fast / (frames > 0 ? frames : 1), (float)light_array_close_fast / (frames > 0 ? frames : 1),
+			fast_ab ? (fast ? " | A/B: on" : " | A/B: off") : "");
+	light_array_fast = light_array_close_fast = 0;
 	if (fast_ab)
 		fast = !fast;
 }
