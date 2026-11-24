@@ -18,10 +18,11 @@
  * Each surface_set_target / surface_reset_target pair ends the GPU scene and starts two more: the CPU then waits for
  * the GPU (part 3 of the fight, the black void, ran at 49 fps with 12 scenes per frame). In parts 2 and 3 nothing is
  * drawn between the clear and the reset (no portal, no orphaned knife or turret). Such a pass only clears the surface
- * to the colour it already holds. The calls are redirected (bl veneers at the call sites) so that the target switch
+ * to the colour it already holds. The event's calls are intercepted (its PLT GOT slots are swapped while it runs) so that the target switch
  * and the clear are deferred: the first user event inside the pass replays them first, and a pass that drew nothing
  * skips them when the surface is known to hold exactly that clear already (its last pass was such a clear, and no
- * set_target, copy, free, create or resize touched it since). The rest of the event runs unchanged, including the
+ * free, create, resize or copy touched it since; only this object's events use global.attack_surface). The rest of
+ * the event runs unchanged, including the
  * draw of the surface (with its random numbers). Part 3: 12 -> 10 scenes per frame, 49.2 -> 51.9 fps.
  * exp_psychlazy0 turns this off; exp_psychlazyverify (debug) replays every skipped pass after reading the surface back
  * and checking every pixel against the clear (exp_psychlazyfault: a negative control that paints the surface white
@@ -61,7 +62,6 @@
 
 #define ABI __attribute__((pcs("aapcs")))
 typedef int ABI (*set_target_fn)(int surf, int depth);
-typedef int ABI (*set_target_ext_fn)(int index, int surf, int depth);
 typedef int ABI (*reset_target_fn)(void);
 typedef void ABI (*event_user_fn)(void *self, void *other, int n);
 typedef gml_rvalue *ABI (*legacy_fn)(void *self, void *other, gml_rvalue *result, int argc, int funcid, gml_rvalue **argv);
@@ -72,10 +72,10 @@ static set_target_fn real_set_target;
 static reset_target_fn real_reset_target;
 static event_user_fn real_event_user;
 static legacy_fn real_legacy;
-static set_target_ext_fn orig_set_target_ext;
 static surf_int_fn surf_width, surf_height, surf_texture;
 static surf_get_fn surf_get;
-static int fid_draw_clear_alpha = -1;
+static int fid_draw_clear_alpha = -1, fid_instance_exists = -1;
+static int lazy_ok; // the battle Draw's interception is in place (psych_fix_install)
 
 static int lazy_verify, lazy_fault, research;
 static unsigned lazy_faults; // negative control: passes painted white
@@ -109,12 +109,6 @@ static void forget_surface(int surf) {
 			passes[i]->known = 0;
 }
 
-// Every set_target, from anywhere: the surface may be drawn on now
-static int ABI set_target_ext_hook(int index, int surf, int depth) {
-	forget_surface(surf);
-	return orig_set_target_ext(index, surf, depth);
-}
-
 static void lazy_flush(lazy_pass *p) {
 	if (!p->active || p->flushed)
 		return;
@@ -128,13 +122,14 @@ static void lazy_flush(lazy_pass *p) {
 	}
 }
 
+static int in_battle_draw, battle_pass_done; // inside the battle Draw (GOT slots swapped); its pass already ran
+
 static int ABI lazy_set_target(lazy_pass *p, int surf, int depth) {
-	if (ab_off)
-		return real_set_target(surf, depth);
-	if (p->active) { // not expected: run it as it comes
+	if (!in_battle_draw || battle_pass_done || p->active) { // only the Draw's first target switch is deferred
 		lazy_flush(p);
 		return real_set_target(surf, depth);
 	}
+	battle_pass_done = 1;
 	p->active = 1;
 	p->flushed = 0;
 	p->have_clear = 0;
@@ -146,7 +141,11 @@ static int ABI lazy_set_target(lazy_pass *p, int surf, int depth) {
 
 static gml_rvalue *ABI lazy_clear(lazy_pass *p, void *self, void *other, gml_rvalue *result, int argc, int funcid,
 		gml_rvalue **argv) {
-	if (!p->active || p->flushed || p->have_clear || argc != 2 || funcid != fid_draw_clear_alpha ||
+	if (!p->active || p->flushed)
+		return real_legacy(self, other, result, argc, funcid, argv);
+	if (funcid == fid_instance_exists) // the knife / turret loops' parent test: draws nothing
+		return real_legacy(self, other, result, argc, funcid, argv);
+	if (p->have_clear || argc != 2 || funcid != fid_draw_clear_alpha ||
 			(argv[0]->kind & 0xffffff) != 0 || (argv[1]->kind & 0xffffff) != 0 ||
 			((1u << (result->kind & 31)) & 0x46)) {
 		lazy_flush(p);
@@ -166,7 +165,8 @@ static gml_rvalue *ABI lazy_clear(lazy_pass *p, void *self, void *other, gml_rva
 }
 
 static void ABI lazy_event(lazy_pass *p, void *self, void *other, int n) {
-	p->events++;
+	if (in_battle_draw)
+		p->events++; // every user event the battle Draw runs, in its pass or not
 	lazy_flush(p);
 	real_event_user(self, other, n);
 }
@@ -211,7 +211,7 @@ static int ABI lazy_reset(lazy_pass *p) {
 				// Negative control: paint the surface white behind the tracking's back (no forget)
 				gml_rvalue r = {0, 0, 5}, white[2] = {{16777215.0, 0, 0}, {1.0, 0, 0}};
 				gml_rvalue *wargv[2] = {&white[0], &white[1]};
-				orig_set_target_ext(0, surf, surf); // as YYGML_surface_set_target(surf, -1) calls it
+				real_set_target(surf, -1);
 				real_legacy(p->cself, p->cother, &r, 2, fid_draw_clear_alpha, wargv);
 				int b0;
 				uint32_t painted = read_pixel_check(1, 1, 0, &b0);
@@ -271,7 +271,51 @@ static int ABI battle_reset(void) { return lazy_reset(&battle); }
 
 
 // ---------------------------------------------------------------------------------------------------------------
-// Call-site redirection
+// Interception: while the battle Draw runs, the PLT's GOT slots of the four runner calls point at the wrappers above
+// (every call in that event goes through the PLT: the callees are out of bl range, so patch_plt_calls leaves them).
+// No veneers (the code cave near the event can be full) and no entry hooks (virtual_capture.c hooks
+// surface_set_target_ext / surface_reset_target and checks their prologues).
+
+static uintptr_t *got_slot[4], got_saved[4], got_mine[4];
+static event_func orig_battle_draw;
+static builtin_fn bi_instance_number;
+static unsigned portal_frames;
+static int lazy_on;
+
+static void battle_draw(void *self, void *other) {
+	if (!lazy_on || ab_off) {
+		orig_battle_draw(self, other);
+		return;
+	}
+	for (int i = 0; i < 4; i++) {
+		got_saved[i] = *got_slot[i];
+		*got_slot[i] = got_mine[i];
+	}
+	// The wrappers call whatever the slots held (a hook installed after this file's, e.g. a profiler, stays in)
+	real_set_target = (set_target_fn)got_saved[0];
+	real_reset_target = (reset_target_fn)got_saved[1];
+	real_event_user = (event_user_fn)got_saved[2];
+	real_legacy = (legacy_fn)got_saved[3];
+	if (research && bi_instance_number) { // research: frames with a portal, whose pass can't be skipped
+		gml_rvalue r = {0, 0, 5}, arg;
+		uint32_t ref[4] = {828, 0x1000000, 0, 15}; // obj_psychboss_portal
+		memcpy(&arg, ref, sizeof(arg));
+		bi_instance_number(&r, self, other, 1, &arg);
+		if ((r.kind & 0xffffff) == 0 && r.val > 0)
+			portal_frames++;
+	}
+	in_battle_draw = 1;
+	battle_pass_done = 0;
+	orig_battle_draw(self, other);
+	in_battle_draw = 0;
+	for (int i = 0; i < 4; i++)
+		*got_slot[i] = got_saved[i];
+	if (battle.active) { // a pass the event didn't close (not expected): replay it, unbalanced as the original
+		lazy_flush(&battle);
+		battle.active = 0;
+		battle.known = 0;
+	}
+}
 
 static uintptr_t bl_target(uintptr_t site) {
 	uint32_t ins = *(uint32_t *)site;
@@ -280,72 +324,45 @@ static uintptr_t bl_target(uintptr_t site) {
 	return site + 8 + (uintptr_t)((int32_t)(ins << 8) >> 6);
 }
 
-typedef struct { uint32_t site, plt; void *wrapper; } site_patch;
-
-// The function a PLT entry stands for: the runner build may call it directly (PLT-patched lib)
-static uintptr_t plt_direct(uint32_t plt) {
-	switch (plt) {
-	case 0x4ab19f0: return (uintptr_t)real_set_target;
-	case 0x4ab1a40: return (uintptr_t)real_reset_target;
-	case 0x4ab0ff0: return (uintptr_t)real_legacy;
-	case 0x4ab13d0: return (uintptr_t)real_event_user;
-	}
-	return 0;
-}
-
-#define MAX_SITES 16
-// Checks every site and allocates every veneer first; patches only if all of them are fine
-static int patch_sites(uintptr_t bias, const site_patch *s, int n) {
-	uint32_t *veneer[MAX_SITES];
-	uint32_t bl[MAX_SITES];
-	if (n > MAX_SITES)
-		return 0;
-	for (int i = 0; i < n; i++) {
-		uintptr_t site = bias + s[i].site, t = bl_target(site);
-		if (!t || (t != bias + s[i].plt && t != plt_direct(s[i].plt))) {
-			debugPrintf("[PSYCHFIX] call site %x: unexpected target %x\n", s[i].site, (unsigned)(t - bias));
-			return 0;
-		}
-		veneer[i] = (uint32_t *)so_alloc_near(&yoyoloader_mod, site, 8);
-		int64_t delta = (int64_t)(uintptr_t)veneer[i] - (int64_t)site - 8;
-		if (!veneer[i] || delta < -(1 << 25) || delta >= (1 << 25)) {
-			debugPrintf("[PSYCHFIX] call site %x: no veneer space in range (%x)\n", s[i].site, (unsigned)(uintptr_t)veneer[i]);
-			return 0;
-		}
-		bl[i] = 0xeb000000 | (((uint32_t)delta >> 2) & 0xffffff);
-	}
-	for (int i = 0; i < n; i++) {
-		uint32_t code[2] = {0xe51ff004, (uint32_t)s[i].wrapper}; // ldr pc, [pc, #-4]; .word wrapper
-		kuKernelCpuUnrestrictedMemcpy(veneer[i], code, sizeof(code));
-		kuKernelFlushCaches(veneer[i], sizeof(code));
-		kuKernelCpuUnrestrictedMemcpy((void *)(bias + s[i].site), &bl[i], 4);
-		kuKernelFlushCaches((void *)(bias + s[i].site), 4);
-	}
-	return 1;
-}
-
-// ELF addresses in APK 1.1.10
+// ELF addresses in APK 1.1.10: the battle Draw, its calls and the PLT entries they go through
 enum {
 	PLT_SET_TARGET = 0x4ab19f0, PLT_RESET_TARGET = 0x4ab1a40, PLT_LEGACY = 0x4ab0ff0, PLT_EVENT_USER = 0x4ab13d0,
 	BATTLE_DRAW = 0x3bd05e0,
 };
 
-static int lazy_install(void) {
-	uintptr_t battle_draw = so_symbol(&yoyoloader_mod, "_Z46gml_Object_obj_cutscene_psych_11_battle_Draw_0P9CInstanceS0_");
-	if (!battle_draw) {
-		debugPrintf("[PSYCHFIX] battle Draw not found\n");
+static int lazy_install(gml_func_entry *table) {
+	uintptr_t battle_draw_fn = so_symbol(&yoyoloader_mod, "_Z46gml_Object_obj_cutscene_psych_11_battle_Draw_0P9CInstanceS0_");
+	if (!battle_draw_fn)
 		return 0;
-	}
-	uintptr_t bias = battle_draw - BATTLE_DRAW;
-	static const site_patch battle_sites[] = {
-		{0x3bd0898, PLT_SET_TARGET, battle_set_target}, // battle line 6
-		{0x3bd0ae0, PLT_LEGACY, battle_clear},          // line 7: draw_clear_alpha
-		{0x3bd0b64, PLT_EVENT_USER, battle_event},      // line 32: portal
-		{0x3bd0d1c, PLT_EVENT_USER, battle_event},      // line 39: knife
-		{0x3bd0ed0, PLT_EVENT_USER, battle_event},      // line 47: turret
-		{0x3bd0f1c, PLT_RESET_TARGET, battle_reset},    // line 52
+	uintptr_t bias = battle_draw_fn - BATTLE_DRAW;
+	static const uint32_t sites[][2] = {
+		{0x3bd0898, PLT_SET_TARGET}, {0x3bd0ae0, PLT_LEGACY}, {0x3bd0b64, PLT_EVENT_USER}, {0x3bd0d1c, PLT_EVENT_USER},
+		{0x3bd0ed0, PLT_EVENT_USER}, {0x3bd0f1c, PLT_RESET_TARGET},
 	};
-	return patch_sites(bias, battle_sites, sizeof(battle_sites) / sizeof(battle_sites[0]));
+	for (unsigned i = 0; i < sizeof(sites) / sizeof(sites[0]); i++)
+		if (bl_target(bias + sites[i][0]) != bias + sites[i][1]) {
+			debugPrintf("[PSYCHFIX] battle Draw call %x doesn't go through the PLT\n", sites[i][0]);
+			return 0;
+		}
+	static const char *const names[4] = {"_Z24YYGML_surface_set_targetii", "_Z26YYGML_surface_reset_targetv",
+		"_Z16YYGML_event_userP9CInstanceS0_i", "_Z24YYGML_CallLegacyFunctionP9CInstanceS0_R8YYRValueiiPPS1_"};
+	for (int i = 0; i < 4; i++)
+		if (!(got_slot[i] = so_got_slot(&yoyoloader_mod, names[i])) || !*got_slot[i])
+			return 0;
+	// The wrappers call what the slots hold now (the runner's functions, or whatever hooked them before)
+	real_set_target = (set_target_fn)*got_slot[0];
+	real_reset_target = (reset_target_fn)*got_slot[1];
+	real_event_user = (event_user_fn)*got_slot[2];
+	real_legacy = (legacy_fn)*got_slot[3];
+	got_mine[0] = (uintptr_t)battle_set_target;
+	got_mine[1] = (uintptr_t)battle_reset;
+	got_mine[2] = (uintptr_t)battle_event;
+	got_mine[3] = (uintptr_t)battle_clear;
+	event_func o = gml_replace(table, "gml_Object_obj_cutscene_psych_11_battle_Draw_0", battle_draw);
+	if (!o)
+		return 0;
+	orig_battle_draw = o;
+	return 1;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -537,7 +554,6 @@ static void effects_draw_res(void *self, void *other) {
 
 // Eyes Draw: how often a pass has no obj_psychboss_eye to draw (instance_number through the builtin)
 static event_func orig_eyes_draw;
-static builtin_fn bi_instance_number;
 static unsigned eyes_draws, eyes_empty;
 static void eyes_draw_res(void *self, void *other) {
 	eyes_draws++;
@@ -571,8 +587,9 @@ void psych_fix_report(int frames) {
 		lazy_pass *p = passes[i];
 		if (!p->passes)
 			continue;
-		debugPrintf("[PSYCHFIX] %s pass: %u passes, %u skipped, %u cleared, %u drawn (%u user events)%s", p->name, p->passes,
-			p->skips, p->clears, p->flushes, p->events, lazy_verify ? "" : "\n");
+		debugPrintf("[PSYCHFIX] %s pass: %u passes, %u skipped, %u cleared, %u drawn (%u user events, %u frames with a "
+			"portal)%s", p->name, p->passes, p->skips, p->clears, p->flushes, p->events, portal_frames, lazy_verify ? "" : "\n");
+		portal_frames = 0;
 		if (lazy_verify)
 			debugPrintf(" | verify %u checked, %u mismatches total (%u faults injected)\n", p->verified, p->mismatches,
 				lazy_faults);
@@ -606,6 +623,7 @@ void psych_fix_install(gml_func_entry *table) {
 	int petal = !exp_flag("psychpetal0") && psych_petal_install(table);
 	debugPrintf("psychiatrist fight: native ground Draw %s, native rose petal Draw %s\n", ground ? "installed" : "NOT installed",
 		petal ? "installed" : "NOT installed");
+	lazy_ok = !exp_flag("psychlazy0") && lazy_install(table);
 	research = debugMode && exp_flag("psychres");
 	skip_ab = debugMode && exp_flag("psychskipab");
 	if (skip_ab || (debugMode && exp_flag("psychskip"))) { // without psychskipab: always skipped (screenshots)
@@ -635,19 +653,23 @@ void psych_fix_install(gml_func_entry *table) {
 void psych_fix_late_install(void) {
 	extern void psych_ground_late_install(void);
 	psych_ground_late_install();
-	real_set_target = (set_target_fn)so_symbol(&yoyoloader_mod, "_Z24YYGML_surface_set_targetii");
-	real_reset_target = (reset_target_fn)so_symbol(&yoyoloader_mod, "_Z26YYGML_surface_reset_targetv");
-	real_event_user = (event_user_fn)so_symbol(&yoyoloader_mod, "_Z16YYGML_event_userP9CInstanceS0_i");
-	real_legacy = (legacy_fn)so_symbol(&yoyoloader_mod, "_Z24YYGML_CallLegacyFunctionP9CInstanceS0_R8YYRValueiiPPS1_");
+	if (!lazy_ok) { // else lazy_install took them from the GOT slots
+		real_set_target = (set_target_fn)so_symbol(&yoyoloader_mod, "_Z24YYGML_surface_set_targetii");
+		real_reset_target = (reset_target_fn)so_symbol(&yoyoloader_mod, "_Z26YYGML_surface_reset_targetv");
+		real_event_user = (event_user_fn)so_symbol(&yoyoloader_mod, "_Z16YYGML_event_userP9CInstanceS0_i");
+		real_legacy = (legacy_fn)so_symbol(&yoyoloader_mod, "_Z24YYGML_CallLegacyFunctionP9CInstanceS0_R8YYRValueiiPPS1_");
+	}
 	surf_width = (surf_int_fn)so_symbol(&yoyoloader_mod, "_Z20GR_Surface_Get_Widthi");
 	surf_height = (surf_int_fn)so_symbol(&yoyoloader_mod, "_Z21GR_Surface_Get_Heighti");
 	surf_texture = (surf_int_fn)so_symbol(&yoyoloader_mod, "_Z22GR_Surface_Get_Texturei");
 	surf_get = (surf_get_fn)so_symbol(&yoyoloader_mod, "_Z14GR_Surface_Geti");
 	room_find = (int (*)(const char *))so_symbol(&yoyoloader_mod, "_Z9Room_FindPKc");
 	const int *fclear = (const int *)so_symbol(&yoyoloader_mod, "g_FUNC_draw_clear_alpha");
-	uintptr_t set_ext = so_symbol(&yoyoloader_mod, "_Z28YYGML_surface_set_target_extiii");
+	const int *fexists = (const int *)so_symbol(&yoyoloader_mod, "g_FUNC_instance_exists");
 	if (fclear)
 		fid_draw_clear_alpha = fclear[1];
+	if (fexists)
+		fid_instance_exists = fexists[1];
 	lazy_verify = debugMode && exp_flag("psychlazyverify");
 	lazy_fault = lazy_verify && exp_flag("psychlazyfault");
 	ab = debugMode && exp_flag("psychab");
@@ -672,17 +694,15 @@ void psych_fix_late_install(void) {
 	}
 	int base_ok = real_set_target && real_reset_target && real_event_user && real_legacy && surf_width && surf_height &&
 		surf_texture && surf_get && fid_draw_clear_alpha >= 0 && f_create && f_free && f_exists && f_resize && f_copy &&
-		f_copy_part && bi_set_target && bi_reset_target && bi_draw_clear_alpha && set_ext;
+		f_copy_part && bi_set_target && bi_reset_target && bi_draw_clear_alpha;
 	if (!base_ok) {
 		debugPrintf("psychiatrist fight fixes: NOT installed (symbols)\n");
 		return;
 	}
-	// Anything that may change a surface makes the passes forget what it holds
-	orig_set_target_ext = (set_target_ext_fn)entry_hook(set_ext, (void *)set_target_ext_hook);
-	if (!orig_set_target_ext) {
-		debugPrintf("psychiatrist fight fixes: NOT installed (set_target hook)\n");
-		return;
-	}
+	// Builtins that free, create, resize or copy into a surface make the pass forget what it holds. Nothing else can
+	// draw into the attack surface: only the battle object's Create, Draw and CleanUp read global.attack_surface (GOT
+	// xrefs in APK 1.1.10), and its Draw's target switches go through the wrappers. No entry hook on the runner's
+	// surface_set_target_ext: virtual_capture.c hooks it and checks its prologue.
 	orig_surface_free = f_free->func; f_free->func = surface_free_pool;
 	orig_surface_create = f_create->func; f_create->func = surface_create_pool;
 	orig_surface_exists = f_exists->func; f_exists->func = surface_exists_pool;
@@ -690,8 +710,8 @@ void psych_fix_late_install(void) {
 	orig_surface_copy = f_copy->func; f_copy->func = surface_copy_forget;
 	orig_surface_copy_part = f_copy_part->func; f_copy_part->func = surface_copy_part_forget;
 
-	int lazy = exp_flag("psychlazy0") ? 0 : lazy_install();
+	lazy_on = lazy_ok && fid_instance_exists >= 0;
 	pool_on = !exp_flag("psychpool0") && room_find;
 	debugPrintf("psychiatrist fight: empty attack surface passes %s, restart surface reuse %s%s\n",
-		lazy ? "skipped" : "NOT skipped", pool_on ? "on" : "off", lazy_verify ? " (verify)" : "");
+		lazy_on ? "skipped" : "NOT skipped", pool_on ? "on" : "off", lazy_verify ? " (verify)" : "");
 }
