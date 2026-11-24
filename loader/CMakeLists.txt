@@ -44,7 +44,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DSTANDALONE_MODE")
 endif(STANDALONE)
 
 # Native replacements must round exactly like the runner (no FMA contraction)
-set_source_files_properties(loader/collision_native.c loader/rope_fast.c loader/flash_mask.c loader/virtual_capture.c loader/input_native.c loader/laser_native.c loader/letter_native.c loader/minecart_native.c loader/clubber_native.c loader/dossier_native.c loader/wavy_native.c loader/trail_lights.c loader/bike_draw.c loader/shadow_native.c loader/light_array_native.c loader/visibility_native.c loader/lightback_native.c loader/held_native.c loader/recolor_lights.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+set_source_files_properties(loader/collision_native.c loader/rope_fast.c loader/flash_mask.c loader/virtual_capture.c loader/input_native.c loader/laser_native.c loader/letter_native.c loader/minecart_native.c loader/clubber_native.c loader/dossier_native.c loader/wavy_native.c loader/trail_lights.c loader/bike_draw.c loader/shadow_native.c loader/light_array_native.c loader/visibility_native.c loader/lightback_native.c loader/held_native.c loader/recolor_lights.c loader/move_contact_native.c loader/far_rocket.c loader/particle_lights.c loader/region_native.c loader/cone_shadow.c loader/explosion_lite.c loader/particle_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 # Verified against the original ARM code with exactly these flags
 set_source_files_properties(loader/dustspawner_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-marm;-O2")
 # Unicorn-verified with exactly these flags (work/smokedraw/smokedraw_verify.py)
@@ -75,7 +75,8 @@ add_executable(YoYoLoader
   loader/katana.c
   loader/katana_prof.c
   loader/katana_display.c
-  loader/katana_t30.c
+  loader/enemy_half_rate.c
+  loader/title_pages.c
   loader/fx_rate.c
   loader/rain_cheap.c
   loader/glow_rest.c
@@ -97,6 +98,7 @@ add_executable(YoYoLoader
   loader/input_native.c
   loader/held_native.c
   loader/laser_native.c
+  loader/move_contact_native.c
   loader/letter_native.c
   loader/clubber_native.c
   loader/minecart_native.c
@@ -114,10 +116,17 @@ add_executable(YoYoLoader
   loader/smokedraw_native.c
   loader/recolor_lights.c
   loader/fog_trail.c
+  loader/far_rocket.c
+  loader/particle_lights.c
+  loader/region_native.c
+  loader/cone_shadow.c
+  loader/explosion_lite.c
+  loader/particle_native.c
   loader/evprof.c
   loader/hang_watch.c
   loader/gcalloc.c
   loader/screenshot.c
+  loader/first_launch.c
 )
 
 target_link_libraries(YoYoLoader

@@ -1,7 +1,7 @@
 /*
  * katana_menu.c
  *
- * GRAPHICS menu rows (FPS MODE, ENEMY AI) and the yes/no prompt's starting selection.
+ * GRAPHICS menu row ENEMY AI and the yes/no prompt's starting selection.
  */
 
 #include <vitasdk.h>
@@ -20,22 +20,9 @@
 #include "katana_internal.h"
 
 /*
- * FPS MODE in the game's own GRAPHICS options (NATIVE / 30 FPS / DYNAMIC), stored in the PC build's WINDOW ZOOM option.
- * The WINDOW ZOOM row is compiled out of the Android GRAPHICS page, but all of its code is still there:
- * - obj_optionsmenu Create copies global.zoom_mode to var_zoom_mode, Step cycles it 0 -> 1 -> 2 -> 3 -> 0 on a toggle
- *   press, Draw shows "1X ZOOM".."4X ZOOM" through translate_option;
- * - SAVE (Other_10) copies it back to global.zoom_mode, and save_options/load_options keep it in KatanaOptions.zero
- *   (an existing slot, so the file and its hash stay compatible);
- * - its only effect, set_windowsize() (Destroy, on a change), is an empty script on Android.
- * The loader adds the row after BLOOD SPRAY (add_pausemenu_choice, GRAPHICS page only), relabels its five strings
- * (translate_option) and limits it to three values (Step: 3 wraps to 1, not 0).
- * Precedence: zoom_mode 0 (every existing save, obj_init and "reset game data") means "not chosen" and follows fpsMode
- * (old name fps30) from yyl.cfg, shown under that mode's name; 1/2/3 are NATIVE/30 FPS/DYNAMIC chosen in the menu and override yyl.cfg.
- * fps_mode_sync reads global.zoom_mode once per frame (t30_update), so a SAVE applies on the next frame, CANCEL never.
- * exp_fpsmenu0 turns the row off (yyl.cfg only); exp_t30force keeps 30 ticks/s everywhere and skips the menu too.
- *
- * ENEMY AI (FULL RATE / HALF RATE: half-rate enemies, katana_t30.c), added after FPS MODE, is the PC build's
- * FULLSCREEN row with its value stored in the PC build's LOW-END OPTIONS flag:
+ * ENEMY AI (FULL RATE / HALF RATE: half-rate enemies, enemy_half_rate.c), added after BLOOD SPRAY
+ * (add_pausemenu_choice, GRAPHICS page only), is the PC build's FULLSCREEN row with its value stored in the PC
+ * build's LOW-END OPTIONS flag:
  * - FULLSCREEN has a working row: Step toggles var_fullscreen = !var_fullscreen, Draw shows the game's "ON"/"OFF" for
  *   it. global.fullscreen is no use as storage: obj_miscmaster Room Start sets it to window_get_fullscreen() (always
  *   true on Android), and Destroy runs window_set_fullscreen and display_reset when it changes.
@@ -48,8 +35,10 @@
  * 1 FULL RATE and 2 HALF RATE are chosen in the menu and override yyl.cfg. global.fullscreen never changes, so Destroy
  * does nothing for it. Draw keeps its row index in the instance variable c: the label is translate_option(choice[c])
  * and the toggle value translate_option("ON" or "OFF") with c unchanged, so an ON/OFF asked for at the c that drew
- * "FULLSCREEN" is this row's and is relabelled. fps_mode_sync reads global.show_crap_settings once per frame, so a SAVE
- * applies on the next frame.
+ * "FULLSCREEN" is this row's and is relabelled. options_menu_sync reads global.show_crap_settings once per frame, so a
+ * SAVE applies on the next frame.
+ * The PC build's WINDOW ZOOM option (global.zoom_mode) held the FPS MODE row's choice before the 30 fps mode was
+ * removed. Its saved value stays in KatanaOptions.zero untouched and is no longer read.
  *
  * Saves from versions up to 1.1.1 may hold 1 or 2 in the PC build's VSYNC option (global.vsync): the TEXT SMOOTHING
  * row (removed) stored its choice there. The game passes it to display_reset(aa, vsync) from load_options at boot; F_DisplayReset stores it
@@ -57,13 +46,11 @@
  * with vsync false, what every save had before (g_Sync 1 -> 0, one GR_D3D_Reset before the first room), and drops the
  * calls obj_optionsmenu Destroy makes, which would free every surface the next frame.
  */
-static int fps30_cfg = -1; // fpsMode from yyl.cfg, kept once fps30 follows the menu (-1: the menu isn't installed)
-static int enemy_half_cfg = -1; // enemyHalfRate from yyl.cfg, the same for enemy_half_rate
+static int enemy_half_cfg = -1; // enemyHalfRate from yyl.cfg, kept once enemy_half_rate follows the menu (-1: no row)
 static int *var_show_crap_settings, *var_var_show_crap_settings, *var_var_fullscreen;
-static int *var_zoom_mode, *var_var_zoom_mode;
 static gml_script_fn orig_add_pausemenu_choice, orig_translate_option;
 static event_func orig_optionsmenu_step;
-static int fps_row, enemy_row; // the rows the menu shows
+static int enemy_row; // the menu shows ENEMY AI
 static int *var_c;
 static event_func orig_optionsmenu_draw;
 static void *menu_draw_self; // the obj_optionsmenu running Draw
@@ -83,20 +70,15 @@ static void rv_free(gml_rvalue *v) {
 		yy_free_rvalue(v);
 }
 
-static void *fps_add_pausemenu_choice(void *self, void *other, void *result, int argc, void **args) {
+static void *menu_add_pausemenu_choice(void *self, void *other, void *result, int argc, void **args) {
 	void *r = orig_add_pausemenu_choice(self, other, result, argc, args);
 	const char *key = argc == 2 ? rv_string(args[0]) : NULL;
 	if (key && !strcmp(key, "BLOOD SPRAY")) { // the GRAPHICS page only (obj_options_main_menu Step)
-		static const char *const rows[2] = { "WINDOW ZOOM", "FULLSCREEN" };
 		extern int eh_available(void);
-		const int shown[2] = { fps_row, enemy_row && eh_available() };
-		void *toggle = args[1]; // this call's "toggle"
-		for (int i = 0; i < 2; i++) {
-			if (!shown[i])
-				continue;
+		if (enemy_row && eh_available()) {
 			gml_rvalue name = {0}, res = {0};
-			yy_create_string(&name, rows[i]);
-			void *a[2] = { &name, toggle };
+			yy_create_string(&name, "FULLSCREEN");
+			void *a[2] = { &name, args[1] }; // this call's "toggle"
 			orig_add_pausemenu_choice(self, other, &res, 2, a);
 			rv_free(&name);
 			rv_free(&res);
@@ -104,8 +86,6 @@ static void *fps_add_pausemenu_choice(void *self, void *other, void *result, int
 	}
 	return r;
 }
-
-static const char *const fps_mode_name[3] = { "NATIVE", "DYNAMIC", "30 FPS" }; // by fps30 value
 
 // A real or bool instance variable (var_fullscreen is a bool once Step has toggled it)
 static gml_rvalue *instance_num(void *self, int *var) {
@@ -125,21 +105,11 @@ static double menu_draw_c(void *self) {
 	return c ? c->val : -2.0;
 }
 
-static void *fps_translate_option(void *self, void *other, void *result, int argc, void **args) {
+static void *menu_translate_option(void *self, void *other, void *result, int argc, void **args) {
 	const char *key = argc >= 1 ? rv_string(args[0]) : NULL, *text = NULL;
 	if (!key)
 		return orig_translate_option(self, other, result, argc, args);
-	if (!strcmp(key, "WINDOW ZOOM"))
-		text = "FPS MODE";
-	else if (!strcmp(key, "1X ZOOM")) // zoom_mode 0: not chosen, the yyl.cfg mode
-		text = fps_mode_name[fps30_cfg >= 0 && fps30_cfg <= 2 ? fps30_cfg : 1];
-	else if (!strcmp(key, "2X ZOOM"))
-		text = "NATIVE";
-	else if (!strcmp(key, "3X ZOOM"))
-		text = "30 FPS";
-	else if (!strcmp(key, "4X ZOOM"))
-		text = "DYNAMIC";
-	else if (enemy_row && !strcmp(key, "FULLSCREEN")) {
+	if (enemy_row && !strcmp(key, "FULLSCREEN")) {
 		text = "ENEMY AI";
 		if (menu_draw_self && self == menu_draw_self)
 			enemy_label_c = menu_draw_c(self);
@@ -200,11 +170,8 @@ static void enemy_optionsmenu_save(void *self, void *other) {
 	}
 }
 
-// - FPS MODE: three values; the game's toggle wraps 3 -> 0 ("not chosen"); make it 3 -> 1;
-// - ENEMY AI: two values; the game's var_fullscreen = !var_fullscreen flips the shown value; store the other value (1 or 2).
-static void fps_optionsmenu_step(void *self, void *other) {
-	gml_rvalue *z = fps_row ? instance_var(self, var_var_zoom_mode) : NULL;
-	double zoom = z ? z->val : -1;
+// ENEMY AI: two values; the game's var_fullscreen = !var_fullscreen flips the shown value; store the other value (1 or 2).
+static void enemy_optionsmenu_step(void *self, void *other) {
 	enemy_shown enemy = enemy_show(self);
 	void *prev_self = step_show_self;
 	enemy_shown prev_show = step_show;
@@ -224,25 +191,12 @@ static void fps_optionsmenu_step(void *self, void *other) {
 			e->kind = VALUE_REAL;
 		}
 	}
-	if (zoom == 3.0 && (z = instance_var(self, var_var_zoom_mode)) && z->val == 0.0)
-		z->val = 1.0;
-	// From 0 ("not chosen", shown as the yyl.cfg mode) the game steps to 1 (NATIVE), which with fpsMode 0 looks like
-	// no change: step to the mode after the one shown instead (menu order NATIVE 1, 30 FPS 2, DYNAMIC 3)
-	else if (zoom == 0.0 && (z = instance_var(self, var_var_zoom_mode)) && z->val == 1.0) {
-		int shown = fps30_cfg == 0 ? 1 : fps30_cfg == 2 ? 2 : 3; // as fps_translate_option labels it
-		z->val = shown % 3 + 1;
-	}
 }
 
-// Once per frame (t30_update): the saved menu choices drive fps30 and enemy_half_rate
-void fps_mode_sync(void) {
-	if (!*global_obj_ptr)
+// Once per frame (katana_after_swap): the saved menu choice drives enemy_half_rate
+void options_menu_sync(void) {
+	if (!global_obj_ptr || !*global_obj_ptr)
 		return;
-	if (fps30_cfg >= 0) {
-		gml_rvalue *z = global_var(var_zoom_mode);
-		int m = z ? (int)z->val : 0;
-		fps30 = m == 1 ? 0 : m == 2 ? 2 : m == 3 ? 1 : fps30_cfg;
-	}
 	if (enemy_half_cfg >= 0) {
 		gml_rvalue *e = global_var(var_show_crap_settings);
 		enemy_half_rate = enemy_half_of(e && (e->kind == VALUE_REAL || e->kind == VALUE_BOOL) ? e->val : 0.0);
@@ -290,12 +244,9 @@ static void guarded_display_reset(gml_rvalue *result, void *self, void *other, i
 	orig_display_reset(result, self, other, 2, a);
 }
 
-// The FPS MODE and ENEMY AI rows, each installed only with everything it needs
-void fps_menu_install(gml_func_entry *table) {
-	int want_fps = !exp_flag("fpsmenu0") && !exp_flag("t30force") && t30_installed;
+// The display_reset guard, and the ENEMY AI row, installed only with everything it needs
+void options_menu_install(gml_func_entry *table) {
 	int want_enemy = eh_installed;
-	var_zoom_mode = (int *)so_symbol(&yoyoloader_mod, "g_VAR_zoom_mode");
-	var_var_zoom_mode = (int *)so_symbol(&yoyoloader_mod, "g_VAR_var_zoom_mode");
 	var_c = (int *)so_symbol(&yoyoloader_mod, "g_VAR_c");
 	var_show_crap_settings = (int *)so_symbol(&yoyoloader_mod, "g_VAR_show_crap_settings");
 	var_var_show_crap_settings = (int *)so_symbol(&yoyoloader_mod, "g_VAR_var_show_crap_settings");
@@ -312,32 +263,25 @@ void fps_menu_install(gml_func_entry *table) {
 			guarded_display_reset);
 	debugPrintf("display_reset guard: %s\n", orig_display_reset ? "on" : "NOT installed");
 
-	if ((want_fps || want_enemy) && yy_create_string && yy_free_rvalue)
+	if (want_enemy && yy_create_string && yy_free_rvalue)
 		orig_translate_option = entry_hook(so_symbol(&yoyoloader_mod,
-			"_Z27gml_Script_translate_optionP9CInstanceS0_R8YYRValueiPPS1_"), fps_translate_option);
-	// In this order, so a row is never added without its labels and its Step (and Draw) hook
-	int fps_ok = want_fps && orig_translate_option && var_zoom_mode && var_var_zoom_mode;
+			"_Z27gml_Script_translate_optionP9CInstanceS0_R8YYRValueiPPS1_"), menu_translate_option);
+	// In this order, so the row is never added without its labels and its Step and Draw hooks
 	int enemy_ok = want_enemy && orig_translate_option && var_show_crap_settings && var_var_show_crap_settings &&
 		var_var_fullscreen && var_c;
 	// ENEMY AI needs SAVE to see the real var_fullscreen
 	if (enemy_ok)
 		enemy_ok = !!(orig_optionsmenu_save = gml_replace(table, "gml_Object_obj_optionsmenu_Other_10", enemy_optionsmenu_save));
-	if (fps_ok || enemy_ok)
-		orig_optionsmenu_step = gml_replace(table, "gml_Object_obj_optionsmenu_Step_0", fps_optionsmenu_step);
+	if (enemy_ok)
+		orig_optionsmenu_step = gml_replace(table, "gml_Object_obj_optionsmenu_Step_0", enemy_optionsmenu_step);
 	if (enemy_ok && orig_optionsmenu_step)
 		orig_optionsmenu_draw = gml_replace(table, "gml_Object_obj_optionsmenu_Draw_0", enemy_optionsmenu_draw);
-	if ((fps_ok || orig_optionsmenu_draw) && orig_optionsmenu_step)
+	if (orig_optionsmenu_draw)
 		orig_add_pausemenu_choice = entry_hook(so_symbol(&yoyoloader_mod,
-			"_Z31gml_Script_add_pausemenu_choiceP9CInstanceS0_R8YYRValueiPPS1_"), fps_add_pausemenu_choice);
-	if (orig_add_pausemenu_choice) {
-		fps_row = fps_ok;
-		enemy_row = enemy_ok && orig_optionsmenu_draw;
-	}
-	if (fps_row)
-		fps30_cfg = fps30; // from here on fps_mode_sync owns fps30
+			"_Z31gml_Script_add_pausemenu_choiceP9CInstanceS0_R8YYRValueiPPS1_"), menu_add_pausemenu_choice);
+	enemy_row = !!orig_add_pausemenu_choice;
 	if (enemy_row)
-		enemy_half_cfg = enemy_half_rate; // and enemy_half_rate
-	debugPrintf("FPS mode menu: %s (yyl.cfg fpsMode %d)\n", fps_row ? "on" : want_fps ? "NOT installed" : "off", fps30);
+		enemy_half_cfg = enemy_half_rate; // from here on options_menu_sync owns enemy_half_rate
 	debugPrintf("enemy AI menu: %s (yyl.cfg enemyHalfRate %d)\n", enemy_row ? "on" : want_enemy ? "NOT installed" : "off",
 		enemy_half_rate);
 }
