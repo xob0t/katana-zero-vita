@@ -1,10 +1,34 @@
 # katana-zero-vita
 
-PS Vita port of [Katana ZERO](https://store.steampowered.com/app/460950/Katana_ZERO/), built from the Netflix Android release (1.1.10). The game's Android runner
-(`libyoyo.so`) runs on the Vita through [YoYo Loader Vita](https://github.com/Rinnegatamante/yoyoloader_vita),
-vendored in `loader/` from upstream commit `e32f68f`. No game files are included. You need your own APK.
+PS Vita port of [Katana ZERO](https://store.steampowered.com/app/460950/Katana_ZERO/). It runs the Netflix Android
+release (1.1.10). No game files are included: you need your own APK.
 
-**To play, build the VPK from your APK with the [web builder](https://xob0t.github.io/katana-zero-vita/web/).**
+## [Build the game for your Vita in the browser →](https://xob0t.github.io/katana-zero-vita/web/)
+
+The [web builder](https://xob0t.github.io/katana-zero-vita/web/) turns your APK into an installable VPK in about a
+minute. Nothing to install on your computer, and your APK isn't uploaded anywhere.
+
+1. Install kubridge, FdFix and `libshacccg.suprx` on the Vita.
+2. Open the web builder, drop in the Katana ZERO APK (Netflix Android release, version 1.1.10) and save the
+   `KatanaZero.vpk` it makes.
+3. Copy the VPK to `ux0:VPK/` and install it with VitaShell.
+
+The first launch compiles every shader, which takes about 3 minutes. Shaders are cached in
+`ux0:data/shader_cache/KTNZ00001`, so later launches reach the title screen in about a minute. To update, build a
+new VPK and install it over the old one. Saves are kept.
+
+With `debugMode=1` in `yyl.cfg` the log goes to `ux0:data/gms/shared/yyl.log`.
+
+### Controls
+
+The game's own controller layout. L and R act as the triggers: L is slow motion, R is roll. The rear touch
+panel is unused.
+
+## About the port
+
+The game's Android runner (`libyoyo.so`) runs on the Vita through
+[YoYo Loader Vita](https://github.com/Rinnegatamante/yoyoloader_vita), vendored in `loader/` from upstream commit
+`e32f68f`.
 
 Most rooms run at 60 fps. Heavy rooms dip below it, to about 40 in the busiest fights. The CPU is the limit: the game
 logic runs on one core and can't be split across more. A 500 MHz profile in PSVshell adds a few fps in heavy rooms
@@ -26,25 +50,6 @@ To run near 60 fps, the port changes a few things:
 
 Each can be undone in `ux0:data/gms/katanazero/yyl.cfg`. [docs/compromises.md](docs/compromises.md) lists every change
 and its setting.
-
-## Installing on a Vita
-
-1. Install kubridge, FdFix and `libshacccg.suprx` on the Vita.
-2. Open the [web builder](https://xob0t.github.io/katana-zero-vita/web/) and drop in the Netflix Android release of
-   Katana ZERO, version 1.1.10. It builds `KatanaZero.vpk` in your browser in about a minute, with the game inside.
-   Your APK isn't uploaded anywhere.
-3. Copy the VPK to `ux0:VPK/` and install it with VitaShell.
-
-The first launch compiles every shader, which takes about 3 minutes. Shaders are cached in
-`ux0:data/shader_cache/KTNZ00001`, so later launches reach the title screen in about a minute. To update, build a
-new VPK and install it over the old one. Saves are kept.
-
-With `debugMode=1` in `yyl.cfg` the log goes to `ux0:data/gms/shared/yyl.log`.
-
-### Controls
-
-The game's own controller layout. L and R act as the triggers: L is slow motion, R is roll. The rear touch
-panel is unused.
 
 ## Building (Windows, Git Bash, no WSL)
 
