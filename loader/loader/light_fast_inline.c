@@ -70,7 +70,7 @@ static AddToSpeed add_to_speed;
 static ObjectFind object_find;
 static const uint32_t *frame_counter;
 
-/* Lamp sway (lampSway=N in yyl.cfg, 1..4, default 2; 1 = the original every tick).
+/* Lamp sway (lampSway=N in yyl.cfg, 1..4, default 4; 1 = the original every tick).
  * A free-floating obj_orangelight (moving, parent -1) steers toward a random point near its base every tick:
  * speed = prev_speed, motion_add(direction to base +- random(15), 0.1), prev_speed = speed. The runner moves it
  * by its speed every tick whatever the Step does. With lampSway=N the full Step runs on one tick in N (staggered by
@@ -78,13 +78,17 @@ static const uint32_t *frame_counter;
  * order, so the global RNG stream is the original one. The next Step that runs first applies those deferred steering
  * impulses, with the same random targets, in order (speed = prev_speed, the impulse, prev_speed, collision_timer,
  * the speed cap: what the skipped Steps would have done), then the tick's own Step. So each lamp gets exactly the
- * original impulses, up to N-1 ticks late and aimed from where it is then: a sway path off by under a pixel.
+ * original impulses, up to N-1 ticks late and aimed from where it is then. Simulated with the same pushes
+ * (work/orangelight/swaydiff.py), a lamp at N=4 is ~3 px off the original's path after 1 s, ~5 px after 3 s, in a
+ * 25-35 px sway; the paths drift apart over longer times, as two sessions' paths do (clock-seeded RNG).
+ * Vita, room_haunted_cart2 (129 lamps), per-window A/B: N=4 -0.59 ms process per frame, N=2 -0.35..-0.5;
+ * bunker2_3 (45) N=2 -0.1.
  * Only plain obj_orangelight instances whose last Step took the native motion path, didn't cap the speed and
  * won't reach the 15-tick wall check during the skip; never while global.fr is 0. Changes made by other code to
  * the light during a skipped tick (colour, region, parent) take effect up to N-1 ticks later; nothing in the game
  * logic reads a lamp's position or speed (only the lighting does).
  * exp_swayab: rate N and 1 alternating per report window (measurement only). */
-int lamp_sway = 2;
+int lamp_sway = 4;
 int lamp_sway_ab, lamp_sway_ab_off;
 unsigned lamp_sway_skips, lamp_sway_deferred, lamp_sway_dropped;
 enum { SWAY_SLOTS = 512, SWAY_MAX = 4, SWAY_STALE = 120 };

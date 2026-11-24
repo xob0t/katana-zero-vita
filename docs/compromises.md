@@ -11,7 +11,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Settled smoke and burning-corpse embers update every 4th frame | — |
 | Smoke is drawn with half the clouds, each one larger; the hidden ones still block sight and get pushed | `smokeClouds=1` (`smokeClouds=3`: a third, larger still; 1 to 3) |
 | Lighting updates 30 times a second | — |
-| Swaying lamps change course every other frame (they still move every frame, with the same random pushes) | `lampSway=1` (`lampSway=3` or `4`: every 3rd or 4th frame) |
+| Swaying lamps change course every 4th frame (they still move every frame, with the same random pushes) | `lampSway=1` (`lampSway=2`: every other frame) |
 | Roll dust is unlit, and afterimages have no light tint | `trailLights=1` (`fogTrailLights=1`: only in the foggy rooms) |
 | No glow around highlighted words in dialogue | `letterGlow=1` |
 | The wavy dialogue backgrounds sway in coarser steps | `waveStrips=1` (`waveStrips=2`: half as coarse) |
