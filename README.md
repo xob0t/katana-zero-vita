@@ -13,64 +13,62 @@ minute. Nothing to install on your computer, and your APK isn't uploaded anywher
    `KatanaZero.vpk` it makes.
 3. Copy the VPK to `ux0:VPK/` and install it with VitaShell.
 
-The first launch compiles every shader, which takes about 3 minutes. Shaders are cached in
-`ux0:data/shader_cache/KTNZ00001`, so later launches reach the title screen in about a minute. To update, build a
-new VPK and install it over the old one. Saves are kept.
+The first launch prepares the graphics cache (`ux0:data/shader_cache/KTNZ00001`) and takes about 3 minutes; a
+progress bar shows it. Later launches reach the title screen in about a minute. To update, build a new VPK and
+install it over the old one. Saves are kept.
 
 With `debugMode=1` in `yyl.cfg` the log goes to `ux0:data/gms/shared/yyl.log`.
-
-### Controls
-
-The game's own controller layout. L and R act as the triggers: L is slow motion, R is roll. The rear touch
-panel is unused.
-
-## Compromises
-
-To run near 60 fps, the port changes a few things:
-
-- **Enemies think every other frame.** Hits still land on time; in testing nobody noticed. **GRAPHICS → ENEMY AI**.
-- **No end-of-level replay and no death rewind.** With them on, memory runs out after a while in one room.
-- **No rain.**
-- **Simpler effects in heavy scenes:** less lighting on particles and in a few rooms, lighter smoke, fog and
-  explosions.
-
-Each can be undone in `ux0:data/gms/katanazero/yyl.cfg`. [docs/compromises.md](docs/compromises.md) lists every change
-and its setting.
 
 ## About the port
 
 The game's Android runner (`libyoyo.so`) runs on the Vita through
-[YoYo Loader Vita](https://github.com/Rinnegatamante/yoyoloader_vita), vendored in `loader/` from upstream commit
-`e32f68f`.
+[YoYo Loader Vita](https://github.com/Rinnegatamante/yoyoloader_vita), vendored in `loader/` from upstream `e32f68f`.
 
-Most rooms run at 60 fps. Heavy rooms dip below it in busy moments, and a few of the heaviest drop into the 30s. As in
-the original, the game's speed follows the frame rate, so those moments play slower. The CPU is the limit: the game
-logic runs on one core and can't be split across more. A 500 MHz profile in PSVshell adds a few fps in heavy rooms
-(the loader runs at 444 MHz).
+Most rooms run at 60 fps. A few of the heaviest dip into the 30s, and as in the original, the game slows down with
+the frame rate. The Vita's CPU is the limit. To get this far, the loader patches the game in over 50 places, most of
+them with identical results, and fixes vitaGL bugs that caused a freeze and a crash. A 500 MHz profile in PSVshell
+adds a few fps (the loader runs at 444 MHz).
 
-To get there, the loader patches the game in over 50 places for performance, most of them by replacing hot game code
-with native code that gives identical results. It also fixes vitaGL, the port's OpenGL layer, which could free
-video memory the GPU was still using; that caused a freeze and a crash.
+Some of the speedups change what you see or play:
 
-## Building (Windows, Git Bash, no WSL)
+- Enemies think every other frame. Hits still land on time. **GRAPHICS → ENEMY AI** turns it off.
+- No end-of-level replay and no death rewind.
+- Simpler effects in heavy scenes: less lighting, lighter smoke, fog and explosions.
 
-Requires `gh`, CMake, MinGW `mingw32-make` and Python with Pillow on PATH.
+Each can be undone in `ux0:data/gms/katanazero/yyl.cfg`; [docs/compromises.md](docs/compromises.md) lists them all.
 
-```bash
-bash scripts/setup-sdk.sh    # softfp VitaSDK into C:/vitasdk-softfp
-bash scripts/setup-deps.sh   # vitaGL (+ patches/vitagl.patch), openal-soft, vitaShaRK, SceShaccCgExt, opensles
-python scripts/make_livearea.py <Katana ZERO APK>   # bubble icon, LiveArea and start gate art
-bash scripts/build.sh        # build/app/KatanaZero.vpk and build/loader/loader2.bin
+## Building (Windows, no WSL)
+
+Requires [uv](https://docs.astral.sh/uv/), Git and MinGW `mingw32-make` on PATH. uv provides Python, CMake and the
+Python packages (`pyproject.toml`). From the repository root, in any shell:
+
+```
+uv run build.py "<Katana ZERO APK>"
 ```
 
-`make_livearea.py` builds the LiveArea images from the game's title screen art in your APK, into `livearea/`.
-They are game art, so they are not committed, and the app build stops if they are missing.
+This builds `build/app/KatanaZero.vpk` and `build/loader/loader2.bin` (the YoYo Loader drop-in loader). The first run
+also:
+
+- installs the softfp VitaSDK into `C:/vitasdk-softfp` (pinned downloads, checked by sha256)
+- builds vitaGL (with `patches/vitagl.patch`), openal-soft, vitaShaRK, SceShaccCgExt and opensles in `C:/vitasdk-build`
+- draws the bubble icon, LiveArea and start gate art from the title screen art in your APK into `livearea/`. It is
+  game art, so it is not committed.
+
+Later runs skip finished steps and rebuild only what changed. The dependencies are rebuilt when a patch, a pin or a
+dependency checkout changes. If only the installed libraries were replaced (another vitaGL build, say), the build
+stops and asks for `--deps` or `--no-deps`. Once the art exists, the APK argument is optional.
+
+`--game-apk` also makes `build/game.apk` (step 2 below). `--sdk` and `--deps-dir` choose other locations. `--deps`
+forces a dependency rebuild, `--no-deps` leaves the installed ones alone (e.g. an experimental vitaGL), and `--check`
+only reports what a run would do. On Linux, set `VITASDK` (or `--sdk`) to a softfp VitaSDK, such as the
+`atamanenko/vitasdk-softfp` container CI uses, and have `make` instead of `mingw32-make`. In Git Bash,
+`. scripts/env.sh` sets up the same environment to run `cmake --build build/app` or the toolchain by hand.
 
 To install a source build without the web builder:
 
 1. Install `build/app/KatanaZero.vpk` (title ID `KTNZ00001`). It contains only the loader.
-2. Build the game APK with `python scripts/prepare_apk.py <Katana ZERO 1.1.10 APK> game.apk`
-   (needs `pip install lz4 pyelftools`) and copy it to `ux0:data/gms/katanazero/game.apk`. This also redraws the
+2. Build the game APK with `uv run build.py --game-apk "<Katana ZERO 1.1.10 APK>"` and copy `build/game.apk` to
+   `ux0:data/gms/katanazero/game.apk`. This also redraws the
    Xbox button prompts as Vita buttons (`--xbox-glyphs` keeps the originals). A `game.apk` inside the app, as the web
    builder makes, takes precedence over this one.
 
@@ -88,8 +86,8 @@ requests only build it, as an artifact to test first. To try the page locally, c
 - JNI object arrays hold real element pointers, so extension functions can take several strings.
 - `loader/loader/netflix.c` replaces the `NetflixIntegration` extension offline. Cloud save slots are stored in
   `ux0:data/gms/<game>/assets/netflix/<slot>.sav`. Leaderboards and telemetry do nothing.
-- `loader/loader/katana.c` holds the game-specific speedups and the 30 fps mode. Its comments have the
-  measurements and the `exp_*` flags that turn each change off for comparison.
+- `loader/loader/katana.c` holds the game-specific speedups. Its comments have the measurements and the `exp_*`
+  flags that turn each change off for comparison.
 
 ## Acknowledgements
 

@@ -76,11 +76,8 @@ static event_func orig_particle_draw;
 // Instance pointers are 16-byte aligned; use them for a stable per-instance parity bit
 #define INSTANCE_PARITY(self) (((uintptr_t)(self) >> 4) & 1)
 
-// 30 fps mode (see t30_install) is active: ticks run at 30 Hz, so every-other-tick work runs on every tick
-int t30_active;
-
 static inline int half_rate_tick(void) {
-	return t30_active || !(*frame_count & 1);
+	return !(*frame_count & 1);
 }
 
 // Cloth simulation (clothesline + its softbody nodes) runs at 30Hz, and not at all while the
@@ -196,7 +193,7 @@ void katana_cloth_report(int frames) {
 
 // Each rain emitter is drawn every other frame, alternating between emitters
 static void rain_draw(void *self, void *other) {
-	if (t30_active || (INSTANCE_PARITY(self) ^ (*frame_count & 1)))
+	if (INSTANCE_PARITY(self) ^ (*frame_count & 1))
 		orig_rain_draw(self, other);
 }
 
@@ -234,7 +231,7 @@ static void particle_draw(void *self, void *other) {
 		if (heavy_profiling)
 			sample_recolor_timer();
 	}
-	if (t30_active || drawn++ < PARTICLES_ALWAYS_DRAWN || (INSTANCE_PARITY(self) ^ (*frame_count & 1)))
+	if (drawn++ < PARTICLES_ALWAYS_DRAWN || (INSTANCE_PARITY(self) ^ (*frame_count & 1)))
 		orig_particle_draw(self, other);
 }
 
@@ -835,6 +832,9 @@ void katana_late_install(void) {
 	}
 	extern int letter_timing;
 	letter_timing = exp_flag("lettertime");
+	extern int letter_glow_ab, letter_glow_prof;
+	letter_glow_ab = debugMode && exp_flag("letterglowab");
+	letter_glow_prof = debugMode && exp_flag("letterglowprof");
 	if (!exp_flag("wavynative0")) {
 		extern int wavy_native_install(void *(*hook)(uintptr_t entry, void *replacement));
 		debugPrintf("native draw_sprite_wavy: %s\n", wavy_native_install(entry_hook) ? "installed" : "NOT installed");
@@ -969,19 +969,16 @@ static int screen_btn_nodraw_install(void) {
 }
 
 /*
- * Rain thinning (rain=0|1 in yyl.cfg): obj_rain drops are destroyed right after their Create event (all of them,
- * or every second one), so random number use is unchanged and obj_rain has no Destroy event to trigger.
+ * No rain (rain=0 in yyl.cfg): obj_rain drops are destroyed right after their Create event, so random number use in
+ * the spawners and the Create is unchanged and obj_rain has no Destroy event to trigger. The default cheap rain
+ * (rain_cheap.c) destroys them the same way.
  */
 static event_func orig_rain_create;
 static void (*instance_destroy_fn)(void *self, void *other, int argc, void **args);
 
-static int rain_keep_none;
-
 static void rain_create(void *self, void *other) {
-	static uint32_t created;
 	orig_rain_create(self, other);
-	if (rain_keep_none || (created++ & 1))
-		instance_destroy_fn(self, other, 0, NULL);
+	instance_destroy_fn(self, other, 0, NULL);
 }
 
 // Replays are off by default (replays=1 in yyl.cfg restores them): the game's own replay option
@@ -1054,6 +1051,13 @@ gml_rvalue *global_var(int *var) {
 	gml_rvalue *(*vwrite)(void *, int) = (*(void ***)*global_obj_ptr)[3];
 	gml_rvalue *v = var ? vwrite(*global_obj_ptr, var[1]) : NULL;
 	return v && (v->kind == 0 || v->kind == 13) ? v : NULL;
+}
+
+// A real instance variable (through the write getter, as global_var)
+gml_rvalue *instance_var(void *self, int *var) {
+	gml_rvalue *(*vwrite)(void *, int) = (*(void ***)self)[3];
+	gml_rvalue *v = var ? vwrite(self, var[1]) : NULL;
+	return v && v->kind == 0 ? v : NULL;
 }
 
 static void level_complete_create_noreplay(void *self, void *other) {
@@ -1131,15 +1135,19 @@ static void patch_performance() {
 	if ((orig = gml_replace(table, "gml_Object_obj_particle_Other_25", particle_draw))) {
 		// In the fog rooms the roll's dust clouds skip their light tint (fogTrailLights=1 keeps it; fog_trail.c)
 		extern event_func fog_trail_install(event_func orig);
-		orig_particle_draw = fog_trail_install(orig);
+		// Under it, the event itself runs natively (exact; particle_native.c)
+		extern event_func particle_native_install(event_func orig);
+		orig_particle_draw = fog_trail_install(particle_native_install(orig));
 	}
 
 	instance_destroy_fn = (void *)so_symbol(&yoyoloader_mod, "_Z22YYGML_instance_destroyP9CInstanceS0_iPP8YYRValue");
-	// rain in yyl.cfg: 0 removes rain entirely (default: first level 39 -> 47 fps), 1 keeps every
-	// second drop, 2 keeps all of them
+	// rain in yyl.cfg: 1 (default) cheap rain drawn by the loader (rain_cheap.c), 0 none, 2 the game's rain (first
+	// level 47 fps without it, 39 with half of it in 2025)
 	extern int rain_level;
-	rain_keep_none = rain_level <= 0;
-	if (rain_level < 2 && instance_destroy_fn && (orig = gml_replace(table, "gml_Object_obj_rain_Create_0", rain_create)))
+	extern int rain_cheap_install(gml_func_entry *table, void *destroy);
+	if (rain_level == 1 && !(instance_destroy_fn && rain_cheap_install(table, instance_destroy_fn)))
+		rain_level = 0;
+	if (rain_level == 0 && instance_destroy_fn && (orig = gml_replace(table, "gml_Object_obj_rain_Create_0", rain_create)))
 		orig_rain_create = orig;
 
 	// Skipped by default (buttons are used on Vita); exp_touchui brings the virtual controls back
@@ -1198,6 +1206,8 @@ static void patch_performance() {
 
 	// Texture pages repacked by prepare_apk.py as LZ4 inside the runner's "2zoq" container
 	install_lz4_pages();
+	extern void title_pages_install(void);
+	title_pages_install();
 	install_nursery_align();
 	if (!exp_flag("letternative0")) {
 		extern int letter_native_install(void *(*rx_alloc)(size_t));
@@ -1225,6 +1235,40 @@ static void patch_performance() {
 	if (!exp_flag("bikedraw0")) {
 		extern int bike_draw_install(void);
 		debugPrintf("bike draw loops: %s\n", bike_draw_install() ? "installed" : "NOT installed");
+	}
+	// update_region natively (exact; region_native.c): moving particles and every explosion particle call it from their
+	// draw event, 120-270 calls per frame in the bike chase's helicopter volleys at ~21 us each
+	if (!exp_flag("regionnative0")) {
+		extern int region_native_install(void *(*hook)(uintptr_t entry, void *replacement));
+		debugPrintf("native update_region: %s\n", region_native_install(entry_hook) ? "installed" : "NOT installed");
+	}
+	// Explosion particles skip update_light_array in their inherited Create: they never read the light list (exact;
+	// particle_lights.c). Bike chase volleys: 60-90 particles per explosion frame, ~40 us each.
+	if (!exp_flag("particlelights0")) {
+		extern int particle_lights_install(void *(*hook)(uintptr_t entry, void *replacement));
+		debugPrintf("explosion particle lights: %s\n", particle_lights_install(entry_hook) ? "installed" : "NOT installed");
+	}
+	// Bike chase helicopter fight: fewer explosion particles per mortar, same random draws (explosion_lite.c).
+	// fullExplosions=1 keeps all 30.
+	extern int full_explosions;
+	if (!full_explosions || debugMode) { // with fullExplosions=1 only for the debug screenshot trigger (all particles)
+		extern int explosion_lite_install(void);
+		debugPrintf("lighter explosions: %s%c", explosion_lite_install() ? "installed" : "NOT installed", 10);
+	}
+	// Bike chase traffic cones: drawn without their draw_shadow (cone_shadow.c), 4.5-6 ms per frame with ~100 cones even
+	// with the native shadow. coneShadows=1 keeps them.
+	extern int cone_shadows;
+	if (!cone_shadows) {
+		extern int cone_shadow_install(void);
+		debugPrintf("cone shadows off: %s%c", cone_shadow_install() ? "installed" : "NOT installed", 10);
+	}
+	// Bike chase helicopter fight: the rockets rising in the background (obj_heli_mortar_far) are drawn unlit; their
+	// light list, light tint and rim shading cost 15-37 ms of render-target flushes per frame while 15-25 are on
+	// screen (far_rocket.c). farRocketLights=1 keeps them lit.
+	extern int far_rocket_lights;
+	if (!far_rocket_lights) {
+		extern int far_rocket_install(void);
+		debugPrintf("far rockets unlit: %s\n", far_rocket_install() ? "installed" : "NOT installed");
 	}
 	// update_light_array's loop body runs natively per light (exact; light_array_native.c): particles' Create events
 	if (!exp_flag("lightarray0")) {
@@ -1273,6 +1317,13 @@ static void patch_performance() {
 	if (!exp_flag("smokedraw0")) {
 		extern int smokedraw_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native smoke cloud Draw: %s\n", smokedraw_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
+	// move_contact_solid without the redundant collision-tree work (move_contact_native.c, exact): the Dragon's dash
+	// aim calls it every frame and it walked the player pixel by pixel with tree updates and searches (1.2-3.6 ms/frame
+	// in room_dragon_3, more on long aims). exp_movecontact0 keeps the runner's Command_MoveContact.
+	if (!exp_flag("movecontact0")) {
+		extern int move_contact_native_install(void *(*hook)(uintptr_t entry, void *replacement));
+		debugPrintf("native move_contact_solid: %s\n", move_contact_native_install(entry_hook) ? "installed" : "NOT installed");
 	}
 	// Exact natives of obj_orangelight Step and obj_lightback Step, from the static recompiler kill test
 	// (work/cpu_research/kill_test/REPORT.md): the events with the runner's compare/truth/variable helpers inlined
@@ -1349,11 +1400,13 @@ static void patch_performance() {
 	orig_timing_sleep = entry_hook(so_symbol(&yoyoloader_mod, "Timing_Sleep"), timing_sleep_vsync);
 	debugPrintf("frame limiter spin: %s\n", orig_timing_sleep ? "skipped with vblank pacing" : "NOT hooked");
 
-	// Whatever yyl.cfg says: the GRAPHICS menu can turn 30 fps mode on, and it needs the time doubling then
-	t30_install(table);
-	fps_menu_install(table);
+	extern int fps_mode_ignored;
+	if (fps_mode_ignored)
+		debugPrintf("yyl.cfg fpsMode/fps30: no longer supported (the 30 fps mode was removed), ignored\n");
+	enemy_half_rate_install(table);
+	options_menu_install(table);
 	extern void fx_rate_install(gml_func_entry *table);
-	fx_rate_install(table); // after t30_install: uses its animation_code hook
+	fx_rate_install(table);
 	extern void glow_rest_install(gml_func_entry *table);
 	glow_rest_install(table);
 	extern void wobble_rest_install(gml_func_entry *table);

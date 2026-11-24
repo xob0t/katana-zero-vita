@@ -11,14 +11,14 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Settled smoke and burning-corpse embers update every 4th frame | — |
 | Smoke is drawn with half the clouds, each one larger; the hidden ones still block sight and get pushed | `smokeClouds=1` |
 | Lighting updates 30 times a second | — |
-| Roll dust is unlit, and afterimages have no light tint | `trailLights=1` |
+| Roll dust is unlit, and afterimages have no light tint | `trailLights=1` (`fogTrailLights=1`: only in the foggy rooms) |
 | No glow around highlighted words in dialogue | `letterGlow=1` |
-| The wavy dialogue backgrounds sway in coarser steps | `waveStrips=1` |
+| The wavy dialogue backgrounds sway in coarser steps | `waveStrips=1` (`waveStrips=2`: half as coarse) |
 | Laser deaths cut the body into fewer, thicker slices | `dissolveChunkScale=1` |
 | At most 3 copies of one sound and 32 voices at once | `sameSoundLimit=0`, `maxVoices=0` |
 | Checkpoints are saved in the background: a crash right after one can lose it, never corrupt it | `asyncSave=0` |
 | Rooms the GPU can't keep up with drop to 640x360 | `dynamicRes=0` |
-| No rain | `rain=2` (`rain=1`: half the drops) |
+| Rain is plain dark streaks and grey splashes, without the game's fading trails and lamp-lit drops | `rain=2` (`rain=0`: no rain) |
 | No end-of-level replay and no death rewind | `replays=1` |
 
 **In some rooms**
@@ -30,6 +30,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Clotheslines | No coloured light on them | `ropeLights=1` |
 | Cathedral | No dust in the window light | `cathedralDust=1` |
 | Prison | Thinner fog | `fogScale=1` |
+| Dossier burn | No small decorative burn circles; the burn spreads the same | `dossierCircles=1` |
 | Motorcycle chase | No cone shadows; distant rockets unlit; explosions with a third of the particles | `coneShadows=1`, `farRocketLights=1`, `fullExplosions=1` |
 
 Over a long session video memory fills up. When it does, the next room load pauses for about a second while the
