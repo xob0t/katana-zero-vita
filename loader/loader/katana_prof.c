@@ -388,29 +388,21 @@ static void light_fast_report(int frames) {
 }
 
 void katana_prof_report(int frames) {
-	extern unsigned t30_letter_skips, t30_search_ticks, t30_enemy_steps, t30_textbox_ticks[2];
-	if (t30_letter_skips)
-		debugPrintf("[FPS30] %u letter steps skipped on frozen ticks\n", t30_letter_skips);
-	if (t30_enemy_steps)
-		debugPrintf("[FPS30] enemy steps at 30 ticks/s %u, search ticks added %u\n", t30_enemy_steps, t30_search_ticks);
 	{
 		// Half-rate enemies, per frame of this report window
-		extern unsigned enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced, enemyhalf_probes, enemyhalf_kills[4];
+		extern unsigned enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced, enemyhalf_probes,
+			enemyhalf_search_ticks, enemyhalf_kills[4];
 		static unsigned last[5];
 		unsigned now[5] = { enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced, enemyhalf_probes };
 		if (debugMode && frames > 0 && (now[0] != last[0] || now[2] != last[2]))
-			debugPrintf("[FPS30] half-rate enemies per tick: %.1f steps run (%.1f covering 2 ticks), %.1f skipped, %.2f run "
+			debugPrintf("[ENEMYHALF] half-rate enemies per tick: %.1f steps run (%.1f covering 2 ticks), %.1f skipped, %.2f run "
 				"for a hurt source near (%.2f probed) | search ticks added %u | deaths: other event %u, near run %u, 2-tick %u, "
 				"1-tick %u\n",
 				(float)(now[0] - last[0]) / frames, (float)(now[1] - last[1]) / frames, (float)(now[2] - last[2]) / frames,
-				(float)(now[3] - last[3]) / frames, (float)(now[4] - last[4]) / frames, t30_search_ticks, enemyhalf_kills[0],
+				(float)(now[3] - last[3]) / frames, (float)(now[4] - last[4]) / frames, enemyhalf_search_ticks, enemyhalf_kills[0],
 				enemyhalf_kills[1], enemyhalf_kills[2], enemyhalf_kills[3]);
 		memcpy(last, now, sizeof(last));
 	}
-	extern unsigned t30_textbox_doubled;
-	if (t30_textbox_ticks[0] || t30_textbox_ticks[1])
-		debugPrintf("[FPS30] textbox ticks at 30 ticks/s: %u, passive %u (typing x2 %u)\n", t30_textbox_ticks[0],
-			t30_textbox_ticks[1], t30_textbox_doubled);
 	extern uint32_t sound_limit_skipped;
 	if (sound_limit_skipped)
 		debugPrintf("[AUDIO] same-sound copies skipped: %u\n", sound_limit_skipped);
@@ -813,6 +805,34 @@ void katana_prof_report(int frames) {
 		}
 		if (laser_ab)
 			laser_ab_off = !laser_ab_off;
+	}
+	{
+		// move_contact_native.c, per frame: tested positions (steps); searches run/skipped; UpdateTree's tree update of
+		// the player run/skipped; tested boxes the tree move was deferred for, and flushes. Totals: candidate lists
+		// unusable (overflow / count mismatch); exp_mcverify checks of skipped work and of the insertion model;
+		// exp_mcdiff calls whose native result (on a copy of the tree) matched the original's.
+		// exp_mcab: native off in every other window.
+		extern int mc_ab, mc_ab_off, mc_prof;
+		extern unsigned mc_calls, mc_fallbacks, mc_steps, mc_search_real, mc_search_skipped, mc_tree_skipped, mc_tree_real;
+		extern unsigned mc_verify_ok, mc_verify_bad, mc_prof_us, mc_cand_overflow, mc_cand_mismatch;
+		extern unsigned mc_deferred_steps, mc_flushes, mc_model_ok, mc_model_bad, mc_diff_ok, mc_diff_bad, mc_diff_skipped;
+		if ((mc_calls || mc_fallbacks) && frames > 0) {
+			float f = (float)frames;
+			debugPrintf("[MOVECONTACT] native %.1f fallback %.1f calls, %.1f steps | search %.1f run %.1f skipped | tree "
+				"update %.1f run %.1f skipped | deferred %.1f flushes %.1f | candidates overflow %u mismatch %u | verify "
+				"ok %u mismatch %u, model ok %u mismatch %u, diff ok %u mismatch %u skipped %u%s\n",
+				mc_calls / f, mc_fallbacks / f, mc_steps / f, mc_search_real / f, mc_search_skipped / f, mc_tree_real / f,
+				mc_tree_skipped / f, mc_deferred_steps / f, mc_flushes / f, mc_cand_overflow, mc_cand_mismatch,
+				mc_verify_ok, mc_verify_bad, mc_model_ok, mc_model_bad, mc_diff_ok, mc_diff_bad, mc_diff_skipped,
+				mc_ab ? (mc_ab_off ? " | A/B: off" : " | A/B: on") : "");
+			if (mc_prof)
+				debugPrintf("[MOVECONTACT] native time %.3f ms/frame\n", mc_prof_us / 1000.0f / f);
+		}
+		mc_calls = mc_fallbacks = mc_steps = mc_search_real = mc_search_skipped = mc_tree_skipped = mc_tree_real = 0;
+		mc_deferred_steps = mc_flushes = 0;
+		mc_prof_us = 0;
+		if (mc_ab)
+			mc_ab_off = !mc_ab_off;
 	}
 	if (debugMode && light_fast_mode)
 		light_fast_report(frames);

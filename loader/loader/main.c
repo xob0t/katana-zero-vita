@@ -101,6 +101,7 @@ int disableObjectsArray = 0;
 int uncached_mem = 0;
 int double_buffering = 0;
 int frame_skip = 0; // opt-in: frameSkip=1 in yyl.cfg
+int fps_mode_ignored; // yyl.cfg still sets fpsMode/fps30 (removed)
 int replays = 0; // replays=1 in yyl.cfg: leave replay recording to the game's own option
 int rain_level = 0; // rain=0 none (default), 1 half, 2 full
 int rope_lights = 0; // ropeLights=1: clotheslines keep their light tint (costs ~7 fps near them)
@@ -204,6 +205,7 @@ void loadConfig(const char *game) {
 			else if (strcmp("coneShadows", buffer) == 0) { extern int cone_shadows; cone_shadows = value; }
 			else if (strcmp("fullExplosions", buffer) == 0) { extern int full_explosions; full_explosions = value; }
 			else if (strcmp("cathedralDust", buffer) == 0) { extern int cathedral_dust; cathedral_dust = value; }
+			else if (strcmp("roomLighting", buffer) == 0) { extern int room_lighting; room_lighting = value; }
 			else if (strcmp("dynamicRes", buffer) == 0) { extern int dynamic_res; dynamic_res = value; }
 			else if (strcmp("skipNetflixLogo", buffer) == 0) { extern int skip_netflix_logo; skip_netflix_logo = value; }
 			else if (strcmp("noSplash", buffer) == 0) forceSplashSkip = value;
@@ -214,11 +216,8 @@ void loadConfig(const char *game) {
 			else if (strcmp("uncachedMem", buffer) == 0) uncached_mem = value;
 			else if (strcmp("doubleBuffering", buffer) == 0) double_buffering = value;
 			else if (strcmp("frameSkip", buffer) == 0) frame_skip = value;
-			// fpsMode: 0 NATIVE, 1 DYNAMIC, 2 30 FPS (the FPS MODE menu overrides it); fps30 is its old name
-			else if (strcmp("fpsMode", buffer) == 0 || strcmp("fps30", buffer) == 0) {
-				extern int fps30;
-				if (value >= 0 && value <= 2) fps30 = value;
-			}
+			// fpsMode (old name fps30): the 30 fps mode was removed; logged once at install (patch_performance)
+			else if (strcmp("fpsMode", buffer) == 0 || strcmp("fps30", buffer) == 0) { extern int fps_mode_ignored; fps_mode_ignored = 1; }
 			// enemyHalfRate: 1 enemy AI every other tick at 60 fps (default), 0 every tick (the ENEMY AI menu overrides it)
 			else if (strcmp("enemyHalfRate", buffer) == 0) { extern int enemy_half_rate; enemy_half_rate = value ? 1 : 0; }
 			else if (strcmp("stickDeadzone", buffer) == 0) { extern double stick_deadzone; stick_deadzone = (value < 0 ? 0 : value > 90 ? 90 : value) / 100.0; }
@@ -1144,13 +1143,13 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 	if (processed - start > 100000 || swapped - processed > 50000) {
 		debugPrintf("[HITCH] process %.1fms swap %.1fms\n", (processed - start) / 1000.0f, (swapped - processed) / 1000.0f);
 		// Where the "swap" time went (it also covers the work after vglSwapBuffers), and memory at that moment
-		extern uint32_t after_swap_step_us[2];
+		extern uint32_t after_swap_dynres_us;
 		SceKernelFreeMemorySizeInfo kfree;
 		kfree.size = sizeof(kfree);
 		sceKernelGetFreeMemorySize(&kfree);
-		debugPrintf("[HITCH] vglSwapBuffers %.1fms t30_update %.1fms dynres %.1fms screenshot_check "
+		debugPrintf("[HITCH] vglSwapBuffers %.1fms dynres %.1fms screenshot_check "
 			"%.1fms | forced gc %d | free vram %uKB ram %uKB phycont %uKB, kernel user %uKB phycont %uKB\n",
-			swap_only_us / 1000.0f, after_swap_step_us[0] / 1000.0f, after_swap_step_us[1] / 1000.0f,
+			swap_only_us / 1000.0f, after_swap_dynres_us / 1000.0f,
 			screenshot_check_us / 1000.0f, forced_gc, vglMemFree(VGL_MEM_VRAM) / 1024,
 			vglMemFree(VGL_MEM_RAM) / 1024, vglMemFree(VGL_MEM_PHYCONT) / 1024, kfree.size_user / 1024,
 			kfree.size_phycont / 1024);
