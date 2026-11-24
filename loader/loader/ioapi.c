@@ -79,12 +79,21 @@ static long ZCALLBACK fseek64_file_func OF((voidpf opaque, voidpf stream, ZPOS64
 static int ZCALLBACK fclose_file_func OF((voidpf opaque, voidpf stream));
 static int ZCALLBACK ferror_file_func OF((voidpf opaque, voidpf stream));
 
+/* Read-only streams keep a read-ahead buffer and their own file position. Every minizip call used to be a memory
+   card syscall: walking the apk's central directory (1798 entries, a seek and two small reads each) took 0.44 s per
+   unzLocateFile that has to scan it, and the loader does several at boot. Reads of RBUF_SIZE or more go straight to
+   the card. Write streams work as before. */
+#define RBUF_SIZE (64 * 1024)
+
 typedef struct
 {
     SceUID fd;
     int error;
     int filenameLength;
     void* filename;
+    unsigned char* rbuf;   /* read-only streams: buffered bytes rbuf_pos..rbuf_pos + rbuf_len */
+    ZPOS64_T pos, rbuf_pos;
+    uLong rbuf_len;
 } FILE_IOPOSIX;
 
 static voidpf file_build_ioposix(SceUID fd, const char* filename)
@@ -98,6 +107,9 @@ static voidpf file_build_ioposix(SceUID fd, const char* filename)
     ioposix->filenameLength = strlen(filename) + 1;
     ioposix->filename = (char*)malloc(ioposix->filenameLength * sizeof(char));
     strncpy(ioposix->filename, filename, ioposix->filenameLength);
+    ioposix->rbuf = NULL;
+    ioposix->pos = ioposix->rbuf_pos = 0;
+    ioposix->rbuf_len = 0;
     return (voidpf)ioposix;
 }
 
@@ -115,7 +127,10 @@ static voidpf ZCALLBACK fopen_file_func(voidpf opaque, const char* filename, int
     if ((filename != NULL) && (mode_fopen != 0))
     {
         fd = sceIoOpen(filename, mode_fopen, 0777);
-        return file_build_ioposix(fd, filename);
+        FILE_IOPOSIX* ioposix = (FILE_IOPOSIX*)file_build_ioposix(fd, filename);
+        if (ioposix && mode_fopen == SCE_O_RDONLY)
+            ioposix->rbuf = (unsigned char*)malloc(RBUF_SIZE); /* NULL: unbuffered as before */
+        return ioposix;
     }
 
     return NULL;
@@ -153,9 +168,51 @@ static uLong ZCALLBACK fread_file_func(voidpf opaque, voidpf stream, void* buf, 
     if (stream == NULL)
         return -1;
     ioposix = (FILE_IOPOSIX*)stream;
-    ret = (uLong)sceIoRead(ioposix->fd, buf, (size_t)size);
-    ioposix->error = (int)ret;
-    return ret;
+    if (!ioposix->rbuf) {
+        ret = (uLong)sceIoRead(ioposix->fd, buf, (size_t)size);
+        ioposix->error = (int)ret;
+        return ret;
+    }
+    unsigned char* out = (unsigned char*)buf;
+    uLong total = 0;
+    while (size > 0) {
+        if (ioposix->pos >= ioposix->rbuf_pos && ioposix->pos < ioposix->rbuf_pos + ioposix->rbuf_len) {
+            uLong avail = (uLong)(ioposix->rbuf_pos + ioposix->rbuf_len - ioposix->pos);
+            uLong n = size < avail ? size : avail;
+            memcpy(out, ioposix->rbuf + (ioposix->pos - ioposix->rbuf_pos), n);
+            out += n;
+            total += n;
+            size -= n;
+            ioposix->pos += n;
+            continue;
+        }
+        if (sceIoLseek(ioposix->fd, ioposix->pos, SCE_SEEK_SET) < 0) {
+            ioposix->error = -1;
+            return total ? total : (uLong)-1;
+        }
+        int r;
+        if (size >= RBUF_SIZE) {
+            r = sceIoRead(ioposix->fd, out, (size_t)size);
+            if (r > 0) {
+                total += r;
+                ioposix->pos += r;
+            }
+        } else {
+            r = sceIoRead(ioposix->fd, ioposix->rbuf, RBUF_SIZE);
+            if (r > 0) {
+                ioposix->rbuf_pos = ioposix->pos;
+                ioposix->rbuf_len = r;
+                continue;
+            }
+        }
+        if (r < 0 && !total) {
+            ioposix->error = r;
+            return (uLong)r;
+        }
+        break;
+    }
+    ioposix->error = (int)total;
+    return total;
 }
 
 static uLong ZCALLBACK fwrite_file_func(voidpf opaque, voidpf stream, const void* buf, uLong size)
@@ -177,7 +234,10 @@ static long ZCALLBACK ftell_file_func(voidpf opaque, voidpf stream)
     if (stream == NULL)
         return ret;
     ioposix = (FILE_IOPOSIX*)stream;
-    ret = (long)sceIoLseek32(ioposix->fd, 0, SCE_SEEK_CUR);
+    if (ioposix->rbuf)
+        ret = (long)ioposix->pos;
+    else
+        ret = (long)sceIoLseek32(ioposix->fd, 0, SCE_SEEK_CUR);
     ioposix->error = (int)ret;
     return ret;
 }
@@ -189,9 +249,30 @@ static ZPOS64_T ZCALLBACK ftell64_file_func(voidpf opaque, voidpf stream)
     if (stream == NULL)
         return ret;
     ioposix = (FILE_IOPOSIX*)stream;
-    ret = (ZPOS64_T)sceIoLseek(ioposix->fd, 0, SCE_SEEK_CUR);
+    if (ioposix->rbuf)
+        ret = ioposix->pos;
+    else
+        ret = (ZPOS64_T)sceIoLseek(ioposix->fd, 0, SCE_SEEK_CUR);
     ioposix->error = (int)ret;
     return ret;
+}
+
+/* Moves a buffered stream's own position; only SEEK_END asks the card (for the file size) */
+static long buffered_seek(FILE_IOPOSIX* ioposix, long long offset, int origin)
+{
+    long long pos;
+    if (origin == SCE_SEEK_END) {
+        SceOff end = sceIoLseek(ioposix->fd, offset, SCE_SEEK_END);
+        if (end < 0)
+            return -1;
+        pos = end;
+    } else {
+        pos = (origin == SCE_SEEK_CUR ? (long long)ioposix->pos : 0) + offset;
+        if (pos < 0)
+            return -1;
+    }
+    ioposix->pos = (ZPOS64_T)pos;
+    return 0;
 }
 
 static long ZCALLBACK fseek_file_func(voidpf opaque, voidpf stream, uLong offset, int origin)
@@ -218,6 +299,8 @@ static long ZCALLBACK fseek_file_func(voidpf opaque, voidpf stream, uLong offset
         default:
             return -1;
     }
+    if (ioposix->rbuf)
+        return buffered_seek(ioposix, (long long)(int)offset, fseek_origin);
     if (sceIoLseek32(ioposix->fd, offset, fseek_origin) < 0)
         ret = -1;
     return ret;
@@ -247,6 +330,8 @@ static long ZCALLBACK fseek64_file_func(voidpf opaque, voidpf stream, ZPOS64_T o
         default:
             return -1;
     }
+    if (ioposix->rbuf)
+        return buffered_seek(ioposix, (long long)offset, fseek_origin);
     if (sceIoLseek(ioposix->fd, offset, fseek_origin) < 0)
         ret = -1;
     return ret;
@@ -261,6 +346,7 @@ static int ZCALLBACK fclose_file_func(voidpf opaque, voidpf stream)
     ioposix = (FILE_IOPOSIX*)stream;
     if (ioposix->filename != NULL)
         free(ioposix->filename);
+    free(ioposix->rbuf);
     ret = sceIoClose(ioposix->fd);
     ioposix->error = ret;
     free(ioposix);

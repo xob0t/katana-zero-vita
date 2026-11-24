@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -15,6 +16,9 @@
 
 // stdio_mt.c's mt_fclose reports closes to the freeze locator (hang_watch.c), which isn't part of this host test
 void hang_io_file_close(void *file) { (void)file; }
+// mt_fread asks the startup prefetcher (apk_prefetch.c) first; here nothing is prefetched
+long apk_prefetch_serve(uint64_t pos, void *buf, size_t n) { (void)pos; (void)buf; (void)n; return 0; }
+int apk_prefetch_wait(uint64_t pos, size_t n) { (void)pos; (void)n; return 0; }
 
 int mt_register_apk(FILE *f);
 int mt_fseek(FILE *f, long offset, int whence);

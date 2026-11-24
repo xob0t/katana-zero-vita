@@ -83,6 +83,15 @@ void katana_prof_report(int frames);
 int katana_frame_skipped();
 void katana_after_swap(uint32_t swap_us, uint32_t work_us);
 void katana_clock_probe(void);
+void boot_mark(const char *name);
+void boot_marks_flush(void);
+void boot_prof_install(void);
+void boot_prof_report(const char *when);
+void boot_readbench(const char *path);
+void apk_prefetch_start(void *apk, const char *apk_path, int cpu_mask);
+void apk_prefetch_release(void);
+void fast_find_install(void);
+void fast_find_end(void);
 void screenshot_check();
 void callprof_report(int frames);
 void evprof_report(int frames);
@@ -1201,6 +1210,11 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 	if (current_room && *current_room != win_room) {
 		win_room = *current_room;
 		hang_watch_room(win_room);
+		static int boot_reports;
+		if (boot_reports < 6) {
+			boot_reports++;
+			boot_prof_report("a room change");
+		}
 		win_frames = 0;
 		win_frame_us = win_run_us = 0;
 		// GPU memory at each room change: textures and surfaces that miss VRAM land in slower RAM pools
@@ -3524,6 +3538,7 @@ static void audio_sound_get_track_position(retval_t *ret, void *self, void *othe
 void *pthread_main(void *arg);
 
 int main(int argc, char *argv[]) {
+	boot_mark("main()");
 	pthread_t t;
 	pthread_attr_t attr;
 	pthread_attr_init(&attr);
@@ -3538,6 +3553,7 @@ int main(int argc, char *argv[]) {
 unsigned int _oal_thread_affinity;
 
 void *pthread_main(void *arg) {
+	boot_mark("pthread_main");
 	sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), GAME_THREAD_CPU_MASK);
 	// Before the runner opens its OpenAL device
 	_oal_thread_affinity = WORKER_THREAD_CPU_MASK;
@@ -3577,6 +3593,7 @@ void *pthread_main(void *arg) {
 	sceMotionReset();
 	sceMotionStartSampling();
 
+	boot_mark("input sampling started");
 	// Maximizing clocks
 	// Don't undo a higher clock set by an overclocking plugin (e.g. PSVshell at 500MHz)
 	if (scePowerGetArmClockFrequency() < 444)
@@ -3598,6 +3615,7 @@ void *pthread_main(void *arg) {
 #endif
 	sprintf(data_path_root, "%s/%s/", DATA_PATH, game_name);
 	sprintf(data_path, "%s/%s/assets/", DATA_PATH, game_name);
+	boot_mark("clocks set");
 	recursive_mkdir(data_path);
 	
 	sprintf(gxp_path, "ux0:data/gms/shared/gxp/%s", game_name);
@@ -3607,6 +3625,7 @@ void *pthread_main(void *arg) {
 	sceIoMkdir(gxp_path, 0777);
 	strcpy(pkg_name, "com.rinnegatamante.loader");
 
+	boot_mark("folders made");
 	// Checking for dependencies
 	if (check_kubridge() < 0)
 		fatal_error("Error: kubridge.skprx is not installed.");
@@ -3617,7 +3636,9 @@ void *pthread_main(void *arg) {
 	GLboolean has_cpp_so = GL_FALSE;
 	GLboolean cpp_warn = GL_FALSE;
 	unz_file_info file_info;
+	boot_mark("dependency checks");
 	unzFile apk_file = unzOpen(apk_path);
+	boot_mark("apk opened (central directory)");
 	if (!apk_file)
 		fatal_error("Error could not find %s.", apk_path);
 	int res = unzLocateFile(apk_file, "lib/armeabi-v7a/libc++_shared.so", NULL);
@@ -3635,6 +3656,8 @@ void *pthread_main(void *arg) {
 		cpp_warn = !has_cpp_so;
 	}
 	
+	boot_mark("libc++_shared lookup");
+	boot_readbench(apk_path);
 	// Loading ARMv7 executable from the apk
 	// A libyoyo.so next to game.apk overrides the one inside the apk (used for patched
 	// runners, e.g. scripts/patch_plt_calls.py, without repacking the whole apk)
@@ -3667,17 +3690,30 @@ void *pthread_main(void *arg) {
 			// minizip's 16KB reads, which dominate startup time for 80MB YYC runners
 			ok = !read_file_range(apk_path, unzGetCurrentFileZStreamPos64(apk_file), so_buffer, so_size);
 		} else {
-			ok = read_runner_entry(apk_file, so_buffer, so_size) == 0;
+			// Deflated (prepare_apk.py since Nov 2026): card read, inflate and CRC run at once (runner_inflate.c).
+			// minizip's single-threaded 16 KB path stays as the fallback.
+			extern int runner_inflate(const char *path, uint64_t offset, uint32_t comp_size, uint32_t size,
+				uint32_t expected_crc, uint8_t *out, int cpu_mask);
+			ok = file_info.compression_method == Z_DEFLATED &&
+				runner_inflate(apk_path, unzGetCurrentFileZStreamPos64(apk_file), file_info.compressed_size, so_size,
+					file_info.crc, so_buffer, WORKER_THREAD_CPU_MASK) == 0;
+			if (!ok)
+				ok = read_runner_entry(apk_file, so_buffer, so_size) == 0;
 		}
 		if (unzCloseCurrentFile(apk_file) != UNZ_OK || !ok)
 			fatal_error("Error: could not read libyoyo.so from %s.", apk_path);
 	}
+	boot_mark("libyoyo.so read");
+	// game.droid and the audio groups: read on a worker while the game thread works through the CPU-bound setup
+	apk_prefetch_start(apk_file, apk_path, WORKER_THREAD_CPU_MASK);
+	boot_mark("apk prefetch started");
 	const char *runner_source = has_override ? so_override : apk_path;
 	debugPrintf("Runner source: %s\n", runner_source);
 	res = so_mem_load(&yoyoloader_mod, so_buffer, so_size, LOAD_ADDRESS + 0x1000000);
 	if (res < 0)
 		fatal_error("Error: could not load libyoyo.so from %s (0x%08X).", runner_source, res);
 	free(so_buffer);
+	boot_mark("libyoyo.so segments copied");
 	
 	// Loading config file
 	const char *platforms[YYL_PLATFORM_COUNT] = {
@@ -3686,12 +3722,15 @@ void *pthread_main(void *arg) {
 		"PS4"
 	};
 	loadConfig(game_name);
+	boot_mark("yyl.cfg read");
+	boot_marks_flush();
 	heavy_profiling = debugMode && file_exists("ux0:data/gms/shared/profile");
 	// Wide surfaces get their own gxm rendertarget; with scenesPerFrame=1 re-targeting the same
 	// surface several times a frame blocks sceGxmBeginScene until the GPU catches up
 	extern int vgl_big_rt_scenes;
 	vgl_big_rt_scenes = 8;
 	katana_clock_probe();
+	boot_mark("clock probe");
 	debugPrintf("Game: %s\n", apk_path);
 	debugPrintf("+--------------------------------------------+\n");
 	debugPrintf("|YoYo Loader Setup                           |\n");
@@ -3740,6 +3779,7 @@ void *pthread_main(void *arg) {
 		}
 	}
 	
+	boot_mark("setup table printed");
 	// Loading splash screen from the apk
 	uint8_t *splash_buf = NULL;
 	uint32_t splash_size;
@@ -3752,6 +3792,7 @@ void *pthread_main(void *arg) {
 		unzCloseCurrentFile(apk_file);
 	}
 	
+	boot_mark("splash.png read");
 	// Loading cpp library if present
 	if (has_cpp_so) {
 		so_relocate(&cpp_mod);
@@ -3762,16 +3803,22 @@ void *pthread_main(void *arg) {
 
 	// Patching the executable
 	so_relocate(&yoyoloader_mod);
+	boot_mark("so_relocate");
 	so_resolve(&yoyoloader_mod, default_dynlib, sizeof(default_dynlib), 0);
+	boot_mark("so_resolve");
 	if (!has_net)
 		so_resolve_with_dummy(&yoyoloader_mod, net_dynlib, sizeof(net_dynlib), 0);
+	boot_mark("so_resolve_with_dummy (net)");
 	patch_openal();
 	patch_runner();
+	boot_mark("patch_openal + patch_runner");
 #ifdef HAS_VIDEO_PLAYBACK_SUPPORT
 	patch_video_player();
 #endif
 	so_flush_caches(&yoyoloader_mod);
+	boot_mark("flush caches");
 	so_initialize(&yoyoloader_mod);
+	boot_mark("so_initialize (runner constructors)");
 	
 	// Initializing vitaGL
 	// The size is in bytes, split between the display buffers. Upstream's 3 KB (1 KB a frame) is overrun by
@@ -3824,11 +3871,13 @@ void *pthread_main(void *arg) {
 	// screen inside vglInit otherwise); releases its framebuffer before vglInit sizes its pools
 	extern void first_launch_prepare(void);
 	first_launch_prepare();
+	boot_mark("first_launch_prepare");
 	if (maximizeMem)
 		vglInitWithCustomThreshold(0, SCREEN_W, SCREEN_H, MEMORY_VITAGL_THRESHOLD_MB * 1024 * 1024, 0, 0, 0, SCE_GXM_MULTISAMPLE_NONE);
 	else
 		vglInitExtended(0, SCREEN_W, SCREEN_H, MEMORY_VITAGL_THRESHOLD_MB * 1024 * 1024, SCE_GXM_MULTISAMPLE_NONE);
 	vgl_booted = 1;
+	boot_mark("vglInit");
 	if (debugMode) {
 		SceKernelFreeMemorySizeInfo post_info;
 		post_info.size = sizeof(post_info);
@@ -3843,6 +3892,7 @@ void *pthread_main(void *arg) {
 			vgl_free(probe);
 	}
 	
+	boot_mark("vitaGL pools report");
 	// Applying extra patches to the runner
 	patch_runner_post_init();
 	Function_Add = (void *)so_symbol(&yoyoloader_mod, "_Z12Function_AddPKcPFvR6RValueP9CInstanceS4_iPS1_Eib");
@@ -3858,11 +3908,14 @@ void *pthread_main(void *arg) {
 	//uint8_t *g_fSuppressErrors = (uint8_t *)so_symbol(&yoyoloader_mod, "g_fSuppressErrors");
 	//*g_fSuppressErrors = 1;
 	
+	boot_mark("patch_runner_post_init + Function_Add");
 	patch_gamepad(game_name);
 	// Before the runner starts: recover a save whose commit a crash interrupted, start the background save writer
 	asyncsave_init(data_path, WORKER_THREAD_CPU_MASK);
+	boot_mark("patch_gamepad + asyncsave_init");
 	patch_netflix();
 	patch_katana();
+	boot_mark("patch_netflix + patch_katana");
 #ifdef STANDALONE_MODE
 	int has_trophies = trophies_init();
 	if (has_trophies > 0) {
@@ -3935,6 +3988,7 @@ void *pthread_main(void *arg) {
 	Java_com_yoyogames_runner_RunnerJNILib_CreateVersionDSMap = (void *)so_symbol(&yoyoloader_mod, "Java_com_yoyogames_runner_RunnerJNILib_CreateVersionDSMap");
 	Java_com_yoyogames_runner_RunnerJNILib_TouchEvent  = (void *)so_symbol(&yoyoloader_mod, "Java_com_yoyogames_runner_RunnerJNILib_TouchEvent");
 	
+	boot_mark("JNI tables");
 	// Displaying splash screen
 	if (splash_buf) {
 		int w, h;
@@ -3970,24 +4024,66 @@ void *pthread_main(void *arg) {
 		glDeleteTextures(1, &bg_image);
 	}
 	
+	boot_mark("splash drawn");
 	// Extracting Game ID
+	// The name is a STRG string: GEN8's name offset (file offset 20) points at its characters, its length sits in the
+	// 4 bytes before them. A stored game.droid (every prepared apk) is read in place: streaming the ~50 MB in front
+	// of the string through minizip's 16 KB reads took about 1.5 s at every boot.
 	char game_id[256];
-	void *tmp_buf = malloc(32 * 1024 * 1024);
+	game_id[0] = 0;
 	unzLocateFile(apk_file, "assets/game.droid", NULL);
+	unzGetCurrentFileInfo(apk_file, &file_info, NULL, 0, NULL, 0, NULL, 0);
 	unzOpenCurrentFile(apk_file);
-	unzReadCurrentFile(apk_file, tmp_buf, 20);
-	uint32_t offs;
-	unzReadCurrentFile(apk_file, &offs, 4);
-	uint32_t target = offs - 28;
-	while (target > 32 * 1024 * 1024) {
-		unzReadCurrentFile(apk_file, tmp_buf, 32 * 1024 * 1024);
-		target -= 32 * 1024 * 1024;
+	int game_id_read = 0;
+	if (file_info.compression_method == 0) {
+		uint64_t droid_pos = unzGetCurrentFileZStreamPos64(apk_file);
+		uint32_t name_offs, name_len;
+		if (!read_file_range(apk_path, droid_pos + 20, (uint8_t *)&name_offs, 4) && name_offs >= 28 &&
+			name_offs <= file_info.uncompressed_size &&
+			!read_file_range(apk_path, droid_pos + name_offs - 4, (uint8_t *)&name_len, 4)) {
+			uint32_t n = name_len + 1 < sizeof(game_id) ? name_len + 1 : sizeof(game_id) - 1;
+			game_id_read = !read_file_range(apk_path, droid_pos + name_offs, (uint8_t *)game_id, n);
+			game_id[n] = 0;
+		}
+	} else {
+		// Deflated: from the prefetcher's inflated copy (waits for it; Startup needs it right after anyway)
+		extern const uint8_t *apk_prefetch_peek(const char *name, uint32_t *size);
+		uint32_t droid_size;
+		const uint8_t *droid = apk_prefetch_peek("assets/game.droid", &droid_size);
+		uint32_t name_offs, name_len;
+		if (droid && droid_size >= 24) {
+			memcpy(&name_offs, droid + 20, 4);
+			if (name_offs >= 28 && name_offs <= droid_size) {
+				memcpy(&name_len, droid + name_offs - 4, 4);
+				uint32_t n = name_len + 1 < sizeof(game_id) ? name_len + 1 : sizeof(game_id) - 1;
+				if (n <= droid_size - name_offs) {
+					memcpy(game_id, droid + name_offs, n);
+					game_id[n] = 0;
+					game_id_read = 1;
+				}
+			}
+		}
 	}
-	unzReadCurrentFile(apk_file, tmp_buf, target);
-	unzReadCurrentFile(apk_file, &offs, 4);
-	unzReadCurrentFile(apk_file, game_id, offs + 1);
+	if (!game_id_read) {
+		void *tmp_buf = malloc(32 * 1024 * 1024);
+		unzCloseCurrentFile(apk_file);
+		unzOpenCurrentFile(apk_file);
+		unzReadCurrentFile(apk_file, tmp_buf, 20);
+		uint32_t offs;
+		unzReadCurrentFile(apk_file, &offs, 4);
+		uint32_t target = offs - 28;
+		while (target > 32 * 1024 * 1024) {
+			unzReadCurrentFile(apk_file, tmp_buf, 32 * 1024 * 1024);
+			target -= 32 * 1024 * 1024;
+		}
+		unzReadCurrentFile(apk_file, tmp_buf, target);
+		unzReadCurrentFile(apk_file, &offs, 4);
+		unzReadCurrentFile(apk_file, game_id, offs + 1 < sizeof(game_id) ? offs + 1 : sizeof(game_id) - 1);
+		game_id[sizeof(game_id) - 1] = 0;
+		free(tmp_buf);
+	}
 	unzClose(apk_file);
-	free(tmp_buf);
+	boot_mark("game ID read");
 	debugPrintf("Detected %s as Game ID\n", game_id);
 	
 	// Enabling game specific gamehacks
@@ -4002,6 +4098,11 @@ void *pthread_main(void *arg) {
 	// Starting the Runner
 	extern void katana_texture_selftest(void);
 	katana_texture_selftest();
+	boot_mark("texture self-test");
+	fast_find_install(); // hashed name lookups for LoadGameData (fast_find.c)
+	extern void apk_prefetch_install_hooks(void);
+	apk_prefetch_install_hooks(); // a deflated game.droid is handed over at LoadSave::_ReadFile
+	boot_prof_install();
 	debugPrintf("Calling runner Startup\n");
 	Java_com_yoyogames_runner_RunnerJNILib_Startup(fake_env, 0, apk_path, data_path, pkg_name, 0, 0);
 	{
@@ -4009,6 +4110,11 @@ void *pthread_main(void *arg) {
 		debugPrintf("Runner Startup done (g_Android_UseDynamicAssetDelivery %d)\n", dad ? *dad : -1);
 	}
 	
+	boot_mark("runner Startup");
+	apk_prefetch_release(); // Startup (its first room) has read everything the prefetcher reads
+	fast_find_end();
+	exp_flag_boot_end(); // exp_ switches are checked on the card again
+	boot_prof_report("runner Startup done");
 	enter_main_loop();
 	
 	return 0;

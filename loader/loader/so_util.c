@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <limits.h>
 
 #include "main.h"
@@ -24,11 +25,78 @@
 
 int text_phycont_result = 0;
 
-// Experiment switches: present if ux0:data/gms/shared/exp_<name> exists
+// Experiment switches: present if ux0:data/gms/shared/exp_<name> exists.
+// Until the runner's Startup returns (exp_flag_boot_end), the answer comes from one listing of the folder, taken at the
+// first call: the loader checks ~190 switches while it starts, and with the apk prefetcher reading (apk_prefetch.c)
+// each sceIoGetstat waited behind a card read (patch_katana went from 0.16 s to 2.8 s). Names compare case-insensitively,
+// as sceIoGetstat finds them on the memory card. Later calls check the file again (harnesses switch flags while running).
+#define EXP_DIR "ux0:data/gms/shared"
+static int exp_boot_cache = 1; // 1: use the listing (built on first use), 0: stat the file
+static char **exp_names;
+static int exp_count = -1;     // -1: listing not taken (or failed)
+static int exp_listed;
+
+static void exp_list(void) {
+	exp_listed = 1;
+	exp_count = 0;
+	SceUID d = sceIoDopen(EXP_DIR);
+	if (d < 0) {
+		// A missing folder means no switches; any other failure falls back to stat
+		SceIoStat st;
+		if (sceIoGetstat(EXP_DIR, &st) >= 0)
+			exp_count = -1;
+		return;
+	}
+	SceIoDirent e;
+	int cap = 0;
+	for (;;) {
+		memset(&e, 0, sizeof(e));
+		int r = sceIoDread(d, &e);
+		if (r < 0) {
+			exp_count = -1; // listing failed part way: stat instead
+			break;
+		}
+		if (r == 0)
+			break;
+		if (strncasecmp(e.d_name, "exp_", 4))
+			continue;
+		if (exp_count == cap) {
+			cap = cap ? cap * 2 : 16;
+			char **grown = realloc(exp_names, cap * sizeof(*exp_names));
+			if (!grown) {
+				exp_count = -1;
+				break;
+			}
+			exp_names = grown;
+		}
+		exp_names[exp_count] = strdup(e.d_name + 4);
+		if (!exp_names[exp_count]) {
+			exp_count = -1;
+			break;
+		}
+		exp_count++;
+	}
+	sceIoDclose(d);
+}
+
+void exp_flag_boot_end(void) {
+	exp_boot_cache = 0;
+}
+
 int exp_flag(const char *name) {
+	if (exp_boot_cache) {
+		if (!exp_listed)
+			exp_list();
+		if (exp_count >= 0) {
+			for (int i = 0; i < exp_count; i++)
+				if (!strcasecmp(exp_names[i], name))
+					return 1;
+			return 0;
+		}
+	}
 	char path[128];
 	SceIoStat st;
-	snprintf(path, sizeof(path), "ux0:data/gms/shared/exp_%s", name);
+	snprintf(path, sizeof(path), EXP_DIR "/exp_%s", name);
 	return sceIoGetstat(path, &st) >= 0;
 }
 #ifndef SCE_KERNEL_MEMBLOCK_TYPE_USER_RX
@@ -124,8 +192,78 @@ so_hook hook_addr(uintptr_t addr, uintptr_t dst) {
 		return hook_arm(addr, dst);
 }
 
+// Code writes are recorded (every write to the RX blocks goes through kuKernelCpuUnrestrictedMemcpy, wrapped at link
+// time with --wrap), so so_flush_caches cleans and invalidates only the bytes written since the last flush. A full
+// flush of libyoyo.so's 66 MB text took ~0.8 s; the loader flushed it twice at boot (after loading, after patching).
+// Until the first flush, or when more ranges were written than fit in the table, it flushes the whole text as before.
+#define DIRTY_MAX 1024
+static struct {
+	uintptr_t lo, hi;
+} dirty[DIRTY_MAX];
+static int n_dirty, dirty_all = 1;
+static volatile int dirty_lock;
+
+static void dirty_take(void) {
+	while (__atomic_test_and_set(&dirty_lock, __ATOMIC_ACQUIRE))
+		;
+}
+
+static void dirty_give(void) {
+	__atomic_clear(&dirty_lock, __ATOMIC_RELEASE);
+}
+
+int __real_kuKernelCpuUnrestrictedMemcpy(void *dst, const void *src, SceSize len);
+int __wrap_kuKernelCpuUnrestrictedMemcpy(void *dst, const void *src, SceSize len) {
+	uintptr_t lo = (uintptr_t)dst, hi = lo + len;
+	dirty_take();
+	int i;
+	for (i = 0; i < n_dirty; i++)
+		if (lo <= dirty[i].hi && hi >= dirty[i].lo) {
+			if (lo < dirty[i].lo)
+				dirty[i].lo = lo;
+			if (hi > dirty[i].hi)
+				dirty[i].hi = hi;
+			break;
+		}
+	if (i == n_dirty) {
+		if (n_dirty < DIRTY_MAX) {
+			dirty[n_dirty].lo = lo;
+			dirty[n_dirty].hi = hi;
+			n_dirty++;
+		} else {
+			dirty_all = 1;
+		}
+	}
+	dirty_give();
+	return __real_kuKernelCpuUnrestrictedMemcpy(dst, src, len);
+}
+
 void so_flush_caches(so_module *mod) {
-	kuKernelFlushCaches((void *)mod->text_base, mod->text_size);
+	dirty_take();
+	int all = dirty_all;
+	dirty_all = 0;
+	int n = n_dirty;
+	n_dirty = 0;
+	static struct {
+		uintptr_t lo, hi;
+	} todo[DIRTY_MAX];
+	memcpy(todo, dirty, n * sizeof(*todo));
+	dirty_give();
+	// Nothing recorded although a flush was asked for: don't trust the table, flush everything
+	if (all || !n) {
+		kuKernelFlushCaches((void *)mod->text_base, mod->text_size);
+		// Writes outside this module's text are flushed too, as their own code expects of this call's coverage
+		for (int i = 0; i < n; i++)
+			if (todo[i].hi <= mod->text_base || todo[i].lo >= mod->text_base + mod->text_size)
+				kuKernelFlushCaches((void *)todo[i].lo, todo[i].hi - todo[i].lo);
+		return;
+	}
+	uint32_t bytes = 0;
+	for (int i = 0; i < n; i++) {
+		kuKernelFlushCaches((void *)todo[i].lo, todo[i].hi - todo[i].lo);
+		bytes += todo[i].hi - todo[i].lo;
+	}
+	debugPrintf("[FLUSH] %d written ranges, %u bytes flushed\n", n, bytes);
 }
 
 static int _so_load(so_module *mod, SceUID so_blockid, const void *so_data, size_t so_size, uintptr_t load_addr) {
@@ -598,11 +736,62 @@ static int so_gnu_symbol_index(so_module *mod, const char *symbol) {
 	return -1;
 }
 
+// Whether a GNU hash miss proves the symbol absent, so the slower lookups below can be skipped: no defined symbol
+// sits before symoffset (those aren't hashed), and every hashed symbol is in the chain the lookup walks for its name
+// (chains grouped by bucket, each starting where its bucket points, the end bit only on a chain's last entry, the
+// stored hash equal to the name's). Checked once per module (~55000 names for libyoyo.so). Without it, each missing
+// name walked all dynamic symbols with strcmp: the 154 OpenAL names patch_openal looks up (this runner has none)
+// took 1.3 s of every boot.
+static int so_gnu_hash_complete(so_module *mod) {
+	if (mod->gnu_hash_checked)
+		return mod->gnu_hash_checked > 0;
+	mod->gnu_hash_checked = -1;
+	uint32_t *table = mod->gnu_hash;
+	if (!table || mod->gnu_hash_words < 4)
+		return 0;
+	uint32_t nbuckets = table[0], symoffset = table[1], bloom_size = table[2];
+	size_t words = mod->gnu_hash_words - 4;
+	if (!nbuckets || bloom_size > words || nbuckets > words - bloom_size)
+		return 0;
+	uint32_t *buckets = &table[4 + bloom_size];
+	uint32_t *chain = &buckets[nbuckets];
+	size_t chain_words = words - bloom_size - nbuckets;
+	uint32_t n = (uint32_t)mod->num_dynsym;
+	if (symoffset > n || n - symoffset > chain_words)
+		return 0;
+	for (uint32_t i = 0; i < symoffset; i++)
+		if (mod->dynsym[i].st_shndx != SHN_UNDEF)
+			return 0;
+	int chain_open = 0;
+	uint32_t bucket = 0;
+	for (uint32_t i = symoffset; i < n; i++) {
+		uint32_t h = 5381;
+		for (const uint8_t *c = (const uint8_t *)(mod->dynstr + mod->dynsym[i].st_name); *c; c++)
+			h = h * 33 + *c;
+		uint32_t h2 = chain[i - symoffset];
+		if ((h | 1) != (h2 | 1))
+			return 0;
+		if (chain_open) {
+			if (h % nbuckets != bucket)
+				return 0;
+		} else {
+			bucket = h % nbuckets;
+			if (buckets[bucket] != i)
+				return 0;
+		}
+		chain_open = !(h2 & 1);
+	}
+	if (chain_open)
+		return 0;
+	mod->gnu_hash_checked = 1;
+	return 1;
+}
+
 static int so_symbol_index(so_module *mod, const char *symbol)
 {
 	if (mod->gnu_hash) {
 		int i = so_gnu_symbol_index(mod, symbol);
-		if (i >= 0)
+		if (i >= 0 || so_gnu_hash_complete(mod))
 			return i;
 	}
 	if (mod->hash && mod->hash_words >= 2) {

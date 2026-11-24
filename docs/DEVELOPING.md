@@ -28,9 +28,10 @@ A few older ones in `katana.c` have no key, only an `exp_*` switch or none: they
 ## Experiment switches (exp_*)
 
 `exp_flag("name")` (`so_util.c`) returns 1 when the file `ux0:data/gms/shared/exp_name` exists. Its content doesn't
-matter, except for `exp_spikes`, `exp_explokeep`, `exp_explospeed` and `exp_exploshot`, which hold a number. Each call
-stats the memory card, so flags are read when a feature installs, almost all once at boot: create the file, then start
-the game. Exceptions: `exp_roomlighting1` is read at every Room Start, `exp_exploshot` at the first explosion,
+matter, except for `exp_spikes`, `exp_explokeep`, `exp_explospeed` and `exp_exploshot`, which hold a number. Until the
+runner's Startup returns, the answer comes from one listing of the folder taken at the first call (the card is busy
+with the apk prefetch then); after that each call stats the memory card. Flags are read when a feature installs, almost
+all once at boot: create the file, then start the game. Exceptions: `exp_roomlighting1` is read at every Room Start, `exp_exploshot` at the first explosion,
 `exp_hangdump` when the freeze locator starts.
 
 Kinds of switch:
@@ -162,6 +163,10 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Background save writer | `asyncsave.c`, `netflix.c` | `asyncSave` | `exp_asyncsave0` | A crash right after a checkpoint can lose it |
 | Netflix extension offline (cloud slots as files) | `netflix.c` | none | none | Required |
 | Thread-safe APK reads | `stdio_mt.c` | none | none | Fix |
+| Startup: game.droid and audio groups read on a worker during the CPU-bound setup, handed to the runner's reads | `apk_prefetch.c`, `stdio_mt.c` | none | `exp_noprefetch` | Exact (same bytes) |
+| Startup: deflated runner and game.droid inflated while read, CRC checked | `runner_inflate.c`, `apk_prefetch.c`, `scripts/prepare_apk.py` | none | none (stored entries still load) | Exact |
+| Startup: hashed `Code_Function_Find` during Startup | `fast_find.c` | none | `exp_nofastfind` | Exact; `exp_findverify` |
+| Startup: buffered minizip reads, GNU-hash misses, flushing only written code | `ioapi.c`, `so_util.c` | none | none | Exact |
 | Netflix logo skipped | `katana.c` | `skipNetflixLogo` | `skipNetflixLogo=0` | Visible |
 
 ### Profiling and debugging (debugMode=1)
@@ -178,6 +183,9 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Allocation profilers | `main.c`, `gcalloc.c` | `exp_allocprof`, `exp_gcalloc` | `[GCALLOC]` and allocation lines |
 | Freeze locator | `hang_watch.c` | on in debugMode; `exp_hangwatch0` off, `exp_hangdump` core dump after 30 s | `hang.log` |
 | Hook registry | `hooks.c` | always | one `[HOOKS]` line at startup |
+| Startup timeline | `boot_prof.c` | always in debugMode | `[BOOT]` lines from `main()` on (kept until the log opens) |
+| Startup profiler | `boot_prof.c` | `exp_bootprof` | `[BOOTFN]` runner function times, `[BOOTIO]` stdio/zlib counts, `[BOOTSAMPLE]` game-thread samples, `[PREFETCH]` |
+| Memory card read benchmark | `boot_prof.c` | `exp_readbench` | `[READBENCH]` MB/s by request size and thread count (reads ~72 MB, slows that boot) |
 | Debug requests and screenshots | `screenshot.c`, `katana.c` (`katana_goto_check`) | request files below | |
 
 ## Debug files
