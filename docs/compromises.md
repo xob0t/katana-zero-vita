@@ -7,7 +7,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 
 | Change | Undo with |
 |---|---|
-| Enemies think and move every other frame; hits still land on the frame they would have | `enemyHalfRate=0`, or **GRAPHICS → ENEMY AI** |
+| Enemies think and move every other frame; hits still land on the frame they would have | `enemyHalfRate=0`, or **GAME → ENEMY AI** |
 | Settled smoke and burning-corpse embers update every 4th frame | — |
 | Smoke is drawn with half the clouds, each one larger; the hidden ones still block sight and get pushed | `smokeClouds=1` (`smokeClouds=3`: a third, larger still; 1 to 3) |
 | Lighting updates 30 times a second | — |
@@ -36,7 +36,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 
 | Change | Undo with |
 |---|---|
-| Enemies attack on the PC version's timing: the first attack 15 frames sooner and every shot (gunmen, the Headhunter, drones) 5-6 frames sooner than in the Android release. In the first room's tutorial this shows the bullet in the slow-mo; with the Android timing it stays hidden in the muzzle flash | **GRAPHICS → ENEMY TIMING: ANDROID**, or `enemyTiming=1` |
+| Enemies attack on the PC version's timing: the first attack 15 frames sooner and every shot (gunmen, the Headhunter, drones) 5-6 frames sooner than in the Android release. In the first room's tutorial this shows the bullet in the slow-mo; with the Android timing it stays hidden in the muzzle flash | **GAME → ENEMY TIMING: ANDROID**, or `enemyTiming=1` |
 
 Over a long session video memory fills up. When it does, the next room load pauses for about a second while the
 textures reload.

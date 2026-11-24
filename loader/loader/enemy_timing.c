@@ -2,7 +2,7 @@
  * enemy_timing.c
  *
  * Enemies attack on the PC version's timing (ENEMY TIMING: PC, the default). ANDROID keeps the Netflix release's
- * slower attacks. GRAPHICS menu row ENEMY TIMING (katana_menu.c), or enemyTiming=1 in yyl.cfg for ANDROID.
+ * slower attacks. GAME menu row ENEMY TIMING (katana_menu.c), or enemyTiming=1 in yyl.cfg for ANDROID.
  *
  * The Android release (1.1.10) slows enemy attacks; found by comparing Katana ZERO.exe from Steam (YYC x86) with
  * libyoyo.so statically, every function that reads or writes the attack timers:
