@@ -50,7 +50,7 @@ static inline double as_real(const gml_rvalue *v) {
 }
 static getvalue_fn get_value;
 static int *v_dead, *v_collision, *v_animation_index, *v_spd, *v_size, *v_col, *v_sprite_index, *v_x, *v_y;
-static int verify, fault, ab_skip;
+static int verify, fault, ab_skip, native_on;
 static unsigned n_native, n_fallback, n_verified, n_mismatch, n_draws;
 
 
@@ -140,18 +140,27 @@ static int same_call(const draw_call *a, const draw_call *b) {
 		!memcmp(&a->alpha, &b->alpha, sizeof(float));
 }
 
-extern int psych_skip_mask, psych_skip_on; // research only (psych_fix.c)
-#define HALF_SKIPPED(self) (psych_skip_on && (psych_skip_mask & 2) && ((((uintptr_t)(self) >> 4) ^ ((uintptr_t)(self) >> 7) ^ ((uintptr_t)(self) >> 11)) & 1))
-static event_func orig_petal_step;
-static void petal_step_res(void *self, void *other) {
-	if (!HALF_SKIPPED(self))
-		orig_petal_step(self, other);
+// psychPetals=N in yyl.cfg (default 2, 1..4): only one petal in N is drawn (a visible cut, compromises.md). Every
+// petal still exists and runs its Step: the Step draws random numbers (random(3) when a petal turns), so the fight's
+// random sequence stays as it was; petals only fall and settle on blocks, nothing reads them to hurt or stop the
+// player. The petal is chosen from its instance address, so it stays drawn or hidden for its whole life.
+int psych_petals = 2;
+extern int psych_cut_off; // exp_psychcutab: the cuts are off in this report window (psych_fix.c)
+static unsigned n_hidden;
+
+static inline int petal_hidden(void *self) {
+	if (psych_petals <= 1 || psych_cut_off)
+		return 0;
+	uintptr_t a = (uintptr_t)self;
+	return ((a >> 4) ^ (a >> 7) ^ (a >> 11) ^ (a >> 15)) % (unsigned)psych_petals != 0;
 }
 
 static void petal_draw(void *self, void *other) {
-	if (HALF_SKIPPED(self))
+	if (petal_hidden(self)) {
+		n_hidden++;
 		return;
-	if (ab_skip) {
+	}
+	if (ab_skip || !native_on) {
 		orig_petal_draw(self, other);
 		return;
 	}
@@ -192,21 +201,27 @@ static void petal_draw(void *self, void *other) {
 
 void psych_petal_report(int frames, int ab_off) {
 	ab_skip = ab_off;
-	if (!debugMode || !(n_native + n_fallback))
+	if (!debugMode || !(n_native + n_fallback + n_hidden))
 		return;
-	debugPrintf("[PSYCHPETAL] native %.1f, original %.1f per frame (rejects %u %u %u)", (double)n_native / frames,
-		(double)n_fallback / frames, reject[0], reject[1], reject[2]);
+	debugPrintf("[PSYCHPETAL] native %.1f, original %.1f, hidden %.1f per frame (rejects %u %u %u)", (double)n_native / frames,
+		(double)n_fallback / frames, (double)n_hidden / frames, reject[0], reject[1], reject[2]);
 	if (verify)
 		debugPrintf(" | verify: %u Draws (%u draw calls) compared, %u mismatches (total)%s\n", n_verified, n_draws,
 			n_mismatch, fault ? " FAULT INJECTED" : "");
 	else
 		debugPrintf("\n");
-	n_native = n_fallback = 0;
+	n_native = n_fallback = n_hidden = 0;
 }
 
 void *entry_hook(uintptr_t entry, void *replacement);
 
-int psych_petal_install(gml_func_entry *table) {
+// native: the native Draw (else the original draws the petals that are shown)
+int psych_petal_install(gml_func_entry *table, int native) {
+	if (psych_petals < 1)
+		psych_petals = 1;
+	if (psych_petals > 4)
+		psych_petals = 4;
+	native_on = native;
 #define SYM(n) so_symbol(&yoyoloader_mod, n)
 	draw_ext = (draw_ext_fn)SYM("_Z21YYGML_draw_sprite_extP9CInstanceiffffffif");
 	bool_rvalue = (bool_fn)SYM("_Z11BOOL_RValuePK6RValue");
@@ -222,8 +237,8 @@ int psych_petal_install(gml_func_entry *table) {
 		if (!(*vars[k].v = (int *)SYM(vars[k].n)))
 			return 0;
 	if (!draw_ext || !bool_rvalue || !int64_rvalue || !get_value || !real_rvalue_ex)
-		return 0;
-	verify = debugMode && exp_flag("psychpetalverify");
+		native_on = native = 0;
+	verify = native && debugMode && exp_flag("psychpetalverify");
 	if (verify) {
 		fault = exp_flag("psychpetalfault");
 		orig_draw_ext = (draw_ext_fn)entry_hook((uintptr_t)draw_ext, (void *)draw_ext_hook);
@@ -232,11 +247,6 @@ int psych_petal_install(gml_func_entry *table) {
 			verify = 0;
 		} else
 			draw_ext = orig_draw_ext; // the native's own draws bypass the recorder (they record themselves)
-	}
-	if (debugMode && exp_flag("psychskipab")) {
-		event_func s = gml_replace(table, "gml_Object_obj_rosepetal_Step_0", petal_step_res);
-		if (s)
-			orig_petal_step = s;
 	}
 	event_func o = gml_replace(table, "gml_Object_obj_rosepetal_Draw_0", petal_draw);
 	if (!o)
