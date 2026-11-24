@@ -36,6 +36,9 @@ back the original.
 - **No shadows under the traffic cones in the motorcycle chase.** About 100 cones each drew a shadow out of ~20
   strips. Without them the cone stretch runs at 53-58 fps instead of 40-53. `coneShadows=1`.
 - **No dust in the cathedral's window light.** 41 fps with it, 59 without. `cathedralDust=1`.
+- **No glow on highlighted dialogue words.** The coloured words of some dialogue lines lose the purple glow drawn
+  around their letters. Each glowing letter cost 0.3 ms per frame, about 3 ms while such a line is on screen (Chinatown's
+  nightmare dialogue: 41 -> 53 fps on those lines). `letterGlow=1`.
 - **No lamp glow in haunted_cart2 and club_0.** The coloured glow that lamps and spotlights throw on walls and floors
   is off in those two rooms: 38 -> 40 fps in the minecart room, 55-57 -> 60 fps on the club's dance floor.
   `roomLighting=1`.
