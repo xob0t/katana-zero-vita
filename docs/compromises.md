@@ -19,6 +19,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Checkpoints are saved in the background: a crash right after one can lose it, never corrupt it | `asyncSave=0` |
 | Rain is plain dark streaks and grey splashes, without the game's fading trails and lamp-lit drops | `rain=2` (`rain=0`: no rain) |
 | No end-of-level replay and no death rewind | `replays=1` |
+| No touch controls: the mobile build's virtual stick and buttons are gone, and the front touch screen does nothing | `touchControls=1` (`touchControls=2`: also drawn) |
 
 **In some rooms**
 

@@ -894,6 +894,8 @@ void katana_prof_report(int frames) {
 	fx_rate_report(frames);
 	extern void rain_cheap_report(int frames);
 	rain_cheap_report(frames);
+	extern void touch_controls_report(int frames);
+	touch_controls_report(frames);
 	extern void glow_rest_report(int frames);
 	glow_rest_report(frames);
 	extern void wobble_rest_report(int frames);

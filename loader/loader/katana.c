@@ -1166,16 +1166,20 @@ static void patch_performance() {
 	if (rain_level == 0 && instance_destroy_fn && (orig = gml_replace(table, "gml_Object_obj_rain_Create_0", rain_create)))
 		orig_rain_create = orig;
 
-	// Skipped by default (buttons are used on Vita); exp_touchui brings the virtual controls back
-	if (!exp_flag("touchui"))
+	// The touch controls aren't drawn unless touchControls=2 (or exp_touchui) in yyl.cfg
+	extern int touch_controls;
+	if (touch_controls < 2)
 		gml_replace(table, "gml_Object_obj_onScreenKeyboard_Draw_0", touch_ui_draw_skip);
 	graphics_flush = (void *)so_symbol(&yoyoloader_mod, "_ZN8Graphics5FlushEv");
-	if (!exp_flag("touchui")) {
+	if (touch_controls < 2) {
 		int nodraw = !exp_flag("btnnodraw0") && screen_btn_nodraw_install();
 		if (!nodraw && graphics_flush && (orig = gml_replace(table, "gml_Object_obj_screenBtn_Draw_64", screen_btn_gui_hidden)))
 			orig_screen_btn_gui = orig;
 		debugPrintf("on-screen buttons: %s\n", nodraw ? "sprites not drawn" : "drawn with colour writes off");
 	}
+	// touchControls=0 (the default): no touch input, and the controls' per-frame events stop (touch_controls.c)
+	extern void touch_controls_install(gml_func_entry *table);
+	touch_controls_install(table);
 	katana_menu_install(table);
 
 	katana_display_install();
