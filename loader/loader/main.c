@@ -909,17 +909,18 @@ int GetEnv(void *vm, void **env, int r2) {
 }
 
 int DebugPrintf(int *target, const char *fmt, ...) {
-	if (!debugMode)
+	if (!debugMode || !log_available())
 		return 0;
-	
+
 	va_list list;
-	static char string[0x8000];
+	static char string[0x8000]; // shared: runner threads call this concurrently, so format under the lock
 
+	sceKernelLockLwMutex(&android_log_mutex, 1, NULL);
 	va_start(list, fmt);
-	vsprintf(string, fmt, list);
+	vsnprintf(string, sizeof(string), fmt, list);
 	va_end(list);
-
 	debugPrintf("[DBG] %s\n", string);
+	sceKernelUnlockLwMutex(&android_log_mutex, 1);
 	return 0;
 }
 
@@ -1730,11 +1731,12 @@ typedef struct {
 } AAssetHandle;
 
 // The runner opens assets from several threads (its OGG streaming threads open the next song while the
-// game thread loads at a room change), but they share one minizip handle, which is not thread-safe:
-// interleaved locate/read calls gave "Failed to open assets/song_*.ogg" or corrupt music data
-// ("ov_read returned -3"), and the scene had no music. Opening (locate + full read) is serialised; reads
-// afterwards use each handle's own memory copy.
+// game thread loads at a room change). They all get the one minizip handle AAssetManager_fromJava opens, and
+// minizip is not thread-safe: interleaved locate/read calls gave "Failed to open assets/song_*.ogg" or corrupt
+// music data ("ov_read returned -3"), and the scene had no music. So every use of that handle (opening: locate +
+// full read) holds asset_open_mutex; reads afterwards use each asset's own memory copy.
 static pthread_mutex_t asset_open_mutex = PTHREAD_MUTEX_INITIALIZER;
+static unzFile asset_apk = NULL; // AAssetManager_fromJava's handle, opened once (the runner never releases it)
 
 AAssetHandle *AAssetManager_open(unzFile apk_file, const char *fname, int mode) {
 	debugPrintf("AAssetManager_open %s\n", fname);
@@ -1766,8 +1768,15 @@ void AAsset_close(AAssetHandle *f) {
 	}
 }
 
+// The runner calls this before every AAssetManager_open (LoadSave::_ReadFile, the asset opener at runner+0xf636b0)
+// and never closes the result: opening the APK each time leaked a minizip handle and its FILE per asset
 unzFile AAssetManager_fromJava(void *env, void *obj) {
-	return unzOpen(apk_path);
+	pthread_mutex_lock(&asset_open_mutex);
+	if (!asset_apk)
+		asset_apk = unzOpen(apk_path);
+	unzFile ret = asset_apk;
+	pthread_mutex_unlock(&asset_open_mutex);
+	return ret;
 }
 
 int AAsset_read(AAssetHandle *f, void *buf, size_t count) {
@@ -3897,7 +3906,10 @@ void *pthread_main(void *arg) {
 	*(uintptr_t *)(fake_env + 0x37C) = (uintptr_t)ReleasePrimitiveArrayCritical;
 	*(uintptr_t *)(fake_env + 0x394) = (uintptr_t)NewWeakGlobalRef;
 	
-	void (*Java_com_yoyogames_runner_RunnerJNILib_Startup) (void *env, int a2, char *apk_path, char *save_dir, char *pkg_dir, int sleep_margin) = (void *)so_symbol(&yoyoloader_mod, "Java_com_yoyogames_runner_RunnerJNILib_Startup");
+	// The 7th argument is stored as g_Android_UseDynamicAssetDelivery (runner Startup+0x88: ldr r6, [fp, #0x10]; strb
+	// r6 != 0): non-zero switches save/asset reads, OGG streaming, video and others from libzip to AAssetManager. The
+	// old 6-argument call left it to stale stack (0 after the splash draw, 1 with noSplash=1)
+	void (*Java_com_yoyogames_runner_RunnerJNILib_Startup) (void *env, int a2, char *apk_path, char *save_dir, char *pkg_dir, int sleep_margin, int dynamic_asset_delivery) = (void *)so_symbol(&yoyoloader_mod, "Java_com_yoyogames_runner_RunnerJNILib_Startup");
 	Java_com_yoyogames_runner_RunnerJNILib_CreateVersionDSMap = (void *)so_symbol(&yoyoloader_mod, "Java_com_yoyogames_runner_RunnerJNILib_CreateVersionDSMap");
 	Java_com_yoyogames_runner_RunnerJNILib_TouchEvent  = (void *)so_symbol(&yoyoloader_mod, "Java_com_yoyogames_runner_RunnerJNILib_TouchEvent");
 	
@@ -3969,7 +3981,11 @@ void *pthread_main(void *arg) {
 	extern void katana_texture_selftest(void);
 	katana_texture_selftest();
 	debugPrintf("Calling runner Startup\n");
-	Java_com_yoyogames_runner_RunnerJNILib_Startup(fake_env, 0, apk_path, data_path, pkg_name, 0);
+	Java_com_yoyogames_runner_RunnerJNILib_Startup(fake_env, 0, apk_path, data_path, pkg_name, 0, 0);
+	{
+		uint8_t *dad = (uint8_t *)so_symbol(&yoyoloader_mod, "g_Android_UseDynamicAssetDelivery");
+		debugPrintf("Runner Startup done (g_Android_UseDynamicAssetDelivery %d)\n", dad ? *dad : -1);
+	}
 	
 	enter_main_loop();
 	
