@@ -638,7 +638,7 @@ void katana_goto_check(void) {
 // dissolveChunkScale (yyl.cfg, default 4; 1 = original) multiplies chunk_size before that event: a quarter
 // of the chunks, each four times as tall.
 int dissolve_chunk_scale = 4;
-int dancer_glow = 0; // dancerGlow in yyl.cfg: club dancers' rim glow (see patch_performance)
+int dancer_glow = 2; // dancerGlow in yyl.cfg: club dancers' rim glow, 2 cheap (default), 1 the game's, 0 none (see patch_performance)
 int cathedral_dust = 0; // cathedralDust in yyl.cfg: dust motes in room_cathedral's window light (see patch_performance)
 static event_func orig_dissolver_user0;
 
@@ -1311,13 +1311,19 @@ static void patch_performance() {
 	}
 	// Club dancers' rim glow (obj_clubber user event 6): each dancer re-tints itself from every nearby club light
 	// with 2-4 outline sprites per light, each drawn twice: ~285 extra draws per frame in the club, 44 fps vs
-	// 52-56 without it. dancerGlow=0 (default) skips the event; the club light show itself stays. dancerGlow=1
-	// keeps it, with an exact native version of the event (exp_clubbernative0: the original GML).
+	// 52-56 without it. dancerGlow=2 (default) draws it natively with the layers merged per side, one draw per side
+	// (dancer_glow.c). dancerGlow=0 skips the event; the club light show itself stays. dancerGlow=1 keeps the
+	// game's event, with an exact native version of it (exp_clubbernative0: the original GML).
 	extern int dancer_glow;
+	if (dancer_glow == 2) {
+		extern int dancer_glow_install(gml_func_entry *table);
+		if (!dancer_glow_install(table))
+			dancer_glow = 0;
+	}
 	if (!dancer_glow) {
 		stub_event("_Z31gml_Object_obj_clubber_Other_16P9CInstanceS0_");
 		debugPrintf("dancer rim glow: off\n");
-	} else if (!exp_flag("clubbernative0")) {
+	} else if (dancer_glow == 1 && !exp_flag("clubbernative0")) {
 		extern int clubber_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native dancer rim glow: %s\n", clubber_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}

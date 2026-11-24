@@ -13,7 +13,8 @@
  *   obj_lightback, obj_garagelamp and obj_spotlight user 0) and obj_drawspheres Draw. obj_new_platform_lighting
  *   user 1 also tests it but nothing runs that event (Create calls user 0).
  * - character_lighting: obj_clubber and obj_heli user 6 (light_drawme: the rim glow drawn on dancers and the
- *   helicopter; the dancers' glow is already skipped with dancerGlow=0). The six lamp user 0 events (obj_halogen
+ *   helicopter). Only the game's dancer glow (dancerGlow=1) is hidden: the cheap one (dancerGlow=2, dancer_glow.c)
+ *   reads the global itself and stays, and dancerGlow=0 skips the event. The six lamp user 0 events (obj_halogen
  *   etc.) test it around an empty body, and draw_rim_shading / pipeline_rim_shading (via pipeline_draw) have no
  *   callers.
  * - Writers: obj_init Create, the reset_game_data scripts, the PC options menus (whose Draw also reads both to show
@@ -114,13 +115,15 @@ void room_lighting_install(gml_func_entry *table) {
 	}
 	orig_platform_draw = gml_replace(table, "gml_Object_obj_new_platform_lighting_Draw_0", platform_draw);
 	orig_spheres_draw = gml_replace(table, "gml_Object_obj_drawspheres_Draw_0", spheres_draw);
-	extern int dancer_glow; // dancerGlow=0 (default) already returns from the dancers' user 6 at its entry
-	if (dancer_glow)
+	// Only the game's dancer glow (dancerGlow=1) is hidden here; the cheap one (2, the default) costs little and
+	// stays, and with 0 the event already returns at its entry
+	extern int dancer_glow;
+	if (dancer_glow == 1)
 		orig_clubber_user6 = gml_replace(table, "gml_Object_obj_clubber_Other_16", clubber_user6);
 	orig_heli_user6 = gml_replace(table, "gml_Object_obj_heli_Other_16", heli_user6);
 	if (debugMode)
 		orig_opto_room_start = gml_replace(table, "gml_Object_obj_opto_master_Other_4", opto_room_start);
 	debugPrintf("room lighting: lamp glow off in haunted_cart2 and club_0 (draw %s, spheres %s, clubber %s, heli %s)\n",
 		orig_platform_draw ? "ok" : "MISSING", orig_spheres_draw ? "ok" : "MISSING",
-		orig_clubber_user6 ? "ok" : "glow off already", orig_heli_user6 ? "ok" : "MISSING");
+		orig_clubber_user6 ? "ok" : "not the game's glow", orig_heli_user6 ? "ok" : "MISSING");
 }
