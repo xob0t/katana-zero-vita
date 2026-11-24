@@ -40,6 +40,9 @@ back the original.
 - **No rim glow on club dancers.** It's about 285 extra draws per frame, 44 fps with it and 52-56 without. The light
   show stays. `dancerGlow=1` (on the first dance floor, club_0, also `roomLighting=1`).
 - **No dust in the cathedral's window light.** 41 fps with it, 59 without. `cathedralDust=1`.
+- **No glow on highlighted dialogue words.** The coloured words of some dialogue lines lose the purple glow drawn
+  around their letters. Each glowing letter cost 0.3 ms per frame, about 3 ms while such a line is on screen (Chinatown's
+  nightmare dialogue: 41 -> 53 fps on those lines). `letterGlow=1`.
 - **No lamp glow in haunted_cart2 and club_0.** The coloured glow that lamps and spotlights throw on walls and floors
   is off in those two rooms: 38 -> 40 fps in the minecart room, 55-57 -> 60 fps on the club's dance floor.
   `roomLighting=1`.

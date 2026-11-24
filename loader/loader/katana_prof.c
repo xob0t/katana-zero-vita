@@ -404,6 +404,20 @@ void katana_prof_report(int frames) {
 			debugPrintf("[LETTER] hits %u %u %u %u %u fallbacks %u %u %u %u %u\n", letter_native_hits[0], letter_native_hits[1],
 				letter_native_hits[2], letter_native_hits[3], letter_native_hits[4], letter_native_fallbacks[0],
 				letter_native_fallbacks[1], letter_native_fallbacks[2], letter_native_fallbacks[3], letter_native_fallbacks[4]);
+		{
+			extern int letter_glow, letter_glow_ab, letter_glow_ab_on, letter_glow_prof;
+			extern unsigned letter_glow_calls, letter_glow_zero, letter_glow_skipped;
+			extern uint64_t letter_glow_us;
+			if (frames > 0 && letter_glow_calls)
+				debugPrintf("[LETTERGLOW] glow passes %.1f per frame (%.1f at alpha 0, %.1f skipped), %.3f ms/frame | "
+					"letterGlow %d | A/B: %s\n", (float)letter_glow_calls / frames, (float)letter_glow_zero / frames,
+					(float)letter_glow_skipped / frames, letter_glow_us / 1000.0f / frames, letter_glow,
+					letter_glow_ab ? (letter_glow_ab_on ? "on" : "off") : "-");
+			letter_glow_calls = letter_glow_zero = letter_glow_skipped = 0;
+			letter_glow_us = 0;
+			if (letter_glow_ab)
+				letter_glow_ab_on = !letter_glow_ab_on;
+		}
 		extern unsigned letter_native_direct_user, letter_native_cached_slots;
 		if (letter_native_direct_user || letter_native_cached_slots)
 			debugPrintf("[LETTER] direct user events %u, cached lookups %u\n", letter_native_direct_user, letter_native_cached_slots);

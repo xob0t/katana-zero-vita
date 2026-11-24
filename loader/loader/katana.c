@@ -817,6 +817,9 @@ void katana_late_install(void) {
 	}
 	extern int letter_timing;
 	letter_timing = exp_flag("lettertime");
+	extern int letter_glow_ab, letter_glow_prof;
+	letter_glow_ab = debugMode && exp_flag("letterglowab");
+	letter_glow_prof = debugMode && exp_flag("letterglowprof");
 	if (!exp_flag("wavynative0")) {
 		extern int wavy_native_install(void *(*hook)(uintptr_t entry, void *replacement));
 		debugPrintf("native draw_sprite_wavy: %s\n", wavy_native_install(entry_hook) ? "installed" : "NOT installed");
