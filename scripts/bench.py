@@ -14,7 +14,32 @@ import statistics
 import sys
 import time
 
-from vita_common import SHARED, ftp_delete as delete, ftp_get, ftp_put as put, ftp_session, vc
+import vita_common
+from vita_common import SHARED, ftp_session
+
+# Harnesses set bench.HOST (and vita_saves.HOST) to pick a console, and call bench.ftp/vc/put/delete. The wrappers
+# read HOST at call time so that assignment keeps working.
+HOST = vita_common.HOST
+
+
+def ftp():
+    return vita_common.ftp_connect(HOST)
+
+
+def vc(cmd, timeout=120):
+    return vita_common.vc(cmd, timeout=timeout, host=HOST)
+
+
+def ftp_get(remote):
+    return vita_common.ftp_get(remote, host=HOST)
+
+
+def put(local_or_bytes, remote):
+    vita_common.ftp_put(local_or_bytes, remote, host=HOST)
+
+
+def delete(path):
+    vita_common.ftp_delete(path, host=HOST)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -81,7 +106,7 @@ def main():
         put(b"1", f"{SHARED}/profile")
     else:
         delete(f"{SHARED}/profile")
-    with ftp_session() as f:
+    with ftp_session(HOST) as f:
         for name in f.nlst(SHARED):
             base = name.rsplit("/", 1)[-1]
             if base.startswith("exp_") and base[4:] not in args.exp:
