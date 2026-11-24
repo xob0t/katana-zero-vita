@@ -174,11 +174,11 @@ target_link_libraries(YoYoLoader
 )
 
 if (KATANA_APP)
-# LiveArea art is game art: generated from the user's APK by scripts/make_livearea.py, not committed
+# LiveArea art is game art: generated from the user's APK by scripts/make_livearea.py (build.py runs it), not committed
 set(LIVEAREA_ART ${CMAKE_SOURCE_DIR}/../livearea)
 foreach(image icon0.png bg0.png startup.png)
   if (NOT EXISTS ${LIVEAREA_ART}/${image})
-    message(FATAL_ERROR "livearea/${image} missing: run python scripts/make_livearea.py <Katana ZERO APK>")
+    message(FATAL_ERROR "livearea/${image} missing: run uv run build.py <Katana ZERO APK>")
   endif()
 endforeach()
 vita_create_self(eboot.bin YoYoLoader UNSAFE)

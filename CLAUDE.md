@@ -8,6 +8,9 @@
 
 ## Building
 
+- Build with `uv run build.py --no-deps`. Other sessions share C:/vitasdk-softfp and C:/vitasdk-build, sometimes
+  with an experimental vitaGL installed; rebuild the dependencies (`--deps`) only on purpose, e.g. after a
+  `patches/vitagl.patch` change lands on main.
 - When checking a build, grep case-insensitively for `error` and require the `Built target` line; a failed build
   silently leaves the previous `eboot.bin` in place and every following test runs old code.
 
