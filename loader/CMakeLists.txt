@@ -125,6 +125,7 @@ add_executable(YoYoLoader
   loader/hang_watch.c
   loader/gcalloc.c
   loader/screenshot.c
+  loader/first_launch.c
 )
 
 target_link_libraries(YoYoLoader

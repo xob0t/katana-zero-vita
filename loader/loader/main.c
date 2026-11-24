@@ -3788,6 +3788,10 @@ void *pthread_main(void *arg) {
 	if (!exp_flag("novramsplit"))
 		vgl_vram_small_size = 83 * 256 * 1024; // 20.75 MB
 #endif
+	// First launch: create vitaGL's shader cache folders under a status screen (about 2 minutes of black
+	// screen inside vglInit otherwise); releases its framebuffer before vglInit sizes its pools
+	extern void first_launch_prepare(void);
+	first_launch_prepare();
 	if (maximizeMem)
 		vglInitWithCustomThreshold(0, SCREEN_W, SCREEN_H, MEMORY_VITAGL_THRESHOLD_MB * 1024 * 1024, 0, 0, 0, SCE_GXM_MULTISAMPLE_NONE);
 	else

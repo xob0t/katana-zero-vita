@@ -13,9 +13,9 @@ minute. Nothing to install on your computer, and your APK isn't uploaded anywher
    `KatanaZero.vpk` it makes.
 3. Copy the VPK to `ux0:VPK/` and install it with VitaShell.
 
-The first launch compiles every shader, which takes about 3 minutes. Shaders are cached in
-`ux0:data/shader_cache/KTNZ00001`, so later launches reach the title screen in about a minute. To update, build a
-new VPK and install it over the old one. Saves are kept.
+The first launch prepares the graphics cache (`ux0:data/shader_cache/KTNZ00001`) and takes about 3 minutes; a
+progress bar shows it. Later launches reach the title screen in about a minute. To update, build a new VPK and
+install it over the old one. Saves are kept.
 
 With `debugMode=1` in `yyl.cfg` the log goes to `ux0:data/gms/shared/yyl.log`.
 
