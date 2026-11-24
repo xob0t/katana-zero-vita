@@ -1282,6 +1282,9 @@ static void patch_performance() {
 	title_pages_install();
 	extern void page_restore_install(void);
 	page_restore_install();
+	// Out of VRAM: unload only the least recently drawn texture pages (page_evict.c). exp_pageevict0 disables.
+	extern void page_evict_install(void);
+	page_evict_install();
 	install_nursery_align();
 	if (!exp_flag("letternative0")) {
 		extern int letter_native_install(void *(*rx_alloc)(size_t));

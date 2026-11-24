@@ -78,6 +78,7 @@ add_executable(YoYoLoader
   loader/enemy_half_rate.c
   loader/title_pages.c
   loader/page_restore.c
+  loader/page_evict.c
   loader/fx_rate.c
   loader/rain_cheap.c
   loader/touch_controls.c
