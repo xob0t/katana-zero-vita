@@ -1,7 +1,7 @@
 /*
  * Dossier burn (room_folder). APK 1.10 libyoyo SHA256 ab7014c19c449858c8ea53c75b2c7cd3d78642d6aad60297aa0d7db456bd4701.
  * GML lifts: work/decomp/out/gml_Object_obj_burncircle*.gml, gml_Object_obj_folder_cutscene_*.gml; the native code
- * follows the ARM of the compiled events (gml_*.asm next to them), not the lifts.
+ * follows the ARM of the compiled events (gml_*.asm next to them, all untracked), not the lifts.
  *
  * The burn spreads through obj_burncircle_spawner cells; each new cell makes a burn circle, whose first Step makes three
  * flames and six decorative child circles, and the cutscene's Draw stamps every live circle into its burn mask each
@@ -52,7 +52,7 @@
  * 5. The flames' obj_folder_cutscene.fire_spd reads come from the recorded cutscene (flame_get_value).
  * exp_dossiernative0 turns all of it off; exp_dossierexact0 keeps the circle tail, the spawner and 3 but turns off
  * the native circle first Step (so no children are dropped), 2 and 5.
- * Offline check: work/bn/sv/dossier_verify.py runs the original ARM and this code in Unicorn on the same fixtures.
+ * Offline check: dossier_verify.py (untracked) runs the original ARM and this code in Unicorn on the same fixtures.
  * exp_dossierverify (debug): every circle Step runs the original with its instance_create_depth calls recorded, then
  * the native code dry (on a copy of the variables, the creations replayed from the record, the random state checked at
  * each), and compares the random state, the created instances' arguments and written variables, self's variables and
@@ -65,7 +65,7 @@
 #include <stddef.h>
 #include <string.h>
 #ifdef DOSSIER_TEST
-#include "dossier_stub.h" // work/bn/dossier_verify.py: the offline ARM differential test
+#include "dossier_stub.h" // only for the offline ARM differential test, whose harness is not in the repository
 #else
 #include <kubridge.h>
 #include <psp2/kernel/processmgr.h>

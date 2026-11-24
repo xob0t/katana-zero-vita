@@ -1,11 +1,10 @@
 """Backs up or restores Katana ZERO save files on the Vita over FTP.
 
-Usage: python scripts/vita_saves.py backup <dir> | restore <dir>
+Usage: python scripts/vita_saves.py backup <dir> | restore <dir>   (console address: VITA_HOST, see vita_common.py)
 Files named netflix_<name> map to the netflix/ cloud-save folder. backup needs a new or empty directory.
 restore prunes extra saves only with a verified completion manifest. Older backups and bench.py test saves
 overlay their files. If a restore disconnects during a rename, rerun it to finish replacing the files.
 """
-import ftplib
 import hashlib
 import json
 import sys
@@ -13,7 +12,8 @@ from contextlib import closing
 from pathlib import Path
 from uuid import uuid4
 
-HOST, PORT = "192.168.1.151", 1337
+from vita_common import FTP_PORT as PORT, HOST, ftp_connect
+
 BASE = "ux0:/data/gms/katanazero/assets"
 MANIFEST = ".vita-saves.json"
 OLD_MARKER = ".__vita_saves_old_"
@@ -22,10 +22,7 @@ BLOCK_SIZE = 1 << 16
 
 
 def connect():
-    f = ftplib.FTP()
-    f.connect(HOST, PORT, timeout=30)
-    f.login()
-    return f
+    return ftp_connect(HOST, PORT, timeout=30)
 
 
 def listing(f, path):

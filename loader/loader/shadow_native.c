@@ -1,6 +1,6 @@
 /*
  * gml_Script_draw_shadow, native. APK 1.1.10 libyoyo SHA256 ab7014c19c449858c8ea53c75b2c7cd3d78642d6aad60297aa0d7db456bd4701.
- * Disassembly: work/bike/ds.asm (main checkout), from work/decomp/annotate.py.
+ * Disassembly: work/bike/ds.asm, from work/decomp/annotate.py (both untracked).
  *
  * The bike chase draws a ground shadow under every road object (cones, cars, barriers...) from its Draw event:
  * draw_shadow(sprite_index, animation_index, x, y, angle, alpha, fade). The script redraws the sprite's rows above its

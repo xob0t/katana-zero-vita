@@ -7,7 +7,7 @@
  * a dozen YYGML_Variable_GetValue -> Variable_GetValue_Direct -> GV_* chains, nine Variable_SetValue_Direct -> SV_*
  * chains, tagged operators and compares, and the copy/free bookkeeping of thirty stack RValues.
  *
- * Ported from the ARM listing, which differs from the readable lift (work/decomp/out) in three places:
+ * Ported from the ARM listing, which differs from the readable lift (untracked work/decomp/out) in three places:
  * - the coloured, non-blackout branch multiplies by self.alpha (line 60); only the plain branch uses other.alpha;
  * - the plain branch writes no image_blend before its draw_self;
  * - the slowdown branch ends with `angle = image_angle` (a write reference on angle, value from the image_angle

@@ -34,7 +34,6 @@ typedef struct {
 typedef void *(*gml_script_fn)(void *self, void *other, void *result, int argc, void **args);
 
 extern int debugMode;
-void *katana_rx_alloc(size_t size);
 void katana_cloth_report(int frames);
 void callprof_install(so_module *mod);
 void evprof_install(so_module *mod);
@@ -51,8 +50,6 @@ extern uint32_t recolor_changes, recolor_frames;
 extern double last_recolor_timer;
 extern int light_fast_mode;
 extern int enemy_half_rate, eh_installed; // half-rate enemies (enemy_half_rate.c)
-void *entry_hook(uintptr_t entry, void *replacement);
-event_func gml_replace(gml_func_entry *table, const char *name, event_func wrapper);
 gml_rvalue *global_var(int *var);
 gml_rvalue *gml_vget(void *obj, int slot);
 double global_real(int *var, double fallback);
@@ -62,5 +59,8 @@ void enemy_half_rate_update(void);
 void options_menu_install(gml_func_entry *table);
 void options_menu_sync(void);
 void appsurf_copy_install(void);
+
+// katana_rx_alloc, entry_hook, gml_replace, stub_event
+#include "hooks.h"
 
 #endif

@@ -5,71 +5,22 @@ skips the intro cutscene and records the loader's [PROF] lines during the script
 of room_factory_0. Requires debugMode=1 in ux0:data/gms/katanazero/yyl.cfg.
 
 Usage: python scripts/bench.py [--label name] [--no-install] [--seconds 20] [--profile]
+The console address comes from VITA_HOST (see vita_common.py).
 """
 import argparse
-import ftplib
-import io
 import os
 import re
-import socket
 import statistics
 import sys
 import time
 
-HOST = "192.168.1.151"
-SHARED = "ux0:/data/gms/shared"
+from vita_common import SHARED, ftp_delete as delete, ftp_get, ftp_put as put, ftp_session, vc
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def vc(cmd, timeout=120):
-    """Runs a vitacompanion command chain and returns its output."""
-    with socket.create_connection((HOST, 1338), timeout=10) as s:
-        s.sendall((cmd + "\n").encode())
-        s.settimeout(timeout)
-        out = b""
-        try:
-            while True:
-                chunk = s.recv(4096)
-                if not chunk:
-                    break
-                out += chunk
-        except socket.timeout:
-            pass
-    return out.decode(errors="replace")
-
-
-def ftp():
-    f = ftplib.FTP()
-    f.connect(HOST, 1337, timeout=30)
-    f.login()
-    return f
-
-
 def read_log():
-    f = ftp()
-    buf = io.BytesIO()
-    try:
-        f.retrbinary(f"RETR {SHARED}/yyl.log", buf.write)
-    except ftplib.error_perm:
-        pass
-    f.quit()
-    return buf.getvalue().decode(errors="replace")
-
-
-def delete(path):
-    f = ftp()
-    try:
-        f.delete(path)
-    except ftplib.error_perm:
-        pass
-    f.quit()
-
-
-def put(local_or_bytes, remote):
-    f = ftp()
-    data = local_or_bytes if isinstance(local_or_bytes, bytes) else open(local_or_bytes, "rb").read()
-    f.storbinary(f"STOR {remote}", io.BytesIO(data))
-    f.quit()
+    return (ftp_get(f"{SHARED}/yyl.log") or b"").decode(errors="replace")
 
 
 def wait_for(pattern, timeout, poke=None, interval=2.0):
@@ -130,12 +81,11 @@ def main():
         put(b"1", f"{SHARED}/profile")
     else:
         delete(f"{SHARED}/profile")
-    f = ftp()
-    for name in f.nlst(SHARED):
-        base = name.rsplit("/", 1)[-1]
-        if base.startswith("exp_") and base[4:] not in args.exp:
-            f.delete(f"{SHARED}/{base}")
-    f.quit()
+    with ftp_session() as f:
+        for name in f.nlst(SHARED):
+            base = name.rsplit("/", 1)[-1]
+            if base.startswith("exp_") and base[4:] not in args.exp:
+                f.delete(f"{SHARED}/{base}")
     for name in args.exp:
         put(b"1", f"{SHARED}/exp_{name}")
 

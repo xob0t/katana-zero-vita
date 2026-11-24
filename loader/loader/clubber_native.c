@@ -1,6 +1,6 @@
 /* libyoyo.so SHA256 ab7014c19c449858c8ea53c75b2c7cd3d78642d6aad60297aa0d7db456bd4701.
  * ARMv7 AAPCS softfp, -O2, -ffp-contract=off, no fast-math.
- * Install stopped after import resolution; see clubber_native.md. */
+ * Install stopped after import resolution. Host test build: -DCLUBBER_TEST with tools/verify/collision_stub.h. */
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>

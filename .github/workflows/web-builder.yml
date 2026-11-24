@@ -60,6 +60,23 @@ jobs:
         with:
           path: site
 
+  # C host tests that need no game files: the background save writer, plain and under the sanitizers
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: asyncsave
+        run: |
+          # ThreadSanitizer can't map its shadow memory with the runner's 32-bit mmap randomization
+          sudo sysctl -w vm.mmap_rnd_bits=28
+          for san in "" "-fsanitize=address,undefined -fno-sanitize-recover=all" "-fsanitize=thread"; do
+            echo "::group::asyncsave_test ${san:-(no sanitizer)}"
+            gcc -O1 -g -Wall -pthread $san -Iloader/loader tests/asyncsave_test.c -o asyncsave-test
+            ./asyncsave-test
+            echo "::endgroup::"
+          done
+
   deploy:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: build

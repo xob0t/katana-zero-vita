@@ -20,7 +20,7 @@
  * every frame from their draw event: ~90 us per call against the room's lights. A mortar volley creates ~120
  * explosion particles in one frame, 11-14 ms of it.
  *
- * This is work/lasers/light_update.c.parked (the same loop of update_light_array_ext, verified exact on the Vita)
+ * This is the parked light_update.c (untracked; the same loop of update_light_array_ext, verified exact on the Vita)
  * pointed at update_light_array: the with loop keeps its original code; its iterator calls go through veneers to
  * wrappers that run the loop body natively for each light and step on to the next, so the original body only runs
  * for a light the native body won't take. The native body calls the runner's own BOOL_RValue, YYCompareVal,

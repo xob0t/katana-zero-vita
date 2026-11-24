@@ -43,105 +43,13 @@ if (STANDALONE)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DSTANDALONE_MODE")
 endif(STANDALONE)
 
-# Native replacements must round exactly like the runner (no FMA contraction)
-set_source_files_properties(loader/collision_native.c loader/rope_fast.c loader/flash_mask.c loader/virtual_capture.c loader/input_native.c loader/laser_native.c loader/letter_native.c loader/minecart_native.c loader/clubber_native.c loader/dossier_native.c loader/wavy_native.c loader/trail_lights.c loader/bike_draw.c loader/ember_draw.c loader/shadow_native.c loader/light_array_native.c loader/visibility_native.c loader/lightback_native.c loader/held_native.c loader/recolor_lights.c loader/move_contact_native.c loader/far_rocket.c loader/particle_lights.c loader/region_native.c loader/cone_shadow.c loader/explosion_lite.c loader/particle_native.c loader/smoke_create.c loader/letter_glyph.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
-# Verified against the original ARM code with exactly these flags
-set_source_files_properties(loader/dustspawner_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-marm;-O2")
-# Unicorn-verified with exactly these flags (work/smokedraw/smokedraw_verify.py)
-set_source_files_properties(loader/smokedraw_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-O2")
-# Kill-test natives (exp_lightfast, exp_lightfast_inline): Unicorn-verified with exactly these flags. The sibling
-# call keeps the fallback into the original event at the caller's stack depth, as in the verified build.
-set_source_files_properties(loader/light_fast.c loader/light_fast_inline.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-O2;-foptimize-sibling-calls")
+include(${CMAKE_CURRENT_SOURCE_DIR}/exact_sources.cmake)
 
-add_executable(YoYoLoader
-  loader/main.c
-  loader/dialog.c
-  loader/so_util.c
-  loader/so_elf.c
-  loader/sha1.c
-  loader/openal_patch.c
-  loader/gamepad.c
-  loader/ioapi.c
-  loader/unzip.c
-  loader/zip.c
-  loader/ctype_patch.c
-  loader/sbrk.c
-  loader/videoplayer_patch.c
-  loader/net.c
-  loader/profiler.c
-  loader/audio_player.c
-  loader/trophies.c
-  loader/netflix.c
-  loader/katana.c
-  loader/katana_prof.c
-  loader/katana_display.c
-  loader/enemy_half_rate.c
-  loader/title_pages.c
-  loader/page_restore.c
-  loader/page_evict.c
-  loader/fx_rate.c
-  loader/rain_cheap.c
-  loader/touch_controls.c
-  loader/rain_skip.c
-  loader/glow_rest.c
-  loader/corpse_rest.c
-  loader/psych_fix.c
-  loader/psych_ground.c
-  loader/psych_petal.c
-  loader/wobble_rest.c
-  loader/blood_drops.c
-  loader/room_lighting.c
-  loader/enemy_timing.c
-  loader/fog_skip.c
-  loader/katana_menu.c
-  loader/sound_limit.c
-  loader/stdio_mt.c
-  loader/asyncsave.c
-  loader/glprof.c
-  loader/callprof.c
-  loader/lz4/lz4.c
-  loader/collision_native.c
-  loader/rope_fast.c
-  loader/flash_mask.c
-  loader/virtual_capture.c
-  loader/input_native.c
-  loader/held_native.c
-  loader/laser_native.c
-  loader/move_contact_native.c
-  loader/collision_round_trip.c
-  loader/letter_native.c
-  loader/letter_glyph.c
-  loader/clubber_native.c
-  loader/minecart_native.c
-  loader/visibility_native.c
-  loader/lightback_native.c
-  loader/dustspawner_native.c
-  loader/dossier_native.c
-  loader/wavy_native.c
-  loader/light_fast.c
-  loader/light_fast_inline.c
-  loader/trail_lights.c
-  loader/bike_draw.c
-  loader/ember_draw.c
-  loader/shadow_native.c
-  loader/light_array_native.c
-  loader/smokedraw_native.c
-  loader/smoke_create.c
-  loader/smoke_collog.c
-  loader/recolor_lights.c
-  loader/fog_trail.c
-  loader/far_rocket.c
-  loader/particle_lights.c
-  loader/region_native.c
-  loader/cone_shadow.c
-  loader/explosion_lite.c
-  loader/particle_native.c
-  loader/evprof.c
-  loader/hang_watch.c
-  loader/gcalloc.c
-  loader/screenshot.c
-  loader/first_launch.c
-)
+# Every loader/*.c is part of the app; a new file needs no edit here (CONFIGURE_DEPENDS re-runs the glob at build time)
+file(GLOB APP_SOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} CONFIGURE_DEPENDS loader/*.c)
+# qoi_decoder.c belongs to the selector build below
+list(REMOVE_ITEM APP_SOURCES loader/qoi_decoder.c)
+add_executable(YoYoLoader ${APP_SOURCES} loader/lz4/lz4.c)
 
 target_link_libraries(YoYoLoader
   -Wl,--whole-archive pthread -Wl,--no-whole-archive
