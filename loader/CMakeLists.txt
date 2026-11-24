@@ -119,6 +119,7 @@ add_executable(YoYoLoader
   loader/light_array_native.c
   loader/smokedraw_native.c
   loader/smoke_create.c
+  loader/smoke_collog.c
   loader/recolor_lights.c
   loader/fog_trail.c
   loader/far_rocket.c
