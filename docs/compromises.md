@@ -11,6 +11,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Settled smoke and burning-corpse embers update every 4th frame | — |
 | Smoke is drawn with half the clouds, each one larger; the hidden ones still block sight and get pushed | `smokeClouds=1` (`smokeClouds=3`: a third, larger still; 1 to 3) |
 | Lighting updates 30 times a second | — |
+| Collision checks keep their results, but when several objects overlap the probed spot, a check that names one of them may name another of them | `collisionRoundTrip=0` |
 | Roll dust is unlit, and afterimages have no light tint | `trailLights=1` (`fogTrailLights=1`: only in the foggy rooms) |
 | No glow around highlighted words in dialogue | `letterGlow=1` |
 | The wavy dialogue backgrounds sway in coarser steps | `waveStrips=1` (`waveStrips=2`: half as coarse) |

@@ -99,6 +99,7 @@ add_executable(YoYoLoader
   loader/held_native.c
   loader/laser_native.c
   loader/move_contact_native.c
+  loader/collision_round_trip.c
   loader/letter_native.c
   loader/clubber_native.c
   loader/minecart_native.c

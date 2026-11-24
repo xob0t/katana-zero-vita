@@ -115,16 +115,26 @@ static void *AAPCS alloc_node(void *tree) {
 		node_allocs++;
 	return original_alloc(tree);
 }
+// collision_round_trip.c (collisionRoundTrip) sits in these hooks too: it may handle a CollisionUpdate (skip a no-op
+// tree update) while no native move is armed, and it records every leaf insert.
+extern bool crt_update(void *inst, const float *old_box, update_fn orig);
+extern void crt_insert(void *tree, const void *branch, int level);
+extern void crt_remove_rect_enter(void), crt_remove_rect_leave(void);
+static int crt_hooked;
 static void AAPCS counted_update(void *inst, const float *old_box) {
 	if (armed_inst && inst == armed_inst)
 		update_calls++;
+	if (crt_hooked && !armed_inst && !armed_tree && crt_update(inst, old_box, original_update))
+		return;
 	original_update(inst, old_box);
 }
 static int AAPCS counted_remove_rect(void *tree, void *rect, void *id, void *root) {
 	bool counted = armed_tree && tree == armed_tree;
 	if (counted)
 		remove_calls++;
+	crt_remove_rect_enter();
 	int r = original_remove_rect(tree, rect, id, root);
+	crt_remove_rect_leave();
 	if (counted && !r)
 		remove_found++;
 	return r;
@@ -132,6 +142,7 @@ static int AAPCS counted_remove_rect(void *tree, void *rect, void *id, void *roo
 static int AAPCS counted_insert_rect(void *tree, const void *branch, void *root, int level) {
 	if (armed_tree && tree == armed_tree)
 		insert_calls++;
+	crt_insert(tree, branch, level);
 	return original_insert_rect(tree, branch, root, level);
 }
 
@@ -785,8 +796,9 @@ static bool native_mover(void *inst) {
 		plain_sprite((int)word(inst, 0x88)) && plain_sprite((int)word(inst, 0x14c));
 }
 
+int mc_off; // exp_movecontact0: the runner's Command_MoveContact (the counting hooks stay for collision_round_trip.c)
 static void AAPCS move_contact(void *inst, float dir, float maxdist, bool all) {
-	if (all || (mc_ab && mc_ab_off) || !inst || word(inst, 0x50) != 1 || *managed_objects || !isfinite(dir) ||
+	if (all || mc_off || (mc_ab && mc_ab_off) || !inst || word(inst, 0x50) != 1 || *managed_objects || !isfinite(dir) ||
 		!isfinite(maxdist) || !isfinite(scalar(inst, 0xb8)) || !isfinite(scalar(inst, 0xbc)) || !native_mover(inst)) {
 		mc_fallbacks++;
 		original_move(inst, dir, maxdist, all);
@@ -918,5 +930,8 @@ int move_contact_native_install(void *(*hook)(uintptr_t entry, void *replacement
 	original_insert_rect = (insert_rect_fn)originals[3];
 	original_move = (move_fn)originals[4];
 	installed = 1;
+	extern int crt_install(uintptr_t runner_bias, void *insert_original);
+	crt_hooked = crt_install(bias, originals[3]);
+	debugPrintf("collision round trips (collisionRoundTrip): %s\n", crt_hooked ? "installed" : "NOT installed");
 	return 1;
 }
