@@ -1,4 +1,4 @@
-# Compromises
+# Changes
 
 Everything the port changes from the original game to run near 60 fps. The setting next to each brings back the
 original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.

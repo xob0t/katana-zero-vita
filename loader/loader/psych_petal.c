@@ -140,7 +140,7 @@ static int same_call(const draw_call *a, const draw_call *b) {
 		!memcmp(&a->alpha, &b->alpha, sizeof(float));
 }
 
-// psychPetals=N in yyl.cfg (default 2, 1..4): only one petal in N is drawn (a visible cut, compromises.md). Every
+// psychPetals=N in yyl.cfg (default 2, 1..4): only one petal in N is drawn (a visible cut, docs/changes.md). Every
 // petal still exists and runs its Step: the Step draws random numbers (random(3) when a petal turns), so the fight's
 // random sequence stays as it was; petals only fall and settle on blocks, nothing reads them to hurt or stop the
 // player. The petal is chosen from its instance address, so it stays drawn or hidden for its whole life.

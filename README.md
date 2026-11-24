@@ -36,7 +36,7 @@ Some of the speedups change what you see or play:
 - No touch controls: the front touch screen does nothing.
 - Simpler effects in heavy scenes: less lighting, lighter smoke, fog and explosions.
 
-Each can be undone in `ux0:data/gms/katanazero/yyl.cfg`; [docs/compromises.md](docs/compromises.md) lists them all.
+Each can be undone in `ux0:data/gms/katanazero/yyl.cfg`; [docs/changes.md](docs/changes.md) lists them all.
 
 Enemies attack on the PC version's timing. The Android release delays their first attack and every shot by a few
 frames, which also hides the bullet in the first room's tutorial slow-mo. **GAME → ENEMY TIMING: ANDROID**

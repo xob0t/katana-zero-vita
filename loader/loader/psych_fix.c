@@ -43,7 +43,7 @@
  *
  * The native ground and rose petal Draws are in psych_ground.c and psych_petal.c (exp_psychground0, exp_psychpetal0).
  *
- * Visible cuts (compromises.md):
+ * Visible cuts (docs/changes.md):
  * - psychEffects=0 (default; 1 = the original): obj_psychboss_effects draws nothing while its effect is type -1, the
  *   one it has all through part 3 (the black void). That pass fills a screen-size copy, adds it, copies the screen into
  *   it and draws it back over a black rectangle: 4 more render passes per frame, and the picture looks the same

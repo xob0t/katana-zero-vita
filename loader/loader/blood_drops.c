@@ -16,7 +16,7 @@
  * mean lifetime of an original drop. The drop stays a real instance: instance_number, instance ids, the creators' writes to it and the
  * cutscenes' with (obj_blood) instance_destroy() all work as before, so the particle budget keeps counting it. On
  * its first skipped Step it moves far outside the room, so the smoke screen no longer finds it inside a cloud (blood
- * isn't drawn inside smoke clouds; docs/compromises.md lists this). Nothing in the game deactivates instances by region.
+ * isn't drawn inside smoke clouds; docs/changes.md lists this). Nothing in the game deactivates instances by region.
  * With BLOOD SPRAY on nothing changes. exp_blooddrops0 keeps the original Step.
  * Debug counters print with the profiler as [BLOOD] and [PBUDGET].
  */
