@@ -124,10 +124,17 @@ int debug_request_take(int id, char *text, int size) {
 }
 
 // Game thread, right after the swap: copies the displayed frame for the request thread to write
+volatile int screenshot_request_now; // set by the game thread (exp_exploshot): take one without a request file
+
 void screenshot_check() {
-	// One screenshot in flight at a time; a request stays pending until the previous one is written
-	if (!debugMode || shot_pixels || !debug_request_take(DEBUG_REQUEST_SCREENSHOT, NULL, 0))
+	if (!debugMode)
 		return;
+	extern void explosion_lite_frame(void);
+	explosion_lite_frame();
+	// One screenshot in flight at a time; a request stays pending until the previous one is written
+	if (shot_pixels || (!screenshot_request_now && !debug_request_take(DEBUG_REQUEST_SCREENSHOT, NULL, 0)))
+		return;
+	screenshot_request_now = 0;
 
 	SceDisplayFrameBuf fb;
 	sceClibMemset(&fb, 0, sizeof(fb));

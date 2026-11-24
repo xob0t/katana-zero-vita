@@ -426,6 +426,20 @@ void katana_prof_report(int frames) {
 			debugPrintf("[LETTER] hits %u %u %u %u %u fallbacks %u %u %u %u %u\n", letter_native_hits[0], letter_native_hits[1],
 				letter_native_hits[2], letter_native_hits[3], letter_native_hits[4], letter_native_fallbacks[0],
 				letter_native_fallbacks[1], letter_native_fallbacks[2], letter_native_fallbacks[3], letter_native_fallbacks[4]);
+		{
+			extern int letter_glow, letter_glow_ab, letter_glow_ab_on, letter_glow_prof;
+			extern unsigned letter_glow_calls, letter_glow_zero, letter_glow_skipped;
+			extern uint64_t letter_glow_us;
+			if (frames > 0 && letter_glow_calls)
+				debugPrintf("[LETTERGLOW] glow passes %.1f per frame (%.1f at alpha 0, %.1f skipped), %.3f ms/frame | "
+					"letterGlow %d | A/B: %s\n", (float)letter_glow_calls / frames, (float)letter_glow_zero / frames,
+					(float)letter_glow_skipped / frames, letter_glow_us / 1000.0f / frames, letter_glow,
+					letter_glow_ab ? (letter_glow_ab_on ? "on" : "off") : "-");
+			letter_glow_calls = letter_glow_zero = letter_glow_skipped = 0;
+			letter_glow_us = 0;
+			if (letter_glow_ab)
+				letter_glow_ab_on = !letter_glow_ab_on;
+		}
 		extern unsigned letter_native_direct_user, letter_native_cached_slots;
 		if (letter_native_direct_user || letter_native_cached_slots)
 			debugPrintf("[LETTER] direct user events %u, cached lookups %u\n", letter_native_direct_user, letter_native_cached_slots);
@@ -474,9 +488,20 @@ void katana_prof_report(int frames) {
 			memset(letter_time_n, 0, sizeof(letter_time_n));
 		}
 		extern unsigned wavy_native_fast, wavy_native_slow, wavy_native_strips;
+		extern int wave_strips, wave_ab, wave_ab_k, wave_prof;
+		extern uint32_t wave_prof_us, wave_prof_calls;
+		static unsigned wave_last_strips;
 		if (wavy_native_fast || wavy_native_slow)
-			debugPrintf("[WAVY] calls %u/%u (native/original), strips %u (totals)\n", wavy_native_fast, wavy_native_slow,
-				wavy_native_strips);
+			debugPrintf("[WAVY] calls %u/%u (native/original), strips %u (totals), %.1f per frame | waveStrips %d | A/B: k%d\n",
+				wavy_native_fast, wavy_native_slow, wavy_native_strips,
+				frames > 0 ? (float)(wavy_native_strips - wave_last_strips) / frames : 0.0f, wave_strips, wave_ab_k);
+		wave_last_strips = wavy_native_strips;
+		if (wave_prof && frames > 0 && wave_prof_calls)
+			debugPrintf("[WAVYPROF] draw_sprite_wavy %.3f ms/frame in %.1f calls\n", wave_prof_us / 1000.0f / frames,
+				(float)wave_prof_calls / frames);
+		wave_prof_us = wave_prof_calls = 0;
+		if (wave_ab)
+			wave_ab_k = wave_ab_k >= 4 ? 1 : wave_ab_k * 2;
 		extern unsigned wavy_reject[16], wavy_reject_kind;
 		for (int i = 0; i < 14; i++)
 			if (wavy_reject[i])
@@ -605,6 +630,21 @@ void katana_prof_report(int frames) {
 		last_fallback = trail_lights_fallback;
 	}
 	{
+		extern unsigned explosion_particles_created, explosion_particles_skipped, explosion_regions_skipped;
+		static unsigned last_c, last_s, last_r;
+		if (frames > 0 && (explosion_particles_created != last_c || explosion_particles_skipped != last_s))
+			debugPrintf("[EXPLOSION] particles per frame: %.1f created, %.1f skipped | %.1f update_region skipped%c",
+				(float)(explosion_particles_created - last_c) / frames, (float)(explosion_particles_skipped - last_s) / frames,
+				(float)(explosion_regions_skipped - last_r) / frames, 10);
+		extern unsigned loop_draws_explosions, loop_draws_bad;
+		if (frames > 0 && loop_draws_explosions && explosion_particles_created != last_c)
+			debugPrintf("[EXPLORNG] explosion loops checked %u, with a draw count other than 120: %u%c", loop_draws_explosions,
+				loop_draws_bad, 10);
+		last_c = explosion_particles_created;
+		last_s = explosion_particles_skipped;
+		last_r = explosion_regions_skipped;
+	}
+	{
 		extern unsigned cone_shadows_skipped, cone_shadows_drawn;
 		static unsigned last_s, last_d;
 		if (frames > 0 && (cone_shadows_skipped != last_s || cone_shadows_drawn != last_d))
@@ -730,22 +770,39 @@ void katana_prof_report(int frames) {
 		// exp_fogtrailsample, the clouds' average lit layer (colour weighted by light_alpha, light_alpha / raised alpha)
 		extern unsigned fog_trail_native, fog_trail_original, fog_trail_samples;
 		extern double fog_trail_sum[5];
-		static unsigned last_fog_native, last_fog_original;
-		if (frames > 0 && (fog_trail_native != last_fog_native || fog_trail_original != last_fog_original)) {
+		extern unsigned trail_lights_tints_skipped;
+		static unsigned last_fog_native, last_fog_original, last_tints;
+		if (frames > 0 && (fog_trail_native != last_fog_native || fog_trail_original != last_fog_original ||
+				trail_lights_tints_skipped != last_tints)) {
 			char sampled[160] = "";
 			if (fog_trail_samples && fog_trail_sum[3] > 0)
 				snprintf(sampled, sizeof(sampled), " | lit layer: rgb %.0f %.0f %.0f, light_alpha %.3f, light_alpha / raised alpha %.3f (%u samples)",
 					fog_trail_sum[0] / fog_trail_sum[3], fog_trail_sum[1] / fog_trail_sum[3], fog_trail_sum[2] / fog_trail_sum[3],
 					fog_trail_sum[3] / fog_trail_samples, fog_trail_sum[4] / fog_trail_samples, fog_trail_samples);
-			debugPrintf("[FOGTRAIL] dust cloud draws per frame: %.1f unlit, %.1f lit%s\n", (float)(fog_trail_native -
-				last_fog_native) / frames, (float)(fog_trail_original - last_fog_original) / frames, sampled);
+			debugPrintf("[FOGTRAIL] dust cloud draws per frame: %.1f unlit, %.1f lit | afterimage tints not drawn %.1f%s\n",
+				(float)(fog_trail_native - last_fog_native) / frames, (float)(fog_trail_original - last_fog_original) / frames,
+				(float)(trail_lights_tints_skipped - last_tints) / frames, sampled);
 		}
 		last_fog_native = fog_trail_native;
 		last_fog_original = fog_trail_original;
+		last_tints = trail_lights_tints_skipped;
 		extern int fog_trail_ab, fog_trail_ab_off;
 		static unsigned fog_ab_windows;
 		if (fog_trail_ab && ++fog_ab_windows % 2 == 0)
 			fog_trail_ab_off = !fog_trail_ab_off;
+		// obj_particle user event 15 natively (particle_native.c): calls run natively / by the original; verify results
+		extern unsigned particle_native_calls, particle_native_fallbacks, particle_verified, particle_mismatch;
+		static unsigned last_particle_native, last_particle_fallbacks;
+		if (frames > 0 && (particle_native_calls != last_particle_native || particle_native_fallbacks != last_particle_fallbacks))
+			debugPrintf("[PARTICLE] user event 15 per frame: %.1f native, %.1f original | verify ok %u mismatch %u\n",
+				(float)(particle_native_calls - last_particle_native) / frames,
+				(float)(particle_native_fallbacks - last_particle_fallbacks) / frames, particle_verified, particle_mismatch);
+		last_particle_native = particle_native_calls;
+		last_particle_fallbacks = particle_native_fallbacks;
+		extern int particle_ab, particle_ab_off;
+		static unsigned particle_ab_windows;
+		if (particle_ab && ++particle_ab_windows % 2 == 0)
+			particle_ab_off = !particle_ab_off;
 		// exp_recolorlightsprof: draw_sprite_recolored's own time (all calls, the cheap cached ones too)
 		extern uint32_t recolor_lights_prof_us, recolor_lights_prof_calls;
 		if (frames > 0 && recolor_lights_prof_calls) {

@@ -814,6 +814,9 @@ void katana_late_install(void) {
 	}
 	extern int letter_timing;
 	letter_timing = exp_flag("lettertime");
+	extern int letter_glow_ab, letter_glow_prof;
+	letter_glow_ab = debugMode && exp_flag("letterglowab");
+	letter_glow_prof = debugMode && exp_flag("letterglowprof");
 	if (!exp_flag("wavynative0")) {
 		extern int wavy_native_install(void *(*hook)(uintptr_t entry, void *replacement));
 		debugPrintf("native draw_sprite_wavy: %s\n", wavy_native_install(entry_hook) ? "installed" : "NOT installed");
@@ -1117,7 +1120,9 @@ static void patch_performance() {
 	if ((orig = gml_replace(table, "gml_Object_obj_particle_Other_25", particle_draw))) {
 		// In the fog rooms the roll's dust clouds skip their light tint (fogTrailLights=1 keeps it; fog_trail.c)
 		extern event_func fog_trail_install(event_func orig);
-		orig_particle_draw = fog_trail_install(orig);
+		// Under it, the event itself runs natively (exact; particle_native.c)
+		extern event_func particle_native_install(event_func orig);
+		orig_particle_draw = fog_trail_install(particle_native_install(orig));
 	}
 
 	instance_destroy_fn = (void *)so_symbol(&yoyoloader_mod, "_Z22YYGML_instance_destroyP9CInstanceS0_iPP8YYRValue");
@@ -1225,6 +1230,13 @@ static void patch_performance() {
 	if (!exp_flag("particlelights0")) {
 		extern int particle_lights_install(void *(*hook)(uintptr_t entry, void *replacement));
 		debugPrintf("explosion particle lights: %s\n", particle_lights_install(entry_hook) ? "installed" : "NOT installed");
+	}
+	// Bike chase helicopter fight: fewer explosion particles per mortar, same random draws (explosion_lite.c).
+	// fullExplosions=1 keeps all 30.
+	extern int full_explosions;
+	if (!full_explosions || debugMode) { // with fullExplosions=1 only for the debug screenshot trigger (all particles)
+		extern int explosion_lite_install(void);
+		debugPrintf("lighter explosions: %s%c", explosion_lite_install() ? "installed" : "NOT installed", 10);
 	}
 	// Bike chase traffic cones: drawn without their draw_shadow (cone_shadow.c), 4.5-6 ms per frame with ~100 cones even
 	// with the native shadow. coneShadows=1 keeps them.
