@@ -88,8 +88,8 @@ also:
   game art, so it is not committed.
 
 Later runs skip finished steps and rebuild only what changed. The dependencies are rebuilt when a patch, a pin or a
-dependency checkout changes, or their installed libraries were replaced. Once the art exists, the APK argument is
-optional.
+dependency checkout changes. If only the installed libraries were replaced (another vitaGL build, say), the build
+stops and asks for `--deps` or `--no-deps`. Once the art exists, the APK argument is optional.
 
 `--game-apk` also makes `build/game.apk` (step 2 below). `--sdk` and `--deps-dir` choose other locations. `--deps`
 forces a dependency rebuild, `--no-deps` leaves the installed ones alone (e.g. an experimental vitaGL), and `--check`

@@ -10,7 +10,8 @@ Each step runs only when needed, so running the command again just rebuilds what
 2. Dependencies: builds vitaGL (with patches/vitagl.patch), openal-soft, vitaShaRK, SceShaccCgExt and opensles
    (with patches/opensles.patch) in --deps-dir and installs them into the SDK, mirroring
    loader/.github/workflows/compilation.yml. Skipped while the patches, the pins below, the dependency checkouts and
-   the installed libraries are unchanged since the last run (--deps forces it, --no-deps skips it).
+   the installed libraries are unchanged since the last run (--deps forces it, --no-deps skips it). If only the
+   installed libraries changed (say another vitaGL build was installed), it stops and asks for one of the two.
 3. LiveArea: draws the bubble icon, LiveArea and start gate art from the APK's title art into livearea/ (game art,
    so not committed) if it is missing.
 4. Builds build/app (KatanaZero.vpk, eboot.bin) and build/loader (loader2.bin, the YoYo Loader drop-in).
@@ -71,8 +72,9 @@ REPOS = {
 REPO_LIBS = ("loader/stubs/libkubridge_stub.a", "loader/stubs/libkubridge_stub_weak.a", "loader/libs/libsndfile.a",
              "loader/libs/libcurl.a", "loader/libs/libssl.a", "loader/libs/libcrypto.a")
 # What the dependency step installs (relative to $VITASDK/arm-vita-eabi), checked to decide whether to rerun it
-DEPS_INSTALLED = ("lib/libopenal.a", "lib/libSceShaccCgExt.a", "lib/libvitashark.a", "include/vitashark.h",
-                  "lib/libvitaGL.a", "include/vitaGL.h", "lib/libOpenSLES.a", "include/SLES/OpenSLES.h")
+DEPS_INSTALLED = ("lib/libopenal.a", "include/AL/al.h", "lib/libSceShaccCgExt.a", "lib/libvitashark.a",
+                  "include/vitashark.h", "lib/libvitaGL.a", "include/vitaGL.h", "lib/libOpenSLES.a",
+                  "include/SLES/OpenSLES.h", *("lib/" + Path(f).name for f in REPO_LIBS))
 DEPS_STAMP = ".katana-deps.json"
 LIVEAREA = ("icon0.png", "bg0.png", "startup.png")
 
@@ -176,7 +178,12 @@ def default_deps_dir():
 
 def sdk_installed(sdk):
     gcc = sdk / "bin" / ("arm-vita-eabi-gcc.exe" if WINDOWS else "arm-vita-eabi-gcc")
-    return (sdk / "share" / "vita.toolchain.cmake").is_file() and gcc.is_file()
+    base = sdk / "arm-vita-eabi"
+    # The toolchain, the refreshed Vita headers and stubs, and the softfp packages (an interrupted manual install
+    # can have the first without the others)
+    return ((sdk / "share" / "vita.toolchain.cmake").is_file() and gcc.is_file()
+            and (base / "include" / "vitasdk.h").is_file() and (base / "lib" / "libSceDisplay_stub.a").is_file()
+            and (base / "include" / "zlib.h").is_file())
 
 
 def download(item, folder):
@@ -186,7 +193,7 @@ def download(item, folder):
         print(f"  have {dest.name}")
         return dest
     folder.mkdir(parents=True, exist_ok=True)
-    part = dest.with_name(dest.name + ".part")
+    part = dest.with_name(f"{dest.name}.{os.getpid()}.part")  # per process: two first runs don't share it
     print(f"  downloading {url}", flush=True)
     with urllib.request.urlopen(url) as response, open(part, "wb") as out:
         total = int(response.headers.get("Content-Length") or 0)
@@ -227,7 +234,7 @@ def setup_sdk(sdk, downloads):
         raise BuildError(f"{sdk} exists but holds no VitaSDK; remove it or pass another --sdk")
     log(f"installing the softfp VitaSDK into {sdk}")
     files = [download(item, downloads) for item in (SOFTFP_TOOLCHAIN, SOFTFP_INCLUDE, SOFTFP_LIB, NEW_SDK)]
-    staging = sdk.with_name(sdk.name + ".staging")
+    staging = sdk.with_name(f"{sdk.name}.staging.{os.getpid()}")
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
@@ -243,6 +250,10 @@ def setup_sdk(sdk, downloads):
     shutil.rmtree(new)
     if not sdk_installed(staging):
         raise BuildError(f"the SDK in {staging} is incomplete")
+    if sdk_installed(sdk):  # another run finished first
+        shutil.rmtree(staging)
+        log(f"SDK installed to {sdk} by another run")
+        return
     if sdk.exists():
         sdk.rmdir()
     os.replace(staging, sdk)
@@ -325,13 +336,20 @@ def deps_stale_reason(sdk, build):
     if None in outputs.values():
         return "installed libraries missing"
     if stamp.get("outputs") != outputs:
-        return "installed libraries were replaced since the last dependency build"
+        return REPLACED
     return None
+
+
+# Only the installed files differ: usually another vitaGL build put into a shared SDK on purpose, so rebuilding
+# without being asked would silently undo it
+REPLACED = "installed libraries were replaced since the last dependency build"
 
 
 def setup_deps(sdk, build, jobs, env, make_exe):
     log(f"building dependencies in {build}")
     build.mkdir(parents=True, exist_ok=True)
+    # A failed run must not leave the previous run's stamp vouching for half-replaced files
+    (build / DEPS_STAMP).unlink(missing_ok=True)
     lib = sdk / "arm-vita-eabi" / "lib"
     for f in REPO_LIBS:
         shutil.copy2(ROOT / f, lib)
@@ -364,10 +382,11 @@ def setup_deps(sdk, build, jobs, env, make_exe):
     state = vitagl_patch_state(src, patch)
     if state == "apply":
         git(src, "apply", patch)
-        # The Makefile doesn't track headers: objects built before the patch would keep the old header code
-        make("-C", src, "clean")
     elif state == "stale":
         raise stale_vitagl(src)
+    # Always from clean: the Makefile tracks neither headers nor the flags, so objects from an earlier run (another
+    # patch version, other flags, or a run interrupted after the patch was applied) would be reused
+    make("-C", src, "clean")
     make("-C", src, *VITAGL_FLAGS, *j, "install")
 
     src = fetch(build, "opensles")
@@ -386,24 +405,57 @@ def missing_livearea():
     return [name for name in LIVEAREA if not (ROOT / "livearea" / name).is_file()]
 
 
-def build_targets(jobs, env):
+def cached_toolchain(out):
+    try:
+        for line in (out / "CMakeCache.txt").read_text(errors="replace").splitlines():
+            if line.startswith("CMAKE_TOOLCHAIN_FILE:"):
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+
+def build_targets(sdk, jobs, env):
     built = []
-    for folder, option in (("app", "-DKATANA_APP=1"), ("loader", "-DLOADER=1")):
+    toolchain = f"{sdk.as_posix()}/share/vita.toolchain.cmake"
+    for folder, option, outputs in (("app", "-DKATANA_APP=1", ("eboot.bin", "KatanaZero.vpk")),
+                                    ("loader", "-DLOADER=1", ("loader2.bin",))):
         log(f"building build/{folder}")
         out = ROOT / "build" / folder
-        run(["cmake", "-S", ROOT / "loader", "-B", out, option], env=env)
+        cached = cached_toolchain(out)
+        if cached is not None and Path(cached).resolve() != Path(toolchain).resolve():
+            # The cache keeps the old SDK's compiler and prefix whatever -D says
+            log(f"build/{folder} was configured for {cached}; reconfiguring for {toolchain}")
+            shutil.rmtree(out)
+        # Always relink: CMake links the SDK libraries by name, so a replaced libvitaGL.a alone would not relink and
+        # the old eboot.bin would be reported as built. Removing the outputs also means a failed build can't leave
+        # the previous ones behind.
+        for name in ("YoYoLoader", "YoYoLoader.velf", *outputs):
+            (out / name).unlink(missing_ok=True)
+        run(["cmake", "-S", ROOT / "loader", "-B", out, option, f"-DCMAKE_TOOLCHAIN_FILE={toolchain}"], env=env)
         lines = []
         run(["cmake", "--build", out, "-j", str(jobs)], env=env, capture=lines)
         built += [f"build/{folder}: {line[line.index('Built target'):]}" for line in lines if "Built target" in line]
     return built
 
 
-def check(sdk, build, apk):
+def check(sdk, build, apk, deps=False, no_deps=False):
     """Reports what a build would do, changing nothing."""
-    print(f"SDK {sdk}: {'installed' if sdk_installed(sdk) else 'missing, would be installed'}")
     if sdk_installed(sdk):
+        print(f"SDK {sdk}: installed")
+    else:
+        print(f"SDK {sdk}: missing, " + ("would be installed" if WINDOWS else "ERROR: set VITASDK or --sdk"))
+    if no_deps:
+        print(f"dependencies {build}: left as they are (--no-deps)")
+    elif deps:
+        print(f"dependencies {build}: would be built (--deps)")
+    elif sdk_installed(sdk):
         reason = deps_stale_reason(sdk, build)
-        print(f"dependencies {build}: {'up to date' if not reason else 'would be built: ' + reason}")
+        if reason == REPLACED:
+            print(f"dependencies {build}: ERROR: {reason}; pass --deps or --no-deps")
+        else:
+            print(f"dependencies {build}: {'up to date' if not reason else 'would be built: ' + reason}")
+    if sdk_installed(sdk):
         vitagl = build / "vitaGL"
         if vitagl.is_dir():
             state = vitagl_patch_state(vitagl, ROOT / "patches" / "vitagl.patch")
@@ -439,8 +491,11 @@ def main(argv=None):
     try:
         sdk = (args.sdk or default_sdk()).resolve()
         build = (args.deps_dir or default_deps_dir()).resolve()
+        if " " in sdk.as_posix():
+            # The dependency Makefiles expand the install path unquoted
+            raise BuildError(f"the SDK path can't contain spaces: {sdk}")
         if args.check:
-            check(sdk, build, args.apk)
+            check(sdk, build, args.apk, args.deps, args.no_deps)
             return 0
         if args.apk and not args.apk.is_file():
             raise BuildError(f"{args.apk} not found")
@@ -464,6 +519,9 @@ def main(argv=None):
         reason = "--deps" if args.deps else None if args.no_deps else deps_stale_reason(sdk, build)
         if args.no_deps:
             log("dependencies left as they are (--no-deps)")
+        elif reason == REPLACED:
+            raise BuildError(f"{reason} (another vitaGL build?): pass --deps to rebuild them from patches/, or "
+                             "--no-deps to build against them as they are")
         elif reason:
             print(f"    ({reason})")
             setup_deps(sdk, build, args.jobs, env, make_exe)
@@ -473,7 +531,7 @@ def main(argv=None):
         if missing:
             log("making the LiveArea art")
             run([sys.executable, ROOT / "scripts" / "make_livearea.py", args.apk])
-        built = build_targets(args.jobs, env)
+        built = build_targets(sdk, args.jobs, env)
 
         if args.game_apk:
             log(f"making {args.game_apk}")
