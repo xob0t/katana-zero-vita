@@ -211,7 +211,7 @@ static uint32_t texflush_last_us;
 unsigned texflush_count;
 
 /*
- * Dynamic resolution (dynamicRes, default 1): a 960x540 application surface keeps text sharp, but rooms full of
+ * Dynamic resolution (dynamicRes=1; off by default): a 960x540 application surface keeps text sharp, but rooms full of
  * blended light sprites drawn straight onto it (room_cathedral: window beams, ~65 light glows) can run out of
  * GPU fill rate: 43-52 fps with 4-9 ms GPU waits at the swap, 59 at 640x360. A frame counts as GPU-bound when
  * it missed a vblank (over DYNRES_MISS_US since the previous swap) although its CPU work fit in a frame (under
@@ -221,6 +221,9 @@ unsigned texflush_count;
  * are GPU-bound (under ~55 fps from the GPU) the room drops to 640x360 until the next room. The first second of a
  * room (texture loads stall the swap too) is not counted. (Texture pages pushed out of VRAM into RAM make ordinary
  * rooms GPU-bound and drop too.)
+ * Off by default since Nov 24: with the cathedral dust off (cathedralDust=0) the cathedral holds 59.9 at 960x540, a
+ * 154-room playtest never dropped, and the drops that remained (chinatown_10, haunted_0, tiedup, the title, each at
+ * 6-10 of 60 frames) came in CPU-bound scenes, where 640x360 only blurred the text.
  */
 #define DYNRES_WINDOW 60
 #define DYNRES_BOUND_FRAMES 6
@@ -228,7 +231,7 @@ unsigned texflush_count;
 #define DYNRES_MISS_US 25000 // 1.5 vblank intervals
 #define DYNRES_CPU_US 15000
 #define DYNRES_SETTLE_FRAMES 60
-int dynamic_res = 1;
+int dynamic_res = 0;
 unsigned dynres_drops;
 static int dynres_test; // exp_dynrestest: every frame counts as GPU-bound, so each room drops after ~2 s
 

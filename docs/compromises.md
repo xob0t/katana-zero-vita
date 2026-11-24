@@ -16,7 +16,6 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Laser deaths cut the body into fewer, thicker slices | `dissolveChunkScale=1` |
 | At most 3 copies of one sound and 32 voices at once | `sameSoundLimit=0`, `maxVoices=0` |
 | Checkpoints are saved in the background: a crash right after one can lose it, never corrupt it | `asyncSave=0` |
-| Rooms the GPU can't keep up with drop to 640x360 | `dynamicRes=0` |
 | Rain is plain dark streaks and grey splashes, without the game's fading trails and lamp-lit drops | `rain=2` (`rain=0`: no rain) |
 | No end-of-level replay and no death rewind | `replays=1` |
 
