@@ -907,6 +907,8 @@ void katana_late_install(void) {
 		debugPrintf("native draw_shadow: %s\n", shadow_native_install(entry_hook) ? "installed" : "NOT installed");
 	}
 	appsurf_copy_install();
+	extern void psych_fix_late_install(void);
+	psych_fix_late_install();
 	if (orig_lighting_user0) {
 		runner_function **functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
 		int *count = (int *)so_symbol(&yoyoloader_mod, "the_numb");
@@ -1515,6 +1517,9 @@ static void patch_performance() {
 	glow_rest_install(table);
 	extern void corpse_rest_install(gml_func_entry *table);
 	corpse_rest_install(table);
+	// Secret Psychiatrist fight: empty surface passes skipped, surfaces reused across restarts (psych_fix.c)
+	extern void psych_fix_install(gml_func_entry *table);
+	psych_fix_install(table);
 	extern void wobble_rest_install(gml_func_entry *table);
 	wobble_rest_install(table);
 	extern void blood_drops_install(gml_func_entry *table);
