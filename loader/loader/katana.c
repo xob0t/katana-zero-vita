@@ -1377,9 +1377,14 @@ static void patch_performance() {
 	// move_contact_solid without the redundant collision-tree work (move_contact_native.c, exact): the Dragon's dash
 	// aim calls it every frame and it walked the player pixel by pixel with tree updates and searches (1.2-3.6 ms/frame
 	// in room_dragon_3, more on long aims). exp_movecontact0 keeps the runner's Command_MoveContact.
-	if (!exp_flag("movecontact0")) {
+	// The same install hooks CollisionUpdate/InsertRect for collision_round_trip.c (collisionRoundTrip): tree updates
+	// of instances back where they were (place_meeting probes, x/y set and restored) are skipped.
+	{
+		extern int mc_off;
 		extern int move_contact_native_install(void *(*hook)(uintptr_t entry, void *replacement));
-		debugPrintf("native move_contact_solid: %s\n", move_contact_native_install(entry_hook) ? "installed" : "NOT installed");
+		mc_off = exp_flag("movecontact0");
+		debugPrintf("native move_contact_solid: %s%s\n", move_contact_native_install(entry_hook) ? "installed" : "NOT installed",
+			mc_off ? " (off: exp_movecontact0)" : "");
 	}
 	// Exact natives of obj_orangelight Step and obj_lightback Step, from the static recompiler kill test
 	// (work/cpu_research/kill_test/REPORT.md): the events with the runner's compare/truth/variable helpers inlined

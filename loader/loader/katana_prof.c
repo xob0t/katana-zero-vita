@@ -909,6 +909,11 @@ void katana_prof_report(int frames) {
 		if (mc_ab)
 			mc_ab_off = !mc_ab_off;
 	}
+	{
+		// collision_round_trip.c: CollisionUpdate calls that would remove + insert, no-op ones, skipped ones
+		extern void crt_report(int frames);
+		crt_report(frames);
+	}
 	if (debugMode && light_fast_mode)
 		light_fast_report(frames);
 	{

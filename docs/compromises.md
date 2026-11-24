@@ -14,6 +14,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Lighting updates 30 times a second | — |
 | Past the first 20 in a frame, effect particles are drawn every other frame | — |
 | With BLOOD SPRAY off, smoke clouds show no blood drops, and the hidden drops' lifetimes (they set how many other particles spawn) are approximated | — |
+| Collision checks keep their results, but when several objects overlap the probed spot, a check that names one of them may name another of them | `collisionRoundTrip=0` |
 | Roll dust is unlit, and afterimages have no light tint | `trailLights=1` (`fogTrailLights=1`: only in the foggy rooms) |
 | No glow around highlighted words in dialogue | `letterGlow=1` |
 | The wavy dialogue backgrounds sway in coarser steps | `waveStrips=1` (`waveStrips=2`: half as coarse) |
