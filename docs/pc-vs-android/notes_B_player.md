@@ -6,7 +6,8 @@ Method: Android: Ghidra decompile of 47 functions (read-only project) plus the d
 
 ## 0. Vita-port finding (not PC vs Android, but it matters most for gamepad players)
 
-**Crouching on the ground is probably blocked on the Vita build with touchControls=0 (PR #82, on main).**
+**Crouching on the ground was blocked on the Vita build with touchControls=0 (PR #82); confirmed on the Vita and
+fixed in touch_controls.c (the stick Step skip writes wasNeutral = 20).**
 Android adds this gate to every crouch check on the ground:
 `controller_check(key_crouch) && (obj_global_controller.allowCrouch || obj_screenJoystick.wasNeutral > 0 ||
 obj_global_controller.control_override > 0)`.
@@ -121,6 +122,5 @@ obj_global_controller.control_override > 0)`.
   key_crouch roll queue (item 2) and the dragon touch-aim branch.
 - load_options default for `moving_dropdown` (item 4; mobile reset sets true).
 - player_casual_walking new branch (item 7): exact speed table and the PC structure after L108.
-- Section 0 is static analysis; it should be confirmed on the device (crouch on flat ground with touchControls=0).
 - player_hurt / player_attack / player_airdodge / player_walljump were not read line by line: no flagged constants,
   variables or calls, but a logic-only change (same tokens, different comparisons) would not show up in those lists.

@@ -53,14 +53,16 @@ Calibration (enemy fire, item 3): in the tutorial, slow-mo starts with `shoot_ti
 bullet lands in front of Zero; Android fires at fr 0.09 and the bullet freezes inside the muzzle flash
 (work/bulletfreeze/README.md).
 
-### Vita-port issue found on the way (not a PC/Android difference)
+### Vita-port issue found on the way (not a PC/Android difference, fixed)
 Android gates ground crouching with `allowCrouch || obj_screenJoystick.wasNeutral > 0 || control_override > 0`
 (player_idle_ground L100 0x32978b4, player_moving_ground L204/L236, player_walking L124, slope_land_check L47).
 `allowCrouch` is always false. `wasNeutral` is 0 from Create (0x487c10c) and becomes 20 only in obj_screenJoystick Step
-(L105 0x48801ac). The loader's touchControls=0 (`loader/loader/touch_controls.c`, PR #82) skips that Step, so
-`wasNeutral` stays 0. The likely result is that idle crouch, crouch-roll, crouch drop-through and slope crouch don't
-work on the Vita, while key_roll rolls still do. This comes from reading the code only, so try crouching on the device.
-A fix would be to set `wasNeutral = 20` when skipping the Step. Details: notes_B_player.md §0.
+(L105 0x48801ac). The loader's touchControls=0 (`loader/loader/touch_controls.c`, PR #82) skipped that Step, so
+`wasNeutral` stayed 0 and down did nothing on the ground: no idle crouch, no crouch while running, no drop through
+jump-through platforms (confirmed on the Vita and in Vita3K). The skip now writes `wasNeutral = 20` itself.
+`global.moving_dropdown` (row 17) and the down-while-running roll only apply to `control == 0` (keyboard); the
+player's `control` is 3 on the Vita, so down while running crouches and drops through platforms, as on PC with a
+gamepad. Details: notes_B_player.md §0.
 
 ## 2. Platform-only changes (brief)
 - Input: touch controls (obj_screenJoystick, obj_screenBtn, obj_playerBtn gestures, obj_onScreenKeyboard,

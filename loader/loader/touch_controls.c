@@ -16,7 +16,12 @@
  *    sets from a touch. Without one, isHeld / isPressed / switchOn stay false and keyState stays below 1
  *    (it counts down from 0; the replay controller and the buttons only test keyState == 1 / >= 1). The rest is
  *    layout: x / y follow the view, scale, blink and fade.
- *  - obj_screenJoystick Step: posValueX / posValueY / moveAmnt stay 0 and walking false while not dragged.
+ *  - obj_screenJoystick Step: posValueX / posValueY / moveAmnt stay 0 and walking false while not dragged. Its
+ *    rest path also writes wasNeutral = 20 every frame (line 105: `if (!buttonDown || moveAmnt <= 0.15) wasNeutral
+ *    = 20`); Create sets 0. The player's ground crouch checks read it (idle_ground L100, moving_ground L236,
+ *    player_walking L124, player_physics L470, slope_land_check L47: `controller_check(key_crouch) &&
+ *    (allowCrouch || obj_screenJoystick.wasNeutral > 0 || control_override > 0)`, allowCrouch always false), so
+ *    the skip writes the rest value itself; without it down did not crouch.
  *  - obj_screenBtn GUI Draw (sprites already not drawn, katana.c), obj_screenJoystick GUI Draw, obj_replayBtns Draw:
  *    drawing, plus layout. While slow motion runs, the slow-mo button's GUI Draw also made an obj_hudparticle spark
  *    at the (hidden) button every frame (irandom, random, random_range). Those sparks and their random numbers are
@@ -62,12 +67,31 @@ static unsigned bad_what[16];
 	}
 SKIP(btn_step, skipped_btn_step)
 SKIP(btn_gui, skipped_btn_gui)
-SKIP(stick_step, skipped_stick)
 SKIP(stick_gui, skipped_stick)
 SKIP(replay_step, skipped_replay)
 SKIP(replay_draw, skipped_replay)
 
-static int *var_setup;
+static int *var_setup, *var_was_neutral;
+
+// The stick Step's rest path at line 105 (0x48801e0: wasNeutral = 20.0, kind real); the rest of the Step stays
+// skipped. Only overwrite kinds that hold no reference (real, bool, undefined, unset).
+static event_func orig_stick_step;
+static void skip_stick_step(void *self, void *other) {
+	if (touch_ab_original) {
+		orig_stick_step(self, other);
+		return;
+	}
+	skipped_stick++;
+	if (!var_was_neutral)
+		return;
+	gml_rvalue *(*vwrite)(void *, int) = (*(void ***)self)[3];
+	gml_rvalue *v = vwrite(self, var_was_neutral[1]);
+	if (v && (v->kind == 0 || v->kind == 5 || v->kind == 13 || v->kind == 0xffffff)) {
+		v->val = 20.0;
+		v->flags = 0;
+		v->kind = 0;
+	}
+}
 
 static int truthy(const gml_rvalue *v) {
 	return v && (v->kind == 0 || v->kind == 13) && v->val > 0.5;
@@ -106,13 +130,13 @@ static void *object_find(int id) {
 }
 
 enum { V_HELD, V_PRESSED, V_KEYSTATE, V_DOWN, V_SWITCH, V_POSX, V_POSY, V_MOVE, V_WALK, V_MAININPUT, V_TAPPED,
-	V_SCREENHELD, V_LAUNCH, V_TRIGGER, V_COUNT };
+	V_SCREENHELD, V_LAUNCH, V_TRIGGER, V_WASNEUTRAL, V_COUNT };
 static const char *const var_names[V_COUNT] = { "isHeld", "isPressed", "keyState", "buttonDown", "switchOn",
 	"posValueX", "posValueY", "moveAmnt", "walking", "mainInput", "screenTapped", "screenHeld", "launchGo",
-	"triggerLaunch" };
+	"triggerLaunch", "wasNeutral" };
 static int *vars[V_COUNT];
 
-// rest: 0 false (or unset), 1 == 0, 2 < 1, 3 == -4
+// rest: 0 false (or unset), 1 == 0, 2 < 1, 3 == -4, 4 == 20
 static void check(void *inst, int v, int rest) {
 	int s = touch_ab_original;
 	gml_rvalue *r = gml_vget(inst, vars[v][1]);
@@ -128,7 +152,7 @@ static void check(void *inst, int v, int rest) {
 		return;
 	}
 	double d = r->kind == 7 ? (double)(int32_t)word(r, 0) : r->val;
-	int ok = rest == 0 ? !(d > 0.5) : rest == 1 ? d == 0.0 : rest == 2 ? d < 1.0 : d == -4.0;
+	int ok = rest == 0 ? !(d > 0.5) : rest == 1 ? d == 0.0 : rest == 2 ? d < 1.0 : rest == 3 ? d == -4.0 : d == 20.0;
 	if (!ok) {
 		verify_bad[s]++;
 		bad_what[v]++;
@@ -149,15 +173,18 @@ static void verify_object(int id, const int *list, int n, const int *rest) {
 	}
 }
 
+// wasNeutral reads its Create value 0 once, on the frame the keyboard's first user event creates the stick (this
+// check runs before the stick's first Step): one "not at rest: wasNeutral" per session is expected.
 static void verify_rest(void) {
 	static const int btn[] = { V_HELD, V_PRESSED, V_KEYSTATE, V_DOWN, V_SWITCH }, btn_rest[] = { 0, 0, 2, 0, 0 };
-	static const int stick[] = { V_POSX, V_POSY, V_MOVE, V_WALK, V_DOWN }, stick_rest[] = { 1, 1, 1, 0, 0 };
+	static const int stick[] = { V_POSX, V_POSY, V_MOVE, V_WALK, V_DOWN, V_WASNEUTRAL },
+		stick_rest[] = { 1, 1, 1, 0, 0, 4 };
 	static const int kb[] = { V_MAININPUT, V_TAPPED, V_SCREENHELD, V_LAUNCH, V_TRIGGER }, kb_rest[] = { 3, 0, 0, 0, 0 };
 	verify_frames[touch_ab_original]++;
 	verify_object(OBJ_SCREEN_BTN, btn, 5, btn_rest);
 	verify_object(OBJ_DEBUG_KEY, btn, 5, btn_rest);
 	verify_object(OBJ_REPLAY_BTN, btn, 5, btn_rest);
-	verify_object(OBJ_JOYSTICK, stick, 5, stick_rest);
+	verify_object(OBJ_JOYSTICK, stick, 6, stick_rest);
 	verify_object(OBJ_KEYBOARD, kb, 5, kb_rest);
 }
 
@@ -196,6 +223,7 @@ void touch_controls_install(gml_func_entry *table) {
 		return;
 	}
 	var_setup = (int *)so_symbol(&yoyoloader_mod, "g_VAR_onScreenControlSetup");
+	var_was_neutral = (int *)so_symbol(&yoyoloader_mod, "g_VAR_wasNeutral");
 	object_hash = (void **)so_symbol(&yoyoloader_mod, "g_ObjectHash");
 	int ok = var_setup != NULL;
 	for (int i = 0; i < V_COUNT; i++) {
@@ -223,6 +251,7 @@ void touch_controls_install(gml_func_entry *table) {
 #undef REPLACE
 	if (touch_verify && (orig = gml_replace(table, "gml_Object_obj_onScreenKeyboard_Step_0", keyboard_step)))
 		orig_keyboard_step = orig;
-	debugPrintf("touch controls: off (keyboard user 0 %s; button, stick and replay button events skipped)%s%s\n",
-		orig_user0 ? "after setup skipped" : "NOT hooked", touch_ab ? ", A/B" : "", touch_verify ? ", verify" : "");
+	debugPrintf("touch controls: off (keyboard user 0 %s; button, stick and replay button events skipped, stick "
+		"wasNeutral %s)%s%s\n", orig_user0 ? "after setup skipped" : "NOT hooked",
+		var_was_neutral ? "kept at 20" : "NOT found", touch_ab ? ", A/B" : "", touch_verify ? ", verify" : "");
 }
