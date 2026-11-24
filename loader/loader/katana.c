@@ -1219,6 +1219,13 @@ static void patch_performance() {
 		extern int particle_lights_install(void *(*hook)(uintptr_t entry, void *replacement));
 		debugPrintf("explosion particle lights: %s\n", particle_lights_install(entry_hook) ? "installed" : "NOT installed");
 	}
+	// Bike chase helicopter fight: fewer explosion particles per mortar, same random draws (explosion_lite.c).
+	// fullExplosions=1 keeps all 30.
+	extern int full_explosions;
+	if (!full_explosions || debugMode) { // with fullExplosions=1 only for the debug screenshot trigger (all particles)
+		extern int explosion_lite_install(void);
+		debugPrintf("lighter explosions: %s%c", explosion_lite_install() ? "installed" : "NOT installed", 10);
+	}
 	// Bike chase traffic cones: drawn without their draw_shadow (cone_shadow.c), 4.5-6 ms per frame with ~100 cones even
 	// with the native shadow. coneShadows=1 keeps them.
 	extern int cone_shadows;

@@ -202,6 +202,7 @@ void loadConfig(const char *game) {
 			else if (strcmp("dancerGlow", buffer) == 0) { extern int dancer_glow; dancer_glow = value; }
 			else if (strcmp("farRocketLights", buffer) == 0) { extern int far_rocket_lights; far_rocket_lights = value; }
 			else if (strcmp("coneShadows", buffer) == 0) { extern int cone_shadows; cone_shadows = value; }
+			else if (strcmp("fullExplosions", buffer) == 0) { extern int full_explosions; full_explosions = value; }
 			else if (strcmp("cathedralDust", buffer) == 0) { extern int cathedral_dust; cathedral_dust = value; }
 			else if (strcmp("dynamicRes", buffer) == 0) { extern int dynamic_res; dynamic_res = value; }
 			else if (strcmp("skipNetflixLogo", buffer) == 0) { extern int skip_netflix_logo; skip_netflix_logo = value; }
