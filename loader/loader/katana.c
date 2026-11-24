@@ -951,19 +951,16 @@ static int screen_btn_nodraw_install(void) {
 }
 
 /*
- * Rain thinning (rain=0|1 in yyl.cfg): obj_rain drops are destroyed right after their Create event (all of them,
- * or every second one), so random number use is unchanged and obj_rain has no Destroy event to trigger.
+ * No rain (rain=0 in yyl.cfg): obj_rain drops are destroyed right after their Create event, so random number use in
+ * the spawners and the Create is unchanged and obj_rain has no Destroy event to trigger. The default cheap rain
+ * (rain_cheap.c) destroys them the same way.
  */
 static event_func orig_rain_create;
 static void (*instance_destroy_fn)(void *self, void *other, int argc, void **args);
 
-static int rain_keep_none;
-
 static void rain_create(void *self, void *other) {
-	static uint32_t created;
 	orig_rain_create(self, other);
-	if (rain_keep_none || (created++ & 1))
-		instance_destroy_fn(self, other, 0, NULL);
+	instance_destroy_fn(self, other, 0, NULL);
 }
 
 // Replays are off by default (replays=1 in yyl.cfg restores them): the game's own replay option
@@ -1126,11 +1123,13 @@ static void patch_performance() {
 	}
 
 	instance_destroy_fn = (void *)so_symbol(&yoyoloader_mod, "_Z22YYGML_instance_destroyP9CInstanceS0_iPP8YYRValue");
-	// rain in yyl.cfg: 0 removes rain entirely (default: first level 39 -> 47 fps), 1 keeps every
-	// second drop, 2 keeps all of them
+	// rain in yyl.cfg: 1 (default) cheap rain drawn by the loader (rain_cheap.c), 0 none, 2 the game's rain (first
+	// level 47 fps without it, 39 with half of it in 2025)
 	extern int rain_level;
-	rain_keep_none = rain_level <= 0;
-	if (rain_level < 2 && instance_destroy_fn && (orig = gml_replace(table, "gml_Object_obj_rain_Create_0", rain_create)))
+	extern int rain_cheap_install(gml_func_entry *table, void *destroy);
+	if (rain_level == 1 && !(instance_destroy_fn && rain_cheap_install(table, instance_destroy_fn)))
+		rain_level = 0;
+	if (rain_level == 0 && instance_destroy_fn && (orig = gml_replace(table, "gml_Object_obj_rain_Create_0", rain_create)))
 		orig_rain_create = orig;
 
 	// Skipped by default (buttons are used on Vita); exp_touchui brings the virtual controls back
