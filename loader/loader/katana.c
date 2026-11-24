@@ -602,9 +602,17 @@ void katana_goto_check(void) {
 			if (vial) {
 				gml_rvalue result = {0, 0, 5}, a[3] = {{x, 0, 0}, {y, 0, 0}, *count};
 				gml_rvalue *args[3] = {&a[0], &a[1], &a[2]};
+				// smoke_create.c's Create loops: counted for the log line; exp_smokecreateab alternates them per burst
+				extern int smoke_create_ab, smoke_create_ab_off;
+				extern unsigned smoke_create_native, smoke_create_original;
+				unsigned native0 = smoke_create_native, original0 = smoke_create_original;
 				uint32_t t0 = sceKernelGetProcessTimeLow();
 				smokescreen(vial, vial, &result, 3, args);
 				uint32_t us = sceKernelGetProcessTimeLow() - t0;
+				debugPrintf("create_object: smoke burst Create loops %u native, %u original\n",
+					smoke_create_native - native0, smoke_create_original - original0);
+				if (smoke_create_ab)
+					smoke_create_ab_off = !smoke_create_ab_off;
 				gml_rvalue destroy_result = {0, 0, 5}, destroy_args[2] = {{(double)*(uint32_t *)((char *)vial + 0x80), 0, 0},
 					{0, 0, 0}};
 				instance_destroy(&destroy_result, NULL, NULL, 2, destroy_args);
@@ -1333,6 +1341,12 @@ static void patch_performance() {
 	if (!exp_flag("smokedraw0")) {
 		extern int smokedraw_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native smoke cloud Draw: %s\n", smokedraw_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
+	// The two warm-up loops of the smoke cloud Create (smoke_create.c, exact): ~100 YYC iterations per cloud, most of
+	// a smoke vial's 131-cloud burst frame. exp_smokecreate0 keeps the original loops.
+	if (!exp_flag("smokecreate0")) {
+		extern int smoke_create_install(void);
+		debugPrintf("native smoke cloud Create loops: %s\n", smoke_create_install() ? "installed" : "NOT installed");
 	}
 	// move_contact_solid without the redundant collision-tree work (move_contact_native.c, exact): the Dragon's dash
 	// aim calls it every frame and it walked the player pixel by pixel with tree updates and searches (1.2-3.6 ms/frame
