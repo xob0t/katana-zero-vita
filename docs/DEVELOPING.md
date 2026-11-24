@@ -129,6 +129,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | `controller_check_pressed_ext` | `input_native.c` | none | `exp_inputnative0` | | Exact native |
 | `controller_check` | `held_native.c` | none | `exp_heldnative0` | `exp_heldverify`, `exp_heldab` | Exact native |
 | On-screen touch controls hidden, yes/no prompt preselection | `katana.c`, `katana_menu.c` | none | `exp_touchui`; `exp_btnnodraw0` (buttons drawn with colour writes off instead) | | Port UI |
+| Controller prompts from the start (`global.gamepadMode` set after obj_global_controller's Create) | `gamepad_prompts.c` | `touchControls` (only with 0) | `exp_padprompts0` | | Port UI |
 | Stick deadzone | `gamepad.c` | `stickDeadzone` | `stickDeadzone=0` | | Input |
 
 ### Textures, VRAM, display

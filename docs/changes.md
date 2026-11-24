@@ -25,6 +25,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Rain is plain dark streaks and grey splashes, without the game's fading trails and lamp-lit drops | `rain=2` (`rain=0`: no rain) |
 | No end-of-level replay and no death rewind | `replays=1` |
 | No touch controls: the mobile build's virtual stick and buttons are gone, and the front touch screen does nothing | `touchControls=1` (`touchControls=2`: also drawn) |
+| The game starts in its controller mode instead of waiting for the first stick move: prompts show buttons from the first frame ("press attack to begin planning", not "tap screen"), and slashes follow the stick's exact angle as on PC | `touchControls=1` |
 
 **In some rooms**
 
