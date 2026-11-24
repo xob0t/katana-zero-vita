@@ -208,7 +208,7 @@ void loadConfig(const char *game) {
 			else if (strcmp("smokeRecord", buffer) == 0) { extern int smoke_record; smoke_record = value; }
 			else if (strcmp("lightArrayFast", buffer) == 0) { extern int light_array_fast_on; light_array_fast_on = value; }
 			else if (strcmp("trailLights", buffer) == 0) { extern int trail_lights; trail_lights = value; }
-			else if (strcmp("dancerGlow", buffer) == 0) { extern int dancer_glow; dancer_glow = value; }
+			else if (strcmp("dancerGlow", buffer) == 0 && value >= 0 && value <= 2) { extern int dancer_glow; dancer_glow = value; }
 			else if (strcmp("farRocketLights", buffer) == 0) { extern int far_rocket_lights; far_rocket_lights = value; }
 			else if (strcmp("coneShadows", buffer) == 0) { extern int cone_shadows; cone_shadows = value; }
 			else if (strcmp("psychEffects", buffer) == 0) { extern int psych_effects; psych_effects = value; }

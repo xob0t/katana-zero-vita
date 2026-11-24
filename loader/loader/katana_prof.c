@@ -955,6 +955,8 @@ void katana_prof_report(int frames) {
 	touch_controls_report(frames);
 	extern void psych_fix_report(int frames);
 	psych_fix_report(frames);
+	extern void dancer_glow_report(int frames);
+	dancer_glow_report(frames);
 	extern void glow_rest_report(int frames);
 	glow_rest_report(frames);
 	extern void corpse_rest_report(int frames);

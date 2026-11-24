@@ -30,7 +30,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 
 | Where | Change | Undo with |
 |---|---|---|
-| Club | No rim glow on the dancers | `dancerGlow=1` (in club_0 also `roomLighting=1`) |
+| Club | The dancers' rim glow is one outline per side with all the nearby lights mixed into it, not one per light; only the outline corners can differ | `dancerGlow=1` (in club_0 also `roomLighting=1`; `dancerGlow=0`: no glow) |
 | club_0, haunted_cart2 | No lamp glow on walls and floors | `roomLighting=1` |
 | Clotheslines | No coloured light on them | `ropeLights=1` |
 | Clotheslines | Ropes and their cloth move every other frame, and stop while more than 512 px outside the view | — |

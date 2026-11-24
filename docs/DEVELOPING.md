@@ -73,7 +73,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | `draw_sprite_recolored` light loop | `recolor_lights.c` | none | `exp_recolorlights0` | `exp_recolorlightsverify`, `exp_recolorlightsab`, `exp_recolorlightsprof` | Exact native |
 | Afterimage trails: far lights skipped, tint native | `trail_lights.c` | `trailLights` (afterimage tint) | `exp_traillights0`; `exp_traillightsnative0` keeps only the skipping | `exp_traillightscheck`, `exp_traillightsverify` | Exact; the tint off is visible |
 | `update_region` native | `region_native.c` | none | `exp_regionnative0` | `exp_regionverify` | Exact native |
-| Club dancers' rim glow off | `katana.c` (stub), `clubber_native.c` (native when on) | `dancerGlow` | `exp_clubbernative0` (GML when on) | | Visible; native exact |
+| Club dancers' rim glow, cheap by default | `dancer_glow.c` (cheap, 2), `katana.c` (stub for 0), `clubber_native.c` (native for 1) | `dancerGlow` | `exp_clubbernative0` (GML for 1) | `exp_dglowab`, `exp_dglowprof`, `exp_dglowcompare` | Visible (cheap: outline corners); native exact |
 | Clotheslines without light tint | `katana.c` (`cloth_instance_exists`) | `ropeLights` | none | | Visible |
 | Lighting tilemaps sized in tiles (game bug fix) | `katana.c` (`layer_tilemap_create_fixed`) | none | `exp_lightmapbig` | | Fix |
 
