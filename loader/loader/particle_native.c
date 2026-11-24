@@ -304,10 +304,25 @@ static void record(uint32_t kind, const uint32_t *w, uint32_t n) {
 	}
 	rec_n[p]++;
 }
-static void record_draw_self(void *self) {
-	uint32_t w[10] = {(uintptr_t)self, word(self, 0x88), word(self, 0x98)};
+// YYGML_draw_self: nothing without sprite data (Sprite_Data(+0x88)); otherwise it draws subimage GetImageIndex() plus
+// the animation wrap delta at +0x9c (Instance_Animate leaves it there) and clears that delta. Recorded: the sprite, the
+// effective subimage and the other draw fields; dry: the clear modelled.
+typedef void *ABI (*sprite_data_fn)(int sprite);
+typedef float ABI (*image_index_fn)(void *instance);
+static sprite_data_fn sprite_data;
+static image_index_fn get_image_index;
+static int record_draw_self(void *self) {
+	if (!sprite_data((int)word(self, 0x88))) {
+		uint32_t w[2] = {(uintptr_t)self, word(self, 0x88)};
+		record(5, w, 2); // draws nothing
+		return 0;
+	}
+	float subimg = get_image_index(self) + field(self, 0x9c);
+	uint32_t w[10] = {(uintptr_t)self, word(self, 0x88)};
+	memcpy(&w[2], &subimg, 4);
 	memcpy(&w[3], (const uint8_t *)self + 0xa0, 28);
 	record(1, w, 10);
+	return 1;
 }
 static void record_script(uint32_t kind, void *self, void *other, int argc, RV **args) {
 	uint32_t w[40] = {(uintptr_t)self, (uintptr_t)other, (uint32_t)argc};
@@ -342,7 +357,12 @@ static RV *ABI site_recolored(void *self, void *other, RV *result, int argc, RV 
 	return real_recolored(self, other, result, argc, args);
 }
 // The native's calls in its dry run (recorded, not made)
-static void ABI dry_draw_self(void *self) { record_draw_self(self); }
+static void ABI dry_draw_self(void *self) {
+	if (record_draw_self(self)) {
+		uint32_t zero = 0;
+		memcpy((uint8_t *)self + 0x9c, &zero, 4); // what the real draw_self does with the wrap delta
+	}
+}
 static void ABI dry_draw_ext(void *self, int sprite, float subimg, float x, float y, float xs, float ys, float rot,
 		int colour, float alpha) {
 	record_ext(self, sprite, subimg, x, y, xs, ys, rot, colour, alpha);
@@ -508,7 +528,9 @@ event_fn particle_native_install(event_fn orig) {
 		for (int k = 0; ok && k < 7; k++)
 			ok = bl_target(entry + sites[k] - EVENT) == expect[k] &&
 				(veneers[k] = veneer_to(entry + sites[k] - EVENT, wrappers[k])) != NULL;
-		if (ok) {
+		sprite_data = (sprite_data_fn)so_symbol(&yoyoloader_mod, "_Z11Sprite_Datai");
+		get_image_index = (image_index_fn)so_symbol(&yoyoloader_mod, "_ZN9CInstance13GetImageIndexEv");
+		if (ok && sprite_data && get_image_index) {
 			real_update_region = update_region;
 			real_draw_self = draw_self;
 			real_recolored = draw_sprite_recolored;
