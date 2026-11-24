@@ -230,6 +230,8 @@ void loadConfig(const char *game) {
 			else if (strcmp("asyncSave", buffer) == 0) { extern int asyncsave_cfg; asyncsave_cfg = value; }
 			else if (strcmp("rain", buffer) == 0 && value >= 0 && value <= 2) rain_level = value;
 			else if (strcmp("ropeLights", buffer) == 0) rope_lights = value;
+			// touchControls: 0 no touch controls (default), 1 touch works but the controls aren't drawn, 2 drawn
+			else if (strcmp("touchControls", buffer) == 0) { extern int touch_controls; touch_controls = value; }
 			else if (strcmp("renderRes", buffer) == 0) {
 				// Display modes the Vita scales up in hardware
 				if (value == 720) { screen_w = 720; screen_h = 408; }
@@ -239,6 +241,10 @@ void loadConfig(const char *game) {
 		}
 		fclose(config);
 	}
+	// exp_touchui (older test flag): the drawn touch controls, touchControls=2
+	extern int touch_controls;
+	if (exp_flag("touchui"))
+		touch_controls = 2;
 }
 
 extern void *GetPlatformInstance;
@@ -982,9 +988,14 @@ void main_loop() {
 			GamePadUpdate();
 		}
 		
+		// The front panel reaches the runner only with touch controls on (touchControls in yyl.cfg)
+		extern int touch_controls;
 		SceTouchData touch;
-		sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
-		for (int i = 0; i < SCE_TOUCH_MAX_REPORT; i++) {
+		if (touch_controls)
+			sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
+		else
+			touch.reportNum = 0;
+		for (int i = 0; touch_controls && i < SCE_TOUCH_MAX_REPORT; i++) {
 			if (i < touch.reportNum) {
 				int x = (int)((float)touch.report[i].x * (float)SCREEN_W / 1920.0f);
 				int y = (int)((float)touch.report[i].y * (float)SCREEN_H / 1088.0f);

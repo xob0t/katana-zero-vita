@@ -307,7 +307,8 @@ void katana_menu_install(gml_func_entry *table) {
 	event_func orig;
 	var_selection = (int *)so_symbol(&yoyoloader_mod, "g_VAR_selection");
 	var_default_select = (int *)so_symbol(&yoyoloader_mod, "g_VAR_defaultSelect");
-	if (var_selection && var_default_select && !exp_flag("touchui") &&
+	extern int touch_controls;
+	if (var_selection && var_default_select && touch_controls < 2 &&
 		(orig = gml_replace(table, "gml_Object_obj_interaction_Create_0", interaction_create_preselect)))
 		orig_interaction_create = orig;
 	debugPrintf("prompts: default choice highlight %s\n", orig_interaction_create ? "on" : "NOT hooked");
