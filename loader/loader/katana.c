@@ -848,6 +848,13 @@ void katana_late_install(void) {
 	}
 	extern int letter_timing;
 	letter_timing = exp_flag("lettertime");
+	// letter_native.c's cached variable lookups (exp_lettercache0: off); exp_letterab (debugMode) switches them
+	// and the native letter glyphs off in every other report window ([LETTERAB] line)
+	extern int letter_cache, letter_ab;
+	letter_cache = !exp_flag("lettercache0");
+	extern int letter_cache_verify;
+	letter_cache_verify = exp_flag("lettercacheverify") ? 1 + exp_flag("lettercacheverifyfault") : 0;
+	letter_ab = debugMode && exp_flag("letterab");
 	extern int letter_glow_ab, letter_glow_prof;
 	letter_glow_ab = debugMode && exp_flag("letterglowab");
 	letter_glow_prof = debugMode && exp_flag("letterglowprof");
@@ -1228,6 +1235,14 @@ static void patch_performance() {
 	if (!exp_flag("letternative0")) {
 		extern int letter_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native dialogue letters: %s\n", letter_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
+		// The letters' one-character draw_text_transformed without Split_TextBlock's heap work (letter_glyph.c), and
+		// letter_native.c's cached variable lookups. Vita, 500 MHz, in-run A/B (exp_letterab), unprofiled:
+		// chinatown_10 ending -14 us per letter, ~-1.0 ms/frame at 68 letters; stage timers: runner text call 23.5 ->
+		// native 8.5 us, letter Step 11.9 -> 8.0 us. exp_letterglyph0: the runner's builtin.
+		if (!exp_flag("letterglyph0")) {
+			extern int letter_glyph_install(void *(*hook)(uintptr_t entry, void *replacement));
+			debugPrintf("native letter glyphs: %s\n", letter_glyph_install(entry_hook) ? "installed" : "NOT installed");
+		}
 	}
 	// Exact natives of the view tests inside_screen_point / inside_screen (visibility_native.c): the runner's own
 	// global getters and comparisons without the GML temporaries. In-run A/B (exp_visab), process per frame:

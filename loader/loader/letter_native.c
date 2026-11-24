@@ -134,6 +134,44 @@ static RV *peek(const Table *t,int n) {
  }
  return NULL;
 }
+/* Cached variable lookups (letterCache, on with the native glyphs; exp_letterab switches both per report window).
+ * A variable's RV lives at a fixed address for the life of its owner: the map holds pointers, inserts and rehashes
+ * move only the pointers, and instance and global variables are never removed. So a found pointer stays the
+ * answer of peek() while the owner (address, and id for instances) and its map's entry array and mask are the
+ * same; a miss (NULL) is not cached, the variable may be created later. The kind checks still run on every use. */
+typedef struct { const void *owner; uint32_t id,mask; const uint8_t *entries; uint64_t have; RV *v[NVARS]; } VarLine;
+#define LINES 512
+static VarLine lines[LINES],parent_line,global_line;
+int letter_cache=1,letter_ab,letter_ab_off;
+unsigned letter_line_fills,letter_line_hits;
+int letter_cache_verify; unsigned letter_cache_checked,letter_cache_mismatch;
+static int caching(void) { return letter_cache&&!letter_ab_off; }
+static RV *cpeek(VarLine *l,const void *owner,uint32_t id,const Table *t,int n) {
+ if(l->owner!=owner||l->id!=id||l->entries!=t->entries||l->mask!=t->mask) {
+  l->owner=owner; l->id=id; l->entries=t->entries; l->mask=t->mask; l->have=0; ++letter_line_fills;
+ }
+ if((l->have>>n)&1) {
+  ++letter_line_hits;
+  /* exp_lettercacheverify: every hit checked against the lookup */
+  if(letter_cache_verify) { ++letter_cache_checked; if(peek(t,n)!=l->v[n]) ++letter_cache_mismatch; }
+  return l->v[n];
+ }
+ RV *v=peek(t,n);
+ /* exp_lettercacheverifyfault (negative control): alpha's line entry holds h_offset's RV */
+ if(v&&letter_cache_verify>1&&n==ALPHA&&peek(t,H_OFFSET)) { l->v[n]=peek(t,H_OFFSET); l->have|=1ull<<n; return v; }
+ if(v) { l->v[n]=v; l->have|=1ull<<n; } return v;
+}
+static VarLine *line_of(const void *self) { return &lines[word(self,0x80)&(LINES-1)]; }
+/* peek in self's / the parent's / the global map */
+static RV *speek(const void *self,const Table *t,int n) { return caching()?cpeek(line_of(self),self,word(self,0x80),t,n):peek(t,n); }
+static RV *ppeek(const void *parent,const Table *t,int n) { return caching()?cpeek(&parent_line,parent,word(parent,0x80),t,n):peek(t,n); }
+static RV *gpeek(const Table *t,int n) { return caching()?cpeek(&global_line,*global,0,t,n):peek(t,n); }
+/* The cached RVs of self, fetched ahead of the admission's dependent loads (they are spread over the heap). */
+static void prefetch(const void *self) {
+ const VarLine *l=line_of(self);
+ if(l->owner!=self||l->id!=word(self,0x80)) return;
+ for(uint64_t h=l->have;h;h&=h-1) __builtin_prefetch(l->v[__builtin_ctzll(h)]);
+}
 /* The IEEE high-word test is exactly finite abs(value)<2^30, including zeros
  * and subnormals; it also excludes infinities and every NaN representation. */
 static unsigned kind(const RV *v) { return v->kind&0x00ffffff; }
@@ -210,9 +248,29 @@ static void owned_write(void *owner,RV *dst,const RV *src) {
  pop_context(1);
 }
 static void set_builtin(void *self,int n,double x) { RV v=real(x); set_direct(self,(int)vars[n][1],(int)0x80000000,&v); }
-static RV *slot(void *self,int n) { return standard_get(self,(int)vars[n][1]); }
+/* The runner's lookup of a variable that exists (these are all admitted before use) returns the pointer its map
+ * holds: with caching, the cached lines answer it (exp_lettercacheverify checks each answer against the runner). */
+static RV *slot(void *self,int n) {
+ if(caching()) {
+  Table t;
+  if(table(self,&t)) {
+   RV *v=self==*global?cpeek(&global_line,self,0,&t,n):self==parent_line.owner?cpeek(&parent_line,self,word(self,0x80),&t,n):
+    cpeek(line_of(self),self,word(self,0x80),&t,n);
+   if(v) {
+    if(letter_cache_verify) { ++letter_cache_checked; if(standard_get(self,(int)vars[n][1])!=v) ++letter_cache_mismatch; }
+    return v;
+   }
+  }
+ }
+ return standard_get(self,(int)vars[n][1]);
+}
 static double value(void *self,int n) { return number(slot(self,n)); }
 static double height(void *self) { RV v=real(0); room_height(self,0,&v); return v.value; }
+typedef struct { RV *out; void *self,*other; RV *args; } TextCall;
+static void text_original(void *p) { TextCall *c=p; builtin(TEXT,c->out,c->self,c->other,6,c->args); }
+int letter_glyph_draw(const RV *args,void (*original)(void *),void *ctx);
+void letter_glyph_text_begin(void);
+void letter_glyph_text_end(uint64_t us);
 static void scaled_values(void *self,void *other,const RV *x,const RV *y,const RV *text,
                           const RV *sx,const RV *sy,const RV *angle) {
  Trace tr={*trace_start,"gml_Script_draw_text_scaled_transformed",2}; *trace_start=&tr;
@@ -226,7 +284,10 @@ static void scaled_values(void *self,void *other,const RV *x,const RV *y,const R
   RV offset=*off; multiply(&offset,fs); multiply(&offset,sy); add(args+1,&offset);
   multiply(args+3,fs); multiply(args+4,fs);
  }
- T0(t); builtin(TEXT,&out,self,other,6,args); T1(2,t); ++letter_native_draws;
+ /* letter_glyph.c draws the one-character string natively; else the runner's draw_text_transformed */
+ TextCall call={&out,self,other,args};
+ T0(t); if(!letter_glyph_draw(args,text_original,&call)) { letter_glyph_text_begin(); T0(o); text_original(&call); letter_glyph_text_end(letter_timing?sceKernelGetProcessTimeWide()-t0_o:0); }
+ T1(2,t); ++letter_native_draws;
  *trace_start=tr.previous;
 }
 static void scaled_call(void *self,void *other,double x,double y,const RV *text,const RV *scale,const RV *angle) {
@@ -240,10 +301,10 @@ static int scaled_admit(void *self,RV *out,int argc,RV **args) {
  REQUIRE(out);
  REQUIRE(argc>=6);
  REQUIRE(args);
- REQUIRE(numeric(peek(&g,FONT_SCALE)));
- REQUIRE(numeric(peek(&g,FONT_YOFFSET)));
- REQUIRE(out!=peek(&g,FONT_SCALE));
- REQUIRE(out!=peek(&g,FONT_YOFFSET));
+ REQUIRE(numeric(gpeek(&g,FONT_SCALE)));
+ REQUIRE(numeric(gpeek(&g,FONT_YOFFSET)));
+ REQUIRE(out!=gpeek(&g,FONT_SCALE));
+ REQUIRE(out!=gpeek(&g,FONT_YOFFSET));
  for(int i=0;i<6;++i) {
   REQUIRE(args[i]);
   REQUIRE(args[i]!=out);
@@ -273,14 +334,14 @@ static int font_fixed(const RV *a,int64_t n) {
  RV b=real(0); memcpy(&b,&n,8); b.kind=10; return font_cmp(a,&b);
 }
 static void font_call(const RV *input_rv,const Table *g) { double input=number(input_rv),fs=1,off=0,out=input;
-  int lang=(int)number(peek(g,GAME_LANGUAGE));
- if(font_cmp(input_rv,peek(g,FONT_CYRILLIC))!=0&&font_cmp(input_rv,peek(g,FONT_CASINO))!=0&&lang<=13) {
+  int lang=(int)number(gpeek(g,GAME_LANGUAGE));
+ if(font_cmp(input_rv,gpeek(g,FONT_CYRILLIC))!=0&&font_cmp(input_rv,gpeek(g,FONT_CASINO))!=0&&lang<=13) {
   if(lang==1||lang==2||lang==8||lang==9) {
-   out=lang==1?3:lang==2?4:number(peek(g,FONT_CHINESE));
-   if(font_cmp(input_rv,peek(g,FONT_TEXTBOX))==0) { off=lang==1?1:0; }
+   out=lang==1?3:lang==2?4:number(gpeek(g,FONT_CHINESE));
+   if(font_cmp(input_rv,gpeek(g,FONT_TEXTBOX))==0) { off=lang==1?1:0; }
    else if(font_fixed(input_rv,10)==0) { fs=2; off=lang==1?0:-2; }
-   else if(font_cmp(input_rv,peek(g,FONT_BIG))==0) { fs=4; off=lang==1?1:lang==2?-1:0; }
-   else if(font_cmp(input_rv,peek(g,FONT_VHS))==0) { fs=lang==1?.8:.9; off=lang==1?3:1; }
+   else if(font_cmp(input_rv,gpeek(g,FONT_BIG))==0) { fs=4; off=lang==1?1:lang==2?-1:0; }
+   else if(font_cmp(input_rv,gpeek(g,FONT_VHS))==0) { fs=lang==1?.8:.9; off=lang==1?3:1; }
    else if(font_fixed(input_rv,1)==0) { fs=lang>=8?1.3:1.2; off=lang>=8?-2:0; }
    else if(font_fixed(input_rv,2)==0) { off=0; }
    else if(font_fixed(input_rv,5)==0) { fs=2.5; off=lang==1?2:lang==2?-1:-2; }
@@ -291,23 +352,23 @@ static void font_call(const RV *input_rv,const Table *g) { double input=number(i
    else if(lang>=8) off=-1;
   } else {
    if(lang==0&&font_fixed(input_rv,9)==0) off=-2;
-   else if(lang!=0&&font_cmp(input_rv,peek(g,FONT_TEXTBOX))==0) { /* unchanged */ }
-   else if(lang!=0&&font_fixed(input_rv,10)==0) { if(lang==7) { out=number(peek(g,FONT_XIROD)); off=-1; } else off=1; }
-   else if(lang!=0&&font_cmp(input_rv,peek(g,FONT_BIG))==0) off=-3;
-   else if(font_cmp(input_rv,peek(g,FONT_VHS))==0) off=2;
+   else if(lang!=0&&font_cmp(input_rv,gpeek(g,FONT_TEXTBOX))==0) { /* unchanged */ }
+   else if(lang!=0&&font_fixed(input_rv,10)==0) { if(lang==7) { out=number(gpeek(g,FONT_XIROD)); off=-1; } else off=1; }
+   else if(lang!=0&&font_cmp(input_rv,gpeek(g,FONT_BIG))==0) off=-3;
+   else if(font_cmp(input_rv,gpeek(g,FONT_VHS))==0) off=2;
    else if(lang==0&&font_fixed(input_rv,10)==0) off=1;
-   else if(font_cmp(input_rv,peek(g,FONT_BIG))==0) off=-3;
-   else if(lang!=0&&font_fixed(input_rv,1)==0) { out=number(peek(g,FONT_TEXTBOX)); fs=lang==7?1.4:1.2; }
-   else if(lang!=0&&font_fixed(input_rv,2)==0) { out=number(peek(g,FONT_TEXTBOX)); fs=lang==7?1:lang==11?.8:.9; }
-   else if(lang!=0&&font_fixed(input_rv,6)==0) { out=number(peek(g,FONT_TEXTBOX)); fs=.64; }
-   else if(lang==7&&font_fixed(input_rv,5)==0) { out=number(peek(g,FONT_VCR_SMALL)); fs=1.4; }
-   else if(lang==7&&font_fixed(input_rv,7)==0) out=number(peek(g,FONT_VCR_SMALL));
-   else if(lang!=0&&font_fixed(input_rv,8)==0) { out=number(peek(g,FONT_VCR_SMALL)); fs=lang==7?1.5:1; }
-   else if(font_fixed(input_rv,9)==0) { if(lang!=0) out=number(peek(g,FONT_VCR)); off=-2; }
-   else if(font_fixed(input_rv,10)==0) { if(lang==7) { out=number(peek(g,FONT_XIROD)); off=-1; } else off=1; }
+   else if(font_cmp(input_rv,gpeek(g,FONT_BIG))==0) off=-3;
+   else if(lang!=0&&font_fixed(input_rv,1)==0) { out=number(gpeek(g,FONT_TEXTBOX)); fs=lang==7?1.4:1.2; }
+   else if(lang!=0&&font_fixed(input_rv,2)==0) { out=number(gpeek(g,FONT_TEXTBOX)); fs=lang==7?1:lang==11?.8:.9; }
+   else if(lang!=0&&font_fixed(input_rv,6)==0) { out=number(gpeek(g,FONT_TEXTBOX)); fs=.64; }
+   else if(lang==7&&font_fixed(input_rv,5)==0) { out=number(gpeek(g,FONT_VCR_SMALL)); fs=1.4; }
+   else if(lang==7&&font_fixed(input_rv,7)==0) out=number(gpeek(g,FONT_VCR_SMALL));
+   else if(lang!=0&&font_fixed(input_rv,8)==0) { out=number(gpeek(g,FONT_VCR_SMALL)); fs=lang==7?1.5:1; }
+   else if(font_fixed(input_rv,9)==0) { if(lang!=0) out=number(gpeek(g,FONT_VCR)); off=-2; }
+   else if(font_fixed(input_rv,10)==0) { if(lang==7) { out=number(gpeek(g,FONT_XIROD)); off=-1; } else off=1; }
   }
  }
- scalar_write(peek(g,FONT_SCALE),fs); scalar_write(peek(g,FONT_YOFFSET),off);
+ scalar_write(gpeek(g,FONT_SCALE),fs); scalar_write(gpeek(g,FONT_YOFFSET),off);
  RV selected=real(out); set_font(integer_value(&selected,0));
 }
 static int font_admit(RV *out,int argc,RV **args,Table *cached) {
@@ -318,7 +379,7 @@ static int font_admit(RV *out,int argc,RV **args,Table *cached) {
  REQUIRE(args);
  REQUIRE(font_number(args[0]));
  REQUIRE(args[0]!=out);
- RV *fs=peek(&g,FONT_SCALE),*yo=peek(&g,FONT_YOFFSET),*language=peek(&g,GAME_LANGUAGE);
+ RV *fs=gpeek(&g,FONT_SCALE),*yo=gpeek(&g,FONT_YOFFSET),*language=gpeek(&g,GAME_LANGUAGE);
  REQUIRE(numeric(fs));
  REQUIRE(numeric(yo));
  REQUIRE(numeric(language));
@@ -331,7 +392,7 @@ static int font_admit(RV *out,int argc,RV **args,Table *cached) {
  REQUIRE(args[0]!=fs);
  REQUIRE(args[0]!=yo);
  for(int i=FONT_CYRILLIC;i<=GAME_LANGUAGE;++i) {
-  RV *v=i==GAME_LANGUAGE?language:peek(&g,i);
+  RV *v=i==GAME_LANGUAGE?language:gpeek(&g,i);
   REQUIRE(i==GAME_LANGUAGE||font_number(v));
   REQUIRE(v!=fs);
   REQUIRE(v!=yo);
@@ -383,7 +444,7 @@ static int collect(void *self,State *s,const int *list,size_t count) {
  Table t; if(!table(self,&t)) return 0;
  uint32_t seen[2]={0,0};
  for(size_t i=0;i<count;++i) {
-  int n=list[i]; s->v[n]=peek(&t,n); if(!field_admit(n,s->v[n])) return 0;
+  int n=list[i]; s->v[n]=speek(self,&t,n); if(!field_admit(n,s->v[n])) return 0;
   unsigned h=((uintptr_t)s->v[n]>>4)&63; uint32_t bit=1u<<(h&31);
   if(seen[h>>5]&bit) for(size_t j=0;j<i;++j) REQUIRE(s->v[n]!=s->v[list[j]]);
   seen[h>>5]|=bit;
@@ -391,7 +452,7 @@ static int collect(void *self,State *s,const int *list,size_t count) {
  return 1;
 }
 static int parent_admit(void *self,State *s) {
- Table t,p; if(!table(self,&t)) return 0; RV *v=peek(&t,PARENT); REQUIRE(v);
+ Table t,p; if(!table(self,&t)) return 0; RV *v=speek(self,&t,PARENT); REQUIRE(v);
  REQUIRE(kind(v)==15);
  REQUIRE(word(v,4)==0x04000001);
  REQUIRE(word(v,0)>=100000);
@@ -413,10 +474,10 @@ static int user_admit(void *self,State *s) {
  Table t,p; if(!table(self,&t)) return 0;
  if(!table(s->parent,&p)) return 0;
  REQUIRE(string_value(peek(&t,LETTER)));
- REQUIRE(numeric(peek(&p,TXT_GLOW_ALPHA)));
+ REQUIRE(numeric(ppeek(s->parent,&p,TXT_GLOW_ALPHA)));
  Table g; if(!table(*global,&g)) return 0;
- REQUIRE(numeric(peek(&g,FONT_SCALE)));
- REQUIRE(numeric(peek(&g,FONT_YOFFSET)));
+ REQUIRE(numeric(gpeek(&g,FONT_SCALE)));
+ REQUIRE(numeric(gpeek(&g,FONT_YOFFSET)));
  return 1;
 }
 static void user_call(void *self,void *other,State *s) {
@@ -478,16 +539,16 @@ static int step_admit(void *self,State *s) {
  Table g; if(!common()) return 0;
  if(!collect(self,s,list,sizeof(list)/sizeof(*list))) return 0;
  if(!table(*global,&g)) return 0;
- REQUIRE(numeric(peek(&g,FR)));
- REQUIRE(numeric(peek(&g,TEXT_SPEED)));
+ REQUIRE(numeric(gpeek(&g,FR)));
+ REQUIRE(numeric(gpeek(&g,TEXT_SPEED)));
  Table t; if(!table(self,&t)) return 0;
- RV *dst=peek(&t,SPD_FR);
+ RV *dst=speek(self,&t,SPD_FR);
  if(dst) {
   REQUIRE(numeric(dst)||kind(dst)==5);
   for(size_t i=0;i<sizeof(list)/sizeof(*list);++i) REQUIRE(dst!=s->v[list[i]]);
  }
  /* A nonpositive fr can make the original setup loop infinite. Delegate. */
- REQUIRE(number(peek(&g,FR))>0);
+ REQUIRE(number(gpeek(&g,FR))>0);
  REQUIRE(number(s->v[OSC_DELAY])<=4096);
  return 1;
 }
@@ -496,8 +557,11 @@ static int step_admit(void *self,State *s) {
 void ABI __attribute__((naked,target("arm"))) letter_native_step(void *self __attribute__((unused)),void *other __attribute__((unused))) {
  __asm__ volatile("ldr r2, [sp, #-104]\n push {r0, r1, r2, lr}\n bl letter_native_step_impl\n cmp r0, #0\n pop {r0, r1, r2, lr}\n str r2, [sp, #-104]\n bxne lr\n ldr r12, =original_step\n ldr r12, [r12]\n bx r12\n .ltorg");
 }
+static int letter_step(void *self,uint32_t expression_flags);
 int ABI __attribute__((used,noinline)) letter_native_step_impl(void *self,void *other,uint32_t expression_flags) {
- (void)other;
+ (void)other; if(caching()) prefetch(self); T0(s); int r=letter_step(self,expression_flags); T1(5,s); return r;
+}
+static int letter_step(void *self,uint32_t expression_flags) {
  State s; if(!step_admit(self,&s)) { ++letter_native_fallbacks[STEP_HOOK]; return 0; }
  ++letter_native_hits[STEP_HOOK]; Trace tr={*trace_start,"gml_Object_obj_letter_Step_0",1}; *trace_start=&tr;
  double fr=value(*global,FR),text_speed=value(*global,TEXT_SPEED);
@@ -561,6 +625,7 @@ typedef struct { void *self; uint32_t id,mask; const uint8_t *entries; RV *v[DRA
 static SlotLine slot_cache[SLOT_CACHE];
 unsigned letter_slot_miss[5];
 static int collect_draw(void *self,State *s) {
+ if(caching()) return collect(self,s,draw_list,DRAW_LIST);
  Table t; if(!table(self,&t)) return 0;
  uint32_t id=word(self,0x80); SlotLine *c=&slot_cache[id&(SLOT_CACHE-1)]; /* letters get consecutive ids */
  if(c->self==self&&c->id==id&&c->entries==t.entries&&c->mask==t.mask) {
@@ -582,22 +647,23 @@ static int draw_admit(void *self,State *s,Table *fonts) {
  Table t,p,g; if(!table(self,&t)) return 0;
  if(!table(s->parent,&p)) return 0;
  if(!table(*global,&g)) return 0;
- REQUIRE(string_value(peek(&t,LETTER)));
- REQUIRE(string_value(peek(&t,GARBLE_LETTER)));
- REQUIRE(numeric(peek(&g,FR)));
- REQUIRE(numeric(peek(&p,STATE)));
- REQUIRE(numeric(peek(&p,GOTO_ID)));
- REQUIRE(numeric(peek(&p,HAS_CHOICE)));
+ REQUIRE(string_value(speek(self,&t,LETTER)));
+ REQUIRE(string_value(speek(self,&t,GARBLE_LETTER)));
+ REQUIRE(numeric(gpeek(&g,FR)));
+ REQUIRE(numeric(ppeek(s->parent,&p,STATE)));
+ REQUIRE(numeric(ppeek(s->parent,&p,GOTO_ID)));
+ REQUIRE(numeric(ppeek(s->parent,&p,HAS_CHOICE)));
  REQUIRE(isfinite(coordinate(self,0xe8))); /* vspeed (GV_Vspeed); 0xdc is gravity_direction */
  REQUIRE(isfinite(coordinate(self,0xd4)));
  REQUIRE(isfinite(coordinate(self,0xd0)));
- REQUIRE(numeric(peek(&p,TXT_GLOW_ALPHA)));
+ REQUIRE(numeric(ppeek(s->parent,&p,TXT_GLOW_ALPHA)));
  REQUIRE(vars[ROOM_HEIGHT][1]<500);
  REQUIRE(word(builtin_variables,16*vars[ROOM_HEIGHT][1]+4)==(uintptr_t)room_height);
  RV font=*s->v[FONT],out=real(0); RV *argv[1]={&font}; if(!font_admit(&out,1,argv,fonts)) return 0;
  return 1;
 }
 static void letter_native_draw_impl(void *self,void *other) {
+ if(caching()) prefetch(self);
  T0(a); State s; Table fonts; int admitted=draw_admit(self,&s,&fonts); T1(1,a);
  if(!admitted) { ++letter_native_fallbacks[DRAW_HOOK]; original_draw(self,other); return; }
  ++letter_native_hits[DRAW_HOOK]; Trace tr={*trace_start,"gml_Object_obj_letter_Draw_0",1}; *trace_start=&tr;
@@ -676,8 +742,9 @@ static void letter_native_draw_impl(void *self,void *other) {
  }
  tr.line=125; set_alpha(1); *trace_start=tr.previous;
 }
+unsigned letter_draw_window;
 void ABI letter_native_draw(void *self,void *other) {
- T0(d); letter_native_draw_impl(self,other); T1(0,d);
+ ++letter_draw_window; T0(d); letter_native_draw_impl(self,other); T1(0,d);
 }
 int letter_native_install(void *(*rx_alloc)(size_t)) {
  if(installed||!rx_alloc) return 0;
