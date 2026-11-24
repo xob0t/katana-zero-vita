@@ -23,8 +23,9 @@
  *   - time_out: the countdown stays above 100 after this tick's step (the blink and the instance_destroy run the Step).
  * User event 14 for a body is chest_hit/roll_hit sounds at given frames of the hurt-ground and fall sprites (each test
  * needs animation_float == 0), animation_code() and ai_set_hair() when has_hair. When chest_hit and roll_hit are
- * already bool false, animation_float isn't 0 and has_hair is false, the event is only animation_code(), which runs
- * here through the real script (any body, moving or not).
+ * already bool false and no sound frame is due (sprite, animation_index and animation_float == 0, the table below),
+ * the event is only animation_code() and, with has_hair,
+ * ai_set_hair(), which run here through the real scripts (any body, moving or not).
  *
  * exp_corpserest0 runs the original events. Debug: exp_corpserestverify runs both versions of each skipped event on the
  * same starting state (the variables, CInstance fields 0x84-0x150 and the random number state put back in between)
@@ -62,7 +63,7 @@ static free_fn yy_free;
 static builtin_var_fn gv_x, gv_y, gv_sprite;
 static builtin_fn instance_exists_fn;
 static find_fn object_find, sprite_find;
-static gml_script_fn ground_meeting, begin_animation, animation_code;
+static gml_script_fn ground_meeting, begin_animation, animation_code, ai_set_hair;
 static const double *epsilon;
 static const gml_rvalue *const_speed, *const_false; // the Step's begin_animation constants: 0.3 and false
 static uint32_t *rng_state, *rng_index;
@@ -77,6 +78,15 @@ CR_VARS(CR_VAR_DECL)
 static event_func orig_step, orig_u14;
 static int installed, resolved, disabled, verify, fault, ab, ab_off, classify;
 static int obj_explosion = -1, spr_corpsemask = -1;
+// User event 14's sound frames: chest_hit (one frame) on the hurt-ground sprites, roll_hit (two) on the fall sprites
+static struct { const char *name; int frame[2]; int sprite; } sound_frames[] = {
+	{"spr_gangsterhurtground", {10, 10}}, {"spr_pomp_hurtground", {11, 11}}, {"spr_shotgun_hurtground", {10, 10}},
+	{"spr_grunt_hurtground", {12, 12}}, {"spr_sci_hurtground", {9, 9}},
+	{"spr_gangsterfall", {1, 7}}, {"spr_pomp_fall", {1, 7}}, {"spr_shotgun_stairfall", {0, 6}}, {"spr_grunt_fall", {3, 10}},
+	{"spr_sci_stairfall", {0, 6}},
+};
+#define SOUND_FRAMES (int)(sizeof(sound_frames) / sizeof(*sound_frames))
+static int sound_frames_found;
 
 // Debug counters (per report window unless noted)
 static unsigned n_step_fast, n_step_orig, n_u14_fast, n_u14_orig;
@@ -161,8 +171,12 @@ static int resolve(void) {
 	memcpy(&speed_bits, &const_speed->val, 8);
 	int consts = KIND(const_speed) == 0 && const_speed->val == 0.3 && KIND(const_false) == 13 && const_false->val == 0;
 	resolved = obj_explosion >= 0 && spr_corpsemask >= 0 && consts ? 1 : -1;
-	debugPrintf("bodies at rest: obj_explosion %d, spr_corpsemask %d, Step constants %s -> %s\n", obj_explosion,
-		spr_corpsemask, consts ? "ok" : "UNEXPECTED", resolved > 0 ? "skipping" : "OFF");
+	sound_frames_found = 1;
+	for (int i = 0; i < SOUND_FRAMES; i++)
+		sound_frames_found &= (sound_frames[i].sprite = sprite_find(sound_frames[i].name)) >= 0;
+	debugPrintf("bodies at rest: obj_explosion %d, spr_corpsemask %d, Step constants %s, sound sprites %s -> %s\n",
+		obj_explosion, spr_corpsemask, consts ? "ok" : "UNEXPECTED", sound_frames_found ? "found" : "NOT all found",
+		resolved > 0 ? "skipping" : "OFF");
 	return resolved > 0;
 }
 
@@ -277,21 +291,41 @@ static void step_fast(void *self, void *other, const rest_plan *p) {
 		yy_free(&res2);
 }
 
-// User event 14 reduces to animation_code() when no sound can play and there's no hair
+// User event 14 reduces to animation_code() (and ai_set_hair() with has_hair) when no sound can play.
+// 1: plain without hair, 2: plain with hair, 0: run the event
 static int u14_plain(void *self) {
 	NO(!bool_false(var(self, v_chest_hit)) || !bool_false(var(self, v_roll_hit)));
-	int r = compare_real(var(self, v_animation_float), 0); // every sound test needs animation_float == 0
-	NO(r == 0 || r == 2);
-	NO(truth(var(self, v_has_hair)) != 0);
-	return 1;
+	// Every sound test is `sprite_index == spr && animation_index == frame && animation_float == 0`
+	int r = compare_real(var(self, v_animation_float), 0);
+	NO(r == 2);
+	if (r == 0) {
+		NO(!sound_frames_found);
+		int sprite = *(int *)((char *)self + 0x88);
+		gml_rvalue *index = var(self, v_animation_index);
+		for (int i = 0; i < SOUND_FRAMES; i++) {
+			if (sprite != sound_frames[i].sprite)
+				continue;
+			int a = compare_real(index, sound_frames[i].frame[0]), b = compare_real(index, sound_frames[i].frame[1]);
+			NO(a == 0 || b == 0 || a == 2 || b == 2);
+		}
+	}
+	int hair = truth(var(self, v_has_hair));
+	NO(hair < 0);
+	return hair ? 2 : 1;
 }
 
-static void u14_fast(void *self, void *other) {
+static void call_script(gml_script_fn script, void *self, void *other) {
 	gml_rvalue res = {0, 0, 5};
 	void *args[1] = {NULL};
-	animation_code(self, other, &res, 0, args);
+	script(self, other, &res, 0, args);
 	if (REFCOUNTED(KIND(&res)))
 		yy_free(&res);
+}
+
+static void u14_fast(void *self, void *other, int plain) {
+	call_script(animation_code, self, other);
+	if (plain == 2) // the hair test reads has_hair after animation_code; nothing there writes it
+		call_script(ai_set_hair, self, other);
 }
 
 // exp_corpserestverify: a snapshot of what an event can change on the body
@@ -412,10 +446,10 @@ static void verify_step(void *self, void *other, const rest_plan *p) {
 		verify_step_bad++;
 }
 
-static void verify_u14_event(void *self, void *other) {
+static void verify_u14_event(void *self, void *other, int plain) {
 	take(self, &snap_before);
 	if (fault != 2)
-		u14_fast(self, other);
+		u14_fast(self, other, plain);
 	take(self, &snap_fast);
 	if (!put_back(self, &snap_before)) {
 		verify_skipped++;
@@ -462,12 +496,13 @@ static void corpse_step(void *self, void *other) {
 
 static void corpse_u14(void *self, void *other) {
 	uint32_t t0 = debugMode ? sceKernelGetProcessTimeLow() : 0;
-	if (active() && u14_plain(self)) {
+	int plain;
+	if (active() && (plain = u14_plain(self))) {
 		n_u14_fast++;
 		if (verify)
-			verify_u14_event(self, other);
+			verify_u14_event(self, other, plain);
 		else
-			u14_fast(self, other);
+			u14_fast(self, other, plain);
 	} else if (classify && resolve()) {
 		int plain = u14_plain(self);
 		uint32_t c0 = sceKernelGetProcessTimeLow();
@@ -541,6 +576,7 @@ void corpse_rest_install(gml_func_entry *table) {
 	ground_meeting = (gml_script_fn)SYM("_Z25gml_Script_ground_meetingP9CInstanceS0_R8YYRValueiPPS1_");
 	begin_animation = (gml_script_fn)SYM("_Z26gml_Script_begin_animationP9CInstanceS0_R8YYRValueiPPS1_");
 	animation_code = (gml_script_fn)SYM("_Z25gml_Script_animation_codeP9CInstanceS0_R8YYRValueiPPS1_");
+	ai_set_hair = (gml_script_fn)SYM("_Z22gml_Script_ai_set_hairP9CInstanceS0_R8YYRValueiPPS1_");
 	epsilon = (const double *)SYM("g_GMLMathEpsilon");
 	const_speed = (const gml_rvalue *)SYM("gs_constArg7_9FDBDD1B");
 	const_false = (const gml_rvalue *)SYM("gs_constFalse");
@@ -548,7 +584,7 @@ void corpse_rest_install(gml_func_entry *table) {
 	rng_index = (uint32_t *)SYM("g_RndIndex");
 	room_maxid = (int *)SYM("room_maxid");
 	int ok = vars && read_var && yy_compare && yy_bool && yy_free && gv_x && gv_y && gv_sprite && instance_exists_fn &&
-		object_find && sprite_find && ground_meeting && begin_animation && animation_code && epsilon && const_speed &&
+		object_find && sprite_find && ground_meeting && begin_animation && animation_code && ai_set_hair && epsilon && const_speed &&
 		const_false && rng_state && rng_index && room_maxid;
 	if (ok) {
 		orig_step = gml_replace(table, "gml_Object_obj_enemycorpse_Step_0", corpse_step);
