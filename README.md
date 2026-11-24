@@ -38,6 +38,10 @@ Some of the speedups change what you see or play:
 
 Each can be undone in `ux0:data/gms/katanazero/yyl.cfg`; [docs/compromises.md](docs/compromises.md) lists them all.
 
+Enemies attack on the PC version's timing. The Android release delays their first attack and every shot by a few
+frames, which also hides the bullet in the first room's tutorial slow-mo. **GRAPHICS → ENEMY TIMING: ANDROID**
+(or `enemyTiming=1`) brings back the Android timing.
+
 ## Building (Windows, no WSL)
 
 Requires [uv](https://docs.astral.sh/uv/), Git and MinGW `mingw32-make` on PATH. uv provides Python, CMake and the

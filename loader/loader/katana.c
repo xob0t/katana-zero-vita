@@ -1513,6 +1513,8 @@ static void patch_performance() {
 	if (fps_mode_ignored)
 		debugPrintf("yyl.cfg fpsMode/fps30: no longer supported (the 30 fps mode was removed), ignored\n");
 	enemy_half_rate_install(table);
+	extern void enemy_timing_install(gml_func_entry *table);
+	enemy_timing_install(table); // before options_menu_install: its ENEMY TIMING row needs it
 	options_menu_install(table);
 	extern void fx_rate_install(gml_func_entry *table);
 	fx_rate_install(table);
