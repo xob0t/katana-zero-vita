@@ -70,25 +70,39 @@ With `debugMode=1` in `yyl.cfg` the log goes to `ux0:data/gms/shared/yyl.log`.
 The game's own controller layout. L and R act as the triggers: L is slow motion, R is roll. The rear touch
 panel is unused.
 
-## Building (Windows, Git Bash, no WSL)
+## Building (Windows, no WSL)
 
-Requires `gh`, CMake, MinGW `mingw32-make` and Python with Pillow on PATH.
+Requires [uv](https://docs.astral.sh/uv/), Git and MinGW `mingw32-make` on PATH. uv provides Python, CMake and the
+Python packages (`pyproject.toml`). From the repository root, in any shell:
 
-```bash
-bash scripts/setup-sdk.sh    # softfp VitaSDK into C:/vitasdk-softfp
-bash scripts/setup-deps.sh   # vitaGL (+ patches/vitagl.patch), openal-soft, vitaShaRK, SceShaccCgExt, opensles
-python scripts/make_livearea.py <Katana ZERO APK>   # bubble icon, LiveArea and start gate art
-bash scripts/build.sh        # build/app/KatanaZero.vpk and build/loader/loader2.bin
+```
+uv run build.py "<Katana ZERO APK>"
 ```
 
-`make_livearea.py` builds the LiveArea images from the game's title screen art in your APK, into `livearea/`.
-They are game art, so they are not committed, and the app build stops if they are missing.
+This builds `build/app/KatanaZero.vpk` and `build/loader/loader2.bin` (the YoYo Loader drop-in loader). The first run
+also:
+
+- installs the softfp VitaSDK into `C:/vitasdk-softfp` (pinned downloads, checked by sha256)
+- builds vitaGL (with `patches/vitagl.patch`), openal-soft, vitaShaRK, SceShaccCgExt and opensles in `C:/vitasdk-build`
+- draws the bubble icon, LiveArea and start gate art from the title screen art in your APK into `livearea/`. It is
+  game art, so it is not committed.
+
+Later runs skip finished steps and rebuild only what changed. The dependencies are rebuilt when a patch, a pin or a
+dependency checkout changes, or their installed libraries were replaced. Once the art exists, the APK argument is
+optional.
+
+`--game-apk` also makes `build/game.apk` (step 2 below). `--sdk` and `--deps-dir` choose other locations. `--deps`
+forces a dependency rebuild, `--no-deps` leaves the installed ones alone (e.g. an experimental vitaGL), and `--check`
+only reports what a run would do. On Linux, set `VITASDK` (or `--sdk`) to
+a softfp VitaSDK, such as the `atamanenko/vitasdk-softfp` container CI uses, and have `make` instead of
+`mingw32-make`. In Git Bash, `. scripts/env.sh` sets up the same environment to run `cmake --build build/app` or the
+toolchain by hand.
 
 To install a source build without the web builder:
 
 1. Install `build/app/KatanaZero.vpk` (title ID `KTNZ00001`). It contains only the loader.
-2. Build the game APK with `python scripts/prepare_apk.py <Katana ZERO 1.1.10 APK> game.apk`
-   (needs `pip install lz4 pyelftools`) and copy it to `ux0:data/gms/katanazero/game.apk`. This also redraws the
+2. Build the game APK with `uv run build.py --game-apk "<Katana ZERO 1.1.10 APK>"` and copy `build/game.apk` to
+   `ux0:data/gms/katanazero/game.apk`. This also redraws the
    Xbox button prompts as Vita buttons (`--xbox-glyphs` keeps the originals). A `game.apk` inside the app, as the web
    builder makes, takes precedence over this one.
 
