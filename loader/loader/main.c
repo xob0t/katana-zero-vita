@@ -315,6 +315,16 @@ int read_file_range(const char *path, uint64_t offset, uint8_t *buf, uint64_t si
 	return sceIoClose(fd) >= 0 && done == size ? 0 : -1;
 }
 
+// libyoyo.so's image until its segments are copied: the newlib heap's untouched tail, lent out (sbrk.c), so the 80 MB
+// leave no hole under game.droid (apk_prefetch.c mallocs it meanwhile). malloc if the tail is short or with
+// exp_sobufmalloc (the old layout). newlib_heap_return_tail(p) or free(p) after.
+void *newlib_heap_borrow_tail(size_t size);
+int newlib_heap_return_tail(void *p);
+static uint8_t *so_buffer_alloc(size_t size) {
+	uint8_t *p = exp_flag("sobufmalloc") ? NULL : newlib_heap_borrow_tail(size);
+	return p ? p : (uint8_t *)malloc(size);
+}
+
 static int read_runner_entry(unzFile apk, void *buffer, size_t size) {
 	size_t done = 0;
 	while (done < size) {
@@ -1665,10 +1675,15 @@ static const char *const alloc_names[6] = { "malloc", "free", "realloc", "calloc
 	return r;
 // Allocations of a texture page's size (the runner decodes each page into one) go through page_reserve.c: its held
 // decode block when the heap has no hole, and no forced garbage collection with a scene open
+// (and game.droid's Alloc gets the block apk_prefetch.c inflated it into)
 void *page_reserve_runner_malloc(size_t n);
 int page_reserve_runner_free(void *p, int keep);
+void *apk_prefetch_runner_malloc(size_t n);
 static inline void *runner_malloc(size_t n) {
-	return n >= 4 * 1024 * 1024 ? page_reserve_runner_malloc(n) : vglMalloc(n);
+	if (n < 4 * 1024 * 1024)
+		return vglMalloc(n);
+	void *p = apk_prefetch_runner_malloc(n);
+	return p ? p : page_reserve_runner_malloc(n);
 }
 static inline void runner_free(void *p) {
 	if (!page_reserve_runner_free(p, 1))
@@ -3689,7 +3704,7 @@ void *pthread_main(void *arg) {
 		if (so_stat.st_size <= 0 || so_stat.st_size > INT_MAX)
 			fatal_error("Error: invalid size for %s.", so_override);
 		so_size = so_stat.st_size;
-		so_buffer = (uint8_t *)malloc(so_size);
+		so_buffer = so_buffer_alloc(so_size);
 		if (!so_buffer || read_file_range(so_override, 0, so_buffer, so_size))
 			fatal_error("Error: could not read %s.", so_override);
 	} else {
@@ -3699,7 +3714,7 @@ void *pthread_main(void *arg) {
 			unzOpenCurrentFile(apk_file) != UNZ_OK)
 			fatal_error("Error: could not open libyoyo.so in %s.", apk_path);
 		so_size = file_info.uncompressed_size;
-		so_buffer = (uint8_t *)malloc(so_size);
+		so_buffer = so_buffer_alloc(so_size);
 		if (!so_buffer)
 			fatal_error("Error: not enough memory for libyoyo.so (%u bytes).", (unsigned)so_size);
 		int ok;
@@ -3730,7 +3745,8 @@ void *pthread_main(void *arg) {
 	res = so_mem_load(&yoyoloader_mod, so_buffer, so_size, LOAD_ADDRESS + 0x1000000);
 	if (res < 0)
 		fatal_error("Error: could not load libyoyo.so from %s (0x%08X).", runner_source, res);
-	free(so_buffer);
+	if (!newlib_heap_return_tail(so_buffer))
+		free(so_buffer);
 	boot_mark("libyoyo.so segments copied");
 	
 	// Loading config file

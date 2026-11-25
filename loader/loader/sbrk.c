@@ -10,6 +10,8 @@ static int _newlib_heap_memblock;
 unsigned _newlib_heap_size;
 static char *_newlib_heap_base;
 static char *_newlib_heap_end, *_newlib_heap_cur;
+// What sbrk may hand out up to: _newlib_heap_end, or below a tail lent out by newlib_heap_borrow_tail
+static char *_newlib_heap_limit;
 static SceKernelLwMutexWork _newlib_sbrk_mutex;
 
 void * _sbrk_r(struct _reent *reent, ptrdiff_t incr)
@@ -18,7 +20,7 @@ void * _sbrk_r(struct _reent *reent, ptrdiff_t incr)
 		goto fail;
 	// Compare sizes, not pointers: _newlib_heap_cur + incr wraps past 4 GB for a request near 2 GB (the heap sits
 	// above 0x80000000), and the wrapped pointer passed the old test, handing malloc memory outside the heap
-	if (!_newlib_heap_base || incr >= _newlib_heap_end - _newlib_heap_cur || incr < _newlib_heap_base - _newlib_heap_cur)
+	if (!_newlib_heap_base || incr >= _newlib_heap_limit - _newlib_heap_cur || incr < _newlib_heap_base - _newlib_heap_cur)
 	{
 		sceKernelUnlockLwMutex(&_newlib_sbrk_mutex, 1);
 fail:
@@ -88,6 +90,7 @@ void _init_vita_heap(void)
 		goto failure;
 	}
 	_newlib_heap_end = _newlib_heap_base + _newlib_heap_size;
+	_newlib_heap_limit = _newlib_heap_end;
 	_newlib_heap_cur = _newlib_heap_base;
 
 	return;
@@ -120,4 +123,34 @@ size_t newlib_heap_used(void)
 int newlib_heap_contains(const void *p)
 {
 	return _newlib_heap_base && (const char *)p >= _newlib_heap_base && (const char *)p < _newlib_heap_end;
+}
+
+// The last `size` bytes of the heap's untouched tail, lent out for a while: sbrk stops below them until
+// newlib_heap_return_tail. For the runner's ELF image while it is loaded (main.c, 80 MB): from malloc it was the
+// heap's first big block and its hole sat under game.droid, which raised the heap's high mark by most of its size. A
+// memory block of its own doesn't fit next to the runner's segments (26 MB of user memory left after them). NULL if
+// the tail is too short or a tail is lent out already.
+void *newlib_heap_borrow_tail(size_t size) {
+	size = (size + 0xfff) & ~0xfff;
+	void *p = NULL;
+	if (!_newlib_heap_base || sceKernelLockLwMutex(&_newlib_sbrk_mutex, 1, 0) < 0)
+		return NULL;
+	// Keep 16 MB for malloc meanwhile (the apk prefetcher's game.droid block comes from it)
+	if (_newlib_heap_limit == _newlib_heap_end && size < (size_t)(_newlib_heap_end - _newlib_heap_cur) &&
+		(size_t)(_newlib_heap_end - _newlib_heap_cur) - size >= 16 * 1024 * 1024) {
+		_newlib_heap_limit = _newlib_heap_end - size;
+		p = _newlib_heap_limit;
+	}
+	sceKernelUnlockLwMutex(&_newlib_sbrk_mutex, 1);
+	return p;
+}
+
+// Returns the tail newlib_heap_borrow_tail lent out (p is what it returned). 0 if p isn't that tail.
+int newlib_heap_return_tail(void *p) {
+	if (!p || p != _newlib_heap_limit || _newlib_heap_limit == _newlib_heap_end)
+		return 0;
+	sceKernelLockLwMutex(&_newlib_sbrk_mutex, 1, 0);
+	_newlib_heap_limit = _newlib_heap_end;
+	sceKernelUnlockLwMutex(&_newlib_sbrk_mutex, 1);
+	return 1;
 }

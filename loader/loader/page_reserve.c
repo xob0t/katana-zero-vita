@@ -13,14 +13,16 @@
  * that has no storage, and its sprites drew as solid white or grey rectangles (room_chinatown_2's level start and
  * HUD). The recovery flush after each failure (katana_display.c) reloaded the pages for 1.4 s every 5 s and the same
  * pages failed again. Even a freed page's own hole doesn't take the page again once its neighbours are in use:
- * memalign(16, n) asks malloc for n plus the alignment plus a minimum chunk.
+ * memalign(16, n) asks malloc for n plus the alignment plus a minimum chunk. (game.droid is no longer copied since
+ * Nov 25: ~158 MB sbrk'd after Startup, a ~85 MB tail, apk_prefetch.c. A long session still splits that tail.)
  *
- * So PR_RESERVE_BLOCKS blocks of a page's size are taken from the heap while it still has large holes (right after the
- * runner's copy of game.droid frees the inflated one, and after Startup) and held. When a GPU allocation of at least
- * PR_MIN_SIZE fits neither VRAM (after eviction) nor vitaGL's other pools, a held block is handed over: vitaGL's next
- * memalign (its newlib fallback, right after the callback) gets that block itself (memalign is wrapped for the
- * loader). When vitaGL frees the page, the block goes back to the heap whole, and between frames it is taken again
- * (malloc of the same size fits that hole exactly) while fewer than PR_RESERVE_BLOCKS pages are in the heap.
+ * So PR_RESERVE_BLOCKS blocks of a page's size are taken from the heap while it still has large holes (after Startup;
+ * with exp_droidcopy also right after the runner's copy of game.droid frees the inflated one) and held. When a GPU
+ * allocation of at least PR_MIN_SIZE fits neither VRAM (after eviction) nor vitaGL's other pools, a held block is
+ * handed over: vitaGL's next memalign (its newlib fallback, right after the callback) gets that block itself (memalign
+ * is wrapped for the loader). When vitaGL frees the page, the block goes back to the heap whole, and between frames it
+ * is taken again (malloc of the same size fits that hole exactly) while fewer than PR_RESERVE_BLOCKS pages are in the
+ * heap.
  *
  * The page's pixels need a second 16 MB block first: the runner decodes a page (ReadQOIFFile) into a
  * MemoryManager::Alloc buffer of width x height x 4 bytes, malloc(size + 32) (main.c's runner_malloc, normally
@@ -38,10 +40,11 @@
  * still fails is drawn blank and retried (page_evict.c's load hook), so the GPU never sees a missing texture.
  *
  * At most PR_RESERVE_BLOCKS + 1 blocks of PR_HELD_BYTES of the heap are set aside this way (the runner uses ~140 MB of
- * the 240 MB heap). Game (GL) thread only. exp_pagereserve0 disables all of it; exp_reservedecode0 only the decode
- * block (the runner's page buffer from vglMalloc as before). Tests: exp_fragheap splits the free heap holes of 8 MB or
- * more after Startup, the state of a long session; exp_fragpools also takes vitaGL's RAM, PHYCONT and CDLG pools in
- * pieces below a page's size; exp_fragdecode leaves a 2048x2048 page's decode buffer only the decode block (the heap,
+ * the 240 MB heap; with the blocks ~191 MB is sbrk'd after Startup, the rest a ~55 MB tail). Game (GL) thread only.
+ * exp_pagereserve0 disables all of it; exp_reservedecode0 only the decode block (the runner's page buffer from
+ * vglMalloc as before). Tests: exp_fragheap splits the free heap holes of 8 MB or more after Startup, the state of a
+ * long session; exp_fragpools also takes vitaGL's RAM, PHYCONT and CDLG pools in pieces below a page's size;
+ * exp_fragdecode leaves a 2048x2048 page's decode buffer only the decode block (the heap,
  * the pools and VRAM all full, as at the crash: PHYCONT had 10 MB free, VRAM 5 MB).
  */
 
@@ -119,10 +122,12 @@ static int take(int want) {
 	return took;
 }
 
-// Right after the runner's copy of game.droid freed the inflated one (apk_prefetch.c), and after Startup
+// After Startup (the prefetched audio chunks' holes take the first block), and with exp_droidcopy right after the
+// runner's copy of game.droid freed the inflated one (apk_prefetch.c)
 void page_reserve_fill(const char *where) {
 	if (!is_enabled())
 		return;
+	size_t before = newlib_heap_used();
 	// The first blocks aligned for any texture (vitaGL asks for 16)
 	for (int i = 0; i < PR_RESERVE_BLOCKS; i++)
 		if (!blocks[i])
@@ -130,9 +135,9 @@ void page_reserve_fill(const char *where) {
 	if (decode_enabled && !decode_block && !decode_out)
 		decode_block = malloc(PR_HELD_BYTES);
 	debugPrintf("[PAGERESERVE] %s: %d of %d heap blocks of %uKB held for pages outside VRAM, decode block %s "
-		"(newlib %uKB sbrk'd)\n", where, held(), PR_RESERVE_BLOCKS, PR_BLOCK_BYTES / 1024,
+		"(newlib %uKB sbrk'd, %uKB before)\n", where, held(), PR_RESERVE_BLOCKS, PR_BLOCK_BYTES / 1024,
 		decode_block ? "held" : decode_enabled ? "NOT held" : "off (exp_reservedecode0)",
-		(unsigned)(newlib_heap_used() / 1024));
+		(unsigned)(newlib_heap_used() / 1024), (unsigned)(before / 1024));
 }
 
 // main.c's malloc for the runner, for sizes of at least PR_MIN_SIZE: the newlib heap (vglMalloc's first choice), then

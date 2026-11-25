@@ -22,6 +22,18 @@
  * libzip branch of that function does with the inflated bytes: MemoryManager::Alloc(size + 1) with the same arguments,
  * the bytes, a 0 after them, *size. Libzip would otherwise inflate it on the game thread, one 16 KB read at a time.
  * Any other name, the AAssetManager branch, or an entry that failed to read or inflate goes to the runner's function.
+ *
+ * The inflated bytes are not copied: the worker inflates them into a block laid out as the runner's allocator makes
+ * one, and the runner's own Alloc call takes that block. MemoryManager::_Alloc (bucketAlloc returns nothing for this
+ * size) calls malloc(size + 32), writes its 32-byte header (+0 0, +4 size, +8 0xdeadc0de, +12 0xbaadb00b, +16 and +20
+ * 0, +24..31 as malloc left them), adds the size to its in-use, peak and total counters and the count, and returns
+ * block + 32. MemoryManager::Free checks the two magics at -24 and -20, reads the size at -28 for the counters, and
+ * frees block = p - 32; a top bit set at -4 marks an AllocAligned block, so the worker zeroes the header. The hook
+ * calls Alloc as the runner's code does, and main.c's runner malloc returns the worker's block for that one call
+ * (apk_prefetch_runner_malloc: that thread, that exact size), so the header, the counters and the later Free are the
+ * runner's own. With #107's copy, the inflated block and the runner's copy of it sat in the heap together at Startup
+ * and pushed the newlib heap's high mark from 152 to 233 MB of 240 (page_reserve.c). If the runner's Alloc doesn't
+ * take the block (its code differs, or another malloc is bound), the bytes are copied as before.
  */
 
 #include <vitasdk.h>
@@ -42,6 +54,7 @@
 #define PF_READ (256u << 10)
 #define PF_MAX_HELD (96u << 20)
 #define PF_MAX_RANGES 8
+#define MM_HEADER 32 // MemoryManager::_Alloc's header in front of the bytes it returns
 
 enum { PF_PENDING, PF_READY, PF_FREED, PF_FAILED };
 
@@ -109,8 +122,13 @@ static void *prefetch_thread(void *arg) {
 				goto out;
 			extern int runner_inflate(const char *path, uint64_t offset, uint32_t comp_size, uint32_t size,
 				uint32_t expected_crc, uint8_t *out, int cpu_mask);
-			uint8_t *buf = malloc(len);
-			int ok = buf && runner_inflate(pf_path, r->start, r->comp_size, len, r->crc, buf, pf_cpu_mask) == 0;
+			// The runner's block (see the top): its header, the bytes, their 0
+			uint8_t *buf = malloc(MM_HEADER + len + 1);
+			if (buf)
+				memset(buf, 0, MM_HEADER);
+			int ok = buf && runner_inflate(pf_path, r->start, r->comp_size, len, r->crc, buf + MM_HEADER, pf_cpu_mask) == 0;
+			if (ok)
+				buf[MM_HEADER + len] = 0;
 			pthread_mutex_lock(&pf_lock);
 			if (ok && !pf_stop) {
 				r->chunk[0] = buf;
@@ -376,7 +394,7 @@ const uint8_t *apk_prefetch_peek(const char *name, uint32_t *size) {
 	pf_range *r = deflated_range(name);
 	while (r && r->state[0] == PF_PENDING && !pf_stop && !pf_done)
 		pthread_cond_wait(&pf_cond, &pf_lock);
-	const uint8_t *p = r && !pf_stop && r->state[0] == PF_READY ? r->chunk[0] : NULL;
+	const uint8_t *p = r && !pf_stop && r->state[0] == PF_READY ? r->chunk[0] + MM_HEADER : NULL;
 	if (p)
 		*size = (uint32_t)r->size;
 	pf_wait_us += sceKernelGetProcessTimeLow() - t0;
@@ -385,12 +403,13 @@ const uint8_t *apk_prefetch_peek(const char *name, uint32_t *size) {
 	return p;
 }
 
-// Frees the inflated bytes of name after they were copied (the _ReadFile hook)
-static void deflated_done(const char *name) {
+// The inflated bytes of name were handed over (the _ReadFile hook): freed if they were copied, else the runner has them
+static void deflated_done(const char *name, int copied) {
 	pthread_mutex_lock(&pf_lock);
 	pf_range *r = deflated_range(name);
 	if (r && r->state[0] == PF_READY) {
-		free(r->chunk[0]);
+		if (copied)
+			free(r->chunk[0]);
 		r->chunk[0] = NULL;
 		r->state[0] = PF_FREED;
 		pf_held -= (uint32_t)r->size;
@@ -407,23 +426,61 @@ static void *(*orig_readfile)(const char *name, uint32_t *size);
 static void *(*mm_alloc)(uint32_t size, const char *file, int line, int flag);
 static const uint8_t *dad_flag;
 static const char *readfile_source;
-static int hook_on;
+static int hook_on, alloc_layout_ok;
+
+// The worker's block for the runner's next malloc of handover_size on handover_thread (one call)
+static void *volatile handover_block;
+static size_t handover_size;
+static SceUID handover_thread;
+
+// main.c's runner malloc, for sizes of at least 4 MB: the worker's block while readfile_hook's Alloc call runs
+void *apk_prefetch_runner_malloc(size_t size) {
+	void *b = handover_block;
+	if (!b || size != handover_size || sceKernelGetThreadId() != handover_thread)
+		return NULL;
+	handover_block = NULL;
+	return b;
+}
 
 static void *readfile_hook(const char *name, uint32_t *size) {
 	if (hook_on && name && !*dad_flag) {
 		uint32_t len;
 		const uint8_t *data = apk_prefetch_peek(name, &len);
 		if (data) {
+			uint32_t t0 = sceKernelGetProcessTimeLow();
+			if (alloc_layout_ok) {
+				handover_size = MM_HEADER + len + 1;
+				handover_thread = sceKernelGetThreadId();
+				handover_block = (void *)(data - MM_HEADER);
+			}
 			uint8_t *buf = mm_alloc(len + 1, readfile_source, 230, 0);
-			if (buf) {
+			int taken = alloc_layout_ok && !handover_block;
+			handover_block = NULL;
+			if (buf && taken && buf != data) {
+				// Can't happen with the checked _Alloc; the block then belongs to the runner (leaked, not freed twice)
+				debugPrintf("[PREFETCH] the runner took game.droid's block but Alloc returned %p: copied\n", buf);
+				taken = 0;
 				sceClibMemcpy(buf, data, len);
 				buf[len] = 0;
+				deflated_done(name, 0);
+			} else if (buf) {
+				if (!taken) {
+					sceClibMemcpy(buf, data, len);
+					buf[len] = 0;
+				}
+				deflated_done(name, !taken);
+			}
+			if (buf) {
+				debugPrintf("[PREFETCH] game.droid handed over %s in %.1f ms (%u bytes)\n",
+					taken ? "in place" : "by a copy", (sceKernelGetProcessTimeLow() - t0) / 1000.0f, len);
 				if (size)
 					*size = len;
-				deflated_done(name);
-				// The inflated copy's hole is the heap's largest now: blocks for pages outside VRAM come from it
+				// After a copy, the inflated block's hole is the heap's largest: blocks for pages outside VRAM come from
+				// it. Handed over in place there is no hole; they are taken after Startup, from the prefetched audio
+				// chunks' holes
 				extern void page_reserve_fill(const char *where);
-				page_reserve_fill("after the game.droid handover");
+				if (!taken)
+					page_reserve_fill("after the game.droid handover");
 				return buf;
 			}
 		}
@@ -449,6 +506,13 @@ void apk_prefetch_install_hooks(void) {
 		return;
 	}
 	readfile_source = (const char *)(f + 0x19c + 8 + code[0x290 / 4]);
+	// MemoryManager::_Alloc of runner 1.1.10: malloc(size + 32) (add r0, r5, #32), the header (str r8, [r0] /
+	// str r5, [r0, #4] / vst1.32 {d16-d17}, [r7] at +8), block + 32 returned (add r0, r0, #32)
+	const uint32_t *ac = (const uint32_t *)so_symbol(&yoyoloader_mod, "_ZN13MemoryManager6_AllocEjPKcib");
+	alloc_layout_ok = ac && ac[0x58 / 4] == 0xe2850020 && ac[0x88 / 4] == 0xe5808000 && ac[0x8c / 4] == 0xe5805004 &&
+		ac[0xa8 / 4] == 0xe2800020 && ac[0xac / 4] == 0xf4470a8f && !exp_flag("droidcopy");
+	if (!alloc_layout_ok)
+		debugPrintf("[PREFETCH] game.droid is handed over by a copy (MemoryManager::_Alloc differs, or exp_droidcopy)\n");
 	orig_readfile = entry_hook(f, readfile_hook);
 	hook_on = orig_readfile != NULL;
 }
