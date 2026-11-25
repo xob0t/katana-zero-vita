@@ -70,6 +70,7 @@ extern uint32_t vgl_framecount;
 extern size_t vgl_gpu_fallback_bytes;
 extern int (*vgl_vram_evict_cb)(size_t size, size_t alignment);
 extern void *vgl_tex_usage(GLuint name, uint32_t *last_frame);
+int pause_tiles_protects(uint32_t use); // pause_bg.c
 extern int vgl_tex_idle(GLuint name);
 extern int page_restore_requested(void *tex);
 extern void *vgl_memalign(size_t alignment, size_t size, vglMemType type);
@@ -217,6 +218,9 @@ static int gather(candidate *c, size_t size) {
 		uint32_t use = last == OBJ_NOT_USED ? loaded : (int32_t)(last - loaded) > 0 ? last : loaded;
 		// Not used in this room, or not for EVICT_MIN_AGE frames
 		if ((int32_t)(use - room_start) >= 0 && now - use < EVICT_MIN_AGE)
+			continue;
+		// The pause skips the room's tile layers (pause_bg.c): their pages stay as if drawn
+		if (pause_tiles_protects(use))
 			continue;
 		// Never a page the game asked to have resident (texture_prefetch, recorded by page_restore.c), in any room: level
 		// select asks for the UI and button glyph pages, which levels draw later (factory_0 needs its glyph page
