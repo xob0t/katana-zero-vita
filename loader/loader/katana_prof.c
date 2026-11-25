@@ -953,6 +953,8 @@ void katana_prof_report(int frames) {
 	rain_cheap_report(frames);
 	extern void touch_controls_report(int frames);
 	touch_controls_report(frames);
+	extern void letter_freeze_report(int frames);
+	letter_freeze_report(frames);
 	extern void psych_fix_report(int frames);
 	psych_fix_report(frames);
 	extern void dancer_glow_report(int frames);

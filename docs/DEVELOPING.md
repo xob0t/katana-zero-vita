@@ -129,6 +129,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Feature | Files | yyl.cfg | Off-switch | Other switches | Kind |
 |---|---|---|---|---|---|
 | obj_letter natives, cheap glow on highlighted words | `letter_native.c`, `letter_glyph.c` | `letterGlow` | `exp_letternative0` | `exp_letterglowab` (off / game / cheap per report window), `exp_letterglowprof`, `exp_letterglowverify`, `exp_letterglowverifyfault`, `exp_letterglowcompare`, `exp_lettertime` (read in `katana.c` and `letter_glyph.c`) | Exact native; glow positions within float rounding |
+| A new wavy or rainbow letter on a frozen tick (hit-stop, fr = 0) skips its `while (oscillate_delay > 0) oscillate_delay -= fr` setup until time moves, instead of hanging the game (game bug) | `letter_freeze.c` | none | `exp_letterfreeze0` | `exp_letterfreezerepro` (stops time before each new wavy letter's first Step) | Fix |
 | `inside_screen`, `inside_screen_point` | `visibility_native.c` | none | `exp_visibilitynative0` | `exp_visverify`, `exp_visab` | Exact native |
 | `controller_check_pressed_ext` | `input_native.c` | none | `exp_inputnative0` | | Exact native |
 | `controller_check` | `held_native.c` | none | `exp_heldnative0` | `exp_heldverify`, `exp_heldab` | Exact native |
