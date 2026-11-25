@@ -100,6 +100,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Cloth at 30 Hz, paused far from view | `katana.c` | none | `exp_clothall` (no pausing; 30 Hz stays) | | Visible, not in changes.md |
 | Rope solver native | `rope_fast.c` | none | `exp_ropefast0` | | Exact native |
 | Bounding-box fast path | `collision_native.c` | none | `exp_nativebbox0` | | Exact native |
+| Runner per-instance work: event dispatch through cached events, movement of instances that don't move skipped, `Instance_Animate` native | `runner_fast.c` | none | `exp_runnerfast0`; `exp_rfdispatch0`, `exp_rfmove0`, `exp_rfanim0` | `exp_runnerfastverify`, `exp_rfab` (`exp_rfabdispatch`, `exp_rfabmove`, `exp_rfabanim`), `exp_rfprof` | Exact |
 | Tile and door glow fades at rest | `glow_rest.c` | none | `exp_glowrest0` | `exp_glowverify` | Exact skip |
 | Pause screen and options menu CRT rows (`draw_crt_surface`, `draw_crt_image`) | `crt_native.c` | none | `exp_crtnative0` | `exp_crtverify`, `exp_crtab` | Exact native |
 | Paused room's tile layers, covered by the pause background's opaque rectangle, not drawn | `pause_bg.c` (`page_evict.c` keeps their pages) | none | `exp_pausetiles0` | `exp_pausetilesverify`, `exp_pausetilesab` | Exact skip |
@@ -282,6 +283,11 @@ Rules:
    - `DrawLayerTilemapElement`: `pause_bg.c` takes the entry hook and hands its original to `tilemap_native_wrap`, so
      the call order is the paused-tile skip, then `tilemap_native.c`, then the runner. `tilemap_native_install` (after
      `pause_bg_install`) takes the entry itself only when pause_bg didn't (`exp_pausetiles0`).
+   - `runner_fast.c` installs last in `katana_late_install`. It entry-hooks `Instance_Animate` and
+     `HandleInstanceMovement` and patches the `Perform_Event` / `HasEventRecursive` calls in `HandleStep`,
+     `ExecuteDrawEvent`, `DrawLayerInstanceElement` and those two through veneers. Its dispatch inlines
+     `Perform_Event` .. `ExecuteIt` and checks they are unhooked at install and after any new hook; a hook on one of
+     them (e.g. the frame audit's `Perform_Event_Object_ASync` tag) turns dispatch off.
    - `virtual_capture.c` installs before `pause_stack.c`: pause_stack swaps `draw_surface_ext` in the function
      registry, and vcapture declines unless the registry still holds `F_DrawSurfaceExt` (it didn't install from #115
      until this order was fixed).

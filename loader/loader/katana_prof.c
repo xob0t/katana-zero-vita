@@ -1000,6 +1000,8 @@ void katana_prof_report(int frames) {
 	rain_skip_report(frames);
 	extern void flashlight_native_report(int frames);
 	flashlight_native_report(frames);
+	extern void runner_fast_report(int frames);
+	runner_fast_report(frames);
 	static int builtins_hooked = 0;
 	if (!builtins_hooked) {
 		builtins_hooked = 1;
