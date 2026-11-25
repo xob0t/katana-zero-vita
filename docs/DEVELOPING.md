@@ -101,6 +101,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Rope solver native | `rope_fast.c` | none | `exp_ropefast0` | | Exact native |
 | Bounding-box fast path | `collision_native.c` | none | `exp_nativebbox0` | | Exact native |
 | Tile and door glow fades at rest | `glow_rest.c` | none | `exp_glowrest0` | `exp_glowverify` | Exact skip |
+| Pause screen and options menu CRT rows (`draw_crt_surface`, `draw_crt_image`) | `crt_native.c` | none | `exp_crtnative0` | `exp_crtverify`, `exp_crtab` | Exact native |
 | Cathedral dust off | `katana.c` (stubs), `dustspawner_native.c` (native when on) | `cathedralDust` | `exp_dustnative0` (GML when on) | | Visible; native exact |
 | Dossier burn natives, fewer decorative circles | `dossier_native.c` | `dossierCircles` | `exp_dossiernative0`; `exp_dossierexact0` (keeps part) | `exp_dossiercleanup`, `exp_dossierverify` | Exact; circles visible |
 | Wavy dialogue backgrounds | `wavy_native.c` | `waveStrips` | `exp_wavynative0` | `exp_wavyverify`, `exp_waveab`, `exp_waveprof` | Exact native; strips visible |

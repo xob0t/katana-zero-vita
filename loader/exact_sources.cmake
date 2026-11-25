@@ -7,6 +7,7 @@ set(EXACT_SOURCES
   loader/clubber_native.c
   loader/collision_native.c
   loader/cone_shadow.c
+  loader/crt_native.c
   loader/dossier_native.c
   loader/ember_draw.c
   loader/explosion_lite.c

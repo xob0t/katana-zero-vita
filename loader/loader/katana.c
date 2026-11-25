@@ -1445,6 +1445,8 @@ static void patch_performance() {
 	fx_rate_install(table);
 	extern void glow_rest_install(gml_func_entry *table);
 	glow_rest_install(table);
+	extern void crt_native_install(void);
+	crt_native_install(); // pause screen and options menu CRT rows (crt_native.c)
 	extern void corpse_rest_install(gml_func_entry *table);
 	corpse_rest_install(table);
 	// Secret Psychiatrist fight: empty surface passes skipped, surfaces reused across restarts (psych_fix.c)
