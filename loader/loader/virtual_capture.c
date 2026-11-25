@@ -50,6 +50,7 @@ unsigned virtual_capture_virtual_captures, virtual_capture_direct_replays;
 /* Loader opt-in. Snapshot at target admission so a mode change cannot make
  * already relaxed geometry eligible for an exact consumer. */
 int virtual_capture_relaxed;
+int virtual_capture_ab, virtual_capture_ab_off; /* exp_vcapab (debugMode): no new virtual captures in every other report window */
 unsigned virtual_capture_relaxed_replays, virtual_capture_clipped_quads;
 unsigned virtual_capture_materializations, virtual_capture_quads_recorded;
 unsigned virtual_capture_capture_fallbacks, virtual_capture_install_failures;
@@ -368,7 +369,7 @@ void AAPCS virtual_capture_script(void *self, void *other, RV *result, int argc,
     }
     if (virtual_target || (pending && !consumed))
         barrier(VC_NEW_CAPTURE, __LINE__);
-    candidate = !outer && policy_ok() && state_ok(virtual_capture_relaxed) &&
+    candidate = !outer && !virtual_capture_ab_off && policy_ok() && state_ok(virtual_capture_relaxed) &&
         surface_value(global_value(var_sprite), &id);
     expected_surface = candidate ? id : -1;
     if (!candidate) { reject(__LINE__); ++virtual_capture_capture_fallbacks; }

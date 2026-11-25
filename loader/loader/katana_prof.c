@@ -624,6 +624,12 @@ void katana_prof_report(int frames) {
 				debugPrintf("[VCAP] reject at virtual_capture.c:%u x%u\n", virtual_capture_rejections[i].line,
 					virtual_capture_rejections[i].count);
 		}
+		// exp_vcapab: no new virtual captures in every other window (one already virtual finishes as usual)
+		extern int virtual_capture_ab, virtual_capture_ab_off;
+		if (virtual_capture_ab) {
+			debugPrintf("[VCAPAB] this window: virtual captures %s\n", virtual_capture_ab_off ? "off" : "on");
+			virtual_capture_ab_off = !virtual_capture_ab_off;
+		}
 	}
 	{
 		extern unsigned trail_lights_kept, trail_lights_skipped, trail_lights_violations;
