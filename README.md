@@ -15,9 +15,11 @@ minute. Nothing to install on your computer, and your APK isn't uploaded anywher
 4. For the best experience, overclock: install [PSVshell](https://github.com/Electry/PSVshell) and give the game a
    500 MHz CPU profile. Without it the heavy rooms drop more frames (the loader alone sets 444 MHz).
 
-The first launch prepares the graphics cache (`ux0:data/shader_cache/KTNZ00001`) and takes about 3 minutes; a
-progress bar shows it. Later launches start the game in about 20 seconds. To update, build a new VPK and
-install it over the old one. Saves are kept.
+The first launch compiles the graphics shaders into `ux0:data/shader_cache/KTNZ00001` and takes about a minute; a
+status screen shows it. Later launches start the game in about 20 seconds. To update, build a new VPK and
+install it over the old one. Saves are kept. Older builds kept the shader cache in
+`KTNZ00001/v2` (512 folders); current builds compile a new cache once, on the first launch after the update, and
+never read that folder again, so it can be deleted.
 
 With `debugMode=1` in `yyl.cfg` the log goes to `ux0:data/gms/shared/yyl.log`.
 

@@ -1432,7 +1432,7 @@ void LoadTextureFromPNG_generic(uint32_t arg1, uint32_t arg2, uint32_t *flags, u
 							glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 8, 8, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 							SceGxmTexture *gxm_tex = vglGetGxmTexture(GL_TEXTURE_2D);
 							vglFree(vglGetTexDataPointer(GL_TEXTURE_2D));
-							void *tex_data = vglForceAlloc(size);
+							void *tex_data = vglForceAlloc(size, GL_FALSE);
 							sceClibMemcpy(tex_data, ext_data, size);
 							sceGxmTextureInitSwizzledArbitrary(gxm_tex, tex_data, SCE_GXM_TEXTURE_FORMAT_UBC3_ABGR, width, height, 0);
 							vglOverloadTexDataPointer(GL_TEXTURE_2D, tex_data);
@@ -3867,8 +3867,7 @@ void *pthread_main(void *arg) {
 	if (!exp_flag("novramsplit"))
 		vgl_vram_small_size = 83 * 256 * 1024; // 20.75 MB
 #endif
-	// First launch: create vitaGL's shader cache folders under a status screen (about 2 minutes of black
-	// screen inside vglInit otherwise); releases its framebuffer before vglInit sizes its pools
+	// First launch: notes whether the shader cache still has to be built (first_launch.c)
 	extern void first_launch_prepare(void);
 	first_launch_prepare();
 	boot_mark("first_launch_prepare");
@@ -3989,15 +3988,22 @@ void *pthread_main(void *arg) {
 	Java_com_yoyogames_runner_RunnerJNILib_TouchEvent  = (void *)so_symbol(&yoyoloader_mod, "Java_com_yoyogames_runner_RunnerJNILib_TouchEvent");
 	
 	boot_mark("JNI tables");
-	// Displaying splash screen
-	if (splash_buf) {
-		int w, h;
-		uint8_t *bg_data = stbi_load_from_memory(splash_buf, splash_size, &w, &h, NULL, 4);
+	// Displaying splash screen, or the first-launch status in its place: the frame stays up through Startup, which
+	// compiles the shaders on a first launch
+	extern uint32_t *first_launch_status_image(int *w, int *h);
+	int status_w = 0, status_h = 0;
+	uint32_t *status_image = first_launch_status_image(&status_w, &status_h);
+	if (splash_buf || status_image) {
+		int w = status_w, h = status_h;
+		uint8_t *bg_data = status_image ? (uint8_t *)status_image : stbi_load_from_memory(splash_buf, splash_size, &w, &h, NULL, 4);
 		GLuint bg_image;
 		glGenTextures(1, &bg_image);
 		glBindTexture(GL_TEXTURE_2D, bg_image);
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, bg_data);
-		vglFree(bg_data);
+		if (status_image)
+			free(status_image);
+		else
+			vglFree(bg_data);
 		free(splash_buf);
 		glEnable(GL_TEXTURE_2D);
 		glEnableClientState(GL_VERTEX_ARRAY);
@@ -4111,6 +4117,8 @@ void *pthread_main(void *arg) {
 	}
 	
 	boot_mark("runner Startup");
+	extern void first_launch_done(void);
+	first_launch_done();
 	apk_prefetch_release(); // Startup (its first room) has read everything the prefetcher reads
 	extern void page_reserve_fill(const char *where), page_reserve_fragheap(void);
 	page_reserve_fill("after Startup"); // heap blocks for texture pages outside VRAM (page_reserve.c)
