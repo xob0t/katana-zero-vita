@@ -95,6 +95,7 @@ static uint32_t word(const void *p, unsigned off) {
 	return *(const uint32_t *)((const uint8_t *)p + off);
 }
 
+int pause_bg_state_ok(void);
 static int state_ok(void) {
 	if (*active_shader || *next_shader || *native_shader != -1 || *next_native_shader != -1 || *texture_stage != 0 ||
 			*mark_vertices)
@@ -106,6 +107,10 @@ static int state_ok(void) {
 		if (matrices[32 + i] != (i % 5 == 0 ? 1.0f : 0.0f))
 			return 0;
 	return 1;
+}
+
+int pause_bg_state_ok(void) {
+	return state_ok();
 }
 
 static int fail(int r) {
@@ -139,6 +144,7 @@ static void verify_rect(uint32_t expect) {
 
 // view_get_camera(0)'s view x, y, width, height (the event's view_current is 0: Katana draws one view)
 static builtin_fn bi_view_get_camera, bi_view_x, bi_view_y, bi_view_w, bi_view_h;
+int pause_bg_camera_view(void *self, void *other, double *out);
 static int camera_view(void *self, void *other, double *out) {
 	RV cam = {0, 0, 5}, zero = {0, 0, 0};
 	bi_view_get_camera(&cam, self, other, 1, &zero);
@@ -153,6 +159,24 @@ static int camera_view(void *self, void *other, double *out) {
 		out[i] = r.val;
 	}
 	return out[2] > 0 && out[3] > 0;
+}
+
+int pause_bg_camera_view(void *self, void *other, double *out) {
+	return camera_view(self, other, out);
+}
+
+int pause_bg_surface_size(int id, int *w, int *h) {
+	if (!surf_width)
+		return 0;
+	*w = surf_width(id);
+	*h = surf_height(id);
+	return *w > 0 && *h > 0;
+}
+
+// pause_stack.c: obj_gamepaused's Draw is running for self, and the frame and colour of its last covering rectangle
+uint32_t pause_bg_rect_frame = 0xffffffff, pause_bg_rect_rgba;
+int pause_bg_in_gp(void *self) {
+	return in_gp && self == gp_self;
 }
 
 // The rectangle: draw_rect_col(x1, y1, x2, y2, colour, outline) as obj_gamepaused's first draw
@@ -200,6 +224,8 @@ static RV *rect_col(void *self, void *other, RV *result, int argc, RV **args) {
 	RV *r = orig_rect_col(self, other, result, argc, args);
 	if (ok) {
 		cover_frame = f;
+		pause_bg_rect_frame = f;
+		pause_bg_rect_rgba = rgba;
 		n_cover++;
 		if (verify_now)
 			verify_rect(rgba);

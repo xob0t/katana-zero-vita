@@ -851,6 +851,8 @@ void katana_late_install(void) {
 	psych_fix_late_install();
 	extern void pause_bg_late_install(void);
 	pause_bg_late_install();
+	extern void pause_stack_late_install(void);
+	pause_stack_late_install();
 	if (orig_lighting_user0) {
 		runner_function **functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
 		int *count = (int *)so_symbol(&yoyoloader_mod, "the_numb");
