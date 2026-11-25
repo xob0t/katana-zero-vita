@@ -37,7 +37,8 @@ Some of the speedups change what you see or play:
 - Enemies think every other frame. Hits still land on time. **GAME → ENEMY AI** turns it off.
 - No end-of-level replay and no death rewind.
 - No touch controls: the front touch screen does nothing, and the options menu has no CONTROLS page for them.
-- Bloom is off by default. With it on, some rooms run at half the frame rate. **GRAPHICS → BLOOM FX** turns it on.
+- Bloom, shaders, blood spray and the restart and rewind effects are off by default. With bloom on, some rooms run
+  at half the frame rate. They can be turned on in **GRAPHICS**.
 - Simpler effects in heavy scenes: less lighting, lighter smoke, fog and explosions.
 
 Each can be undone in `ux0:data/gms/katanazero/yyl.cfg`; [docs/changes.md](docs/changes.md) lists them all.
