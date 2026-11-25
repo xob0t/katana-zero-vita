@@ -29,6 +29,7 @@ set(EXACT_SOURCES
   loader/rope_fast.c
   loader/shadow_native.c
   loader/smoke_create.c
+  loader/tilemap_native.c
   loader/trail_lights.c
   loader/virtual_capture.c
   loader/visibility_native.c

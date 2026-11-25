@@ -328,6 +328,9 @@ void pause_bg_install(gml_func_entry *table) {
 		debugPrintf("paused room tile layers: NOT skipped (hooks)\n");
 		return;
 	}
+	// The layers that are drawn go through the native tile layer draw (tilemap_native.c) when it installs
+	extern void *tilemap_native_wrap(void *orig);
+	orig_tilemap = (tilemap_fn)tilemap_native_wrap((void *)orig_tilemap);
 }
 
 // katana_late_install: the runner's function registry is filled by then
