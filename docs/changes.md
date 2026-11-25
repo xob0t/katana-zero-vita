@@ -28,6 +28,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | No touch controls: the mobile build's virtual stick and buttons are gone, and the front touch screen does nothing | `touchControls=1` (`touchControls=2`: also drawn) |
 | The options menu has no CONTROLS page: it only set up the touch controls (stick, interact and cutscene buttons, left-handed layout, button placement). Their saved values are kept | `touchControls=1` |
 | The game starts in its controller mode instead of waiting for the first stick move: prompts show buttons from the first frame ("press attack to begin planning", not "tap screen"), and slashes follow the stick's exact angle as on PC | `touchControls=1` |
+| Bloom (**GRAPHICS → BLOOM FX**) is off by default: a fresh install and the game's own option resets start with it off. A saved choice is kept, so it stays on if you had saved it on. With it on, mansion_3 runs at 30 fps instead of 54 and bunker2_3 at 40 instead of 47 | **GRAPHICS → BLOOM FX: ON**, or `bloomDefault=1` |
 
 **In some rooms**
 
