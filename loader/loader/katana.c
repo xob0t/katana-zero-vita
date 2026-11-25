@@ -1464,6 +1464,8 @@ static void patch_performance() {
 	crt_native_install(); // pause screen and options menu CRT rows (crt_native.c)
 	extern void pause_bg_install(gml_func_entry *table);
 	pause_bg_install(table); // paused room tile layers under the opaque pause background: skipped (pause_bg.c)
+	extern void tilemap_native_install(void);
+	tilemap_native_install(); // native tile layer draw; after pause_bg_install, which chains it when it hooks the draw
 	extern void corpse_rest_install(gml_func_entry *table);
 	corpse_rest_install(table);
 	// Secret Psychiatrist fight: empty surface passes skipped, surfaces reused across restarts (psych_fix.c)

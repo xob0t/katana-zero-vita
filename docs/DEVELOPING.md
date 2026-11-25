@@ -103,6 +103,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Tile and door glow fades at rest | `glow_rest.c` | none | `exp_glowrest0` | `exp_glowverify` | Exact skip |
 | Pause screen and options menu CRT rows (`draw_crt_surface`, `draw_crt_image`) | `crt_native.c` | none | `exp_crtnative0` | `exp_crtverify`, `exp_crtab` | Exact native |
 | Paused room's tile layers, covered by the pause background's opaque rectangle, not drawn | `pause_bg.c` (`page_evict.c` keeps their pages) | none | `exp_pausetiles0` | `exp_pausetilesverify`, `exp_pausetilesab` | Exact skip |
+| Tile layer draw (`DrawLayerTilemapElement`): same vertices, UVs from a table instead of a division per tile | `tilemap_native.c` | none | `exp_tilenative0` | `exp_tilenativeverify`, `exp_tilenativeverifyfault`, `exp_tilenativeab`, `exp_tilenativeprof` | Exact native |
 | Paused room picture's 10 stacked draws as one shader pass | `pause_stack.c` | `pauseStack` | none | `exp_pausestackverify`, `exp_pausestackab` | Visible (1/255 on a few pixels) |
 | Cathedral dust off | `katana.c` (stubs), `dustspawner_native.c` (native when on) | `cathedralDust` | `exp_dustnative0` (GML when on) | | Visible; native exact |
 | Dossier burn natives, fewer decorative circles | `dossier_native.c` | `dossierCircles` | `exp_dossiernative0`; `exp_dossierexact0` (keeps part) | `exp_dossiercleanup`, `exp_dossierverify` | Exact; circles visible |
@@ -277,6 +278,9 @@ Rules:
    - `smokedraw_native.c`'s verify recorder hooks its scripts on the first verified event, after every native has
      installed; on an entry another native hooked it puts itself in front.
    - `move_contact_native.c` installs its five entry hooks all or none.
+   - `DrawLayerTilemapElement`: `pause_bg.c` takes the entry hook and hands its original to `tilemap_native_wrap`, so
+     the call order is the paused-tile skip, then `tilemap_native.c`, then the runner. `tilemap_native_install` (after
+     `pause_bg_install`) takes the entry itself only when pause_bg didn't (`exp_pausetiles0`).
    - `virtual_capture.c` installs before `pause_stack.c`: pause_stack swaps `draw_surface_ext` in the function
      registry, and vcapture declines unless the registry still holds `F_DrawSurfaceExt` (it didn't install from #115
      until this order was fixed).
