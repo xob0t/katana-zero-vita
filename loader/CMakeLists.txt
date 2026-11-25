@@ -19,7 +19,21 @@ set(LOADER 1)
 set(VITA_APP_NAME "Katana ZERO")
 set(VITA_TITLEID  "KTNZ00001")
 endif(KATANA_APP)
-set(VITA_VERSION  "01.00")
+# App version (param.sfo APP_VER, shown by the Vita) from the latest release tag: vMAJOR.MINOR.PATCH -> "MM.mp", e.g.
+# v1.3.0 -> 01.30, v1.2.1 -> 01.21 (APP_VER allows only XX.YY). Without a tag, or with a part over 9: 01.00
+execute_process(COMMAND git describe --tags --abbrev=0 --match "v[0-9]*"
+	WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+	OUTPUT_VARIABLE RELEASE_TAG
+	OUTPUT_STRIP_TRAILING_WHITESPACE
+	ERROR_QUIET
+)
+set(VITA_VERSION "01.00")
+if (RELEASE_TAG MATCHES "^v([0-9])\\.([0-9])\\.([0-9])$")
+	set(VITA_VERSION "0${CMAKE_MATCH_1}.${CMAKE_MATCH_2}${CMAKE_MATCH_3}")
+elseif (RELEASE_TAG MATCHES "^v([0-9])\\.([0-9])$")
+	set(VITA_VERSION "0${CMAKE_MATCH_1}.${CMAKE_MATCH_2}0")
+endif()
+message(STATUS "App version ${VITA_VERSION} (tag ${RELEASE_TAG})")
 set(VITA_MKSFOEX_FLAGS "-d ATTRIBUTE2=12")
 
 execute_process(COMMAND git describe --abbrev=6 --dirty --always

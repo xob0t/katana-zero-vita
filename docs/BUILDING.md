@@ -40,6 +40,7 @@ To install a source build without the web builder:
 The web builder is `web/`. It runs `web/builder.py` and the scripts in `scripts/` under [Pyodide](https://pyodide.org),
 so it makes the same `game.apk` as the command line. Pushing a version tag (`v*`) runs
 `.github/workflows/web-builder.yml`, which builds the loader and publishes the page with it to GitHub Pages; pull
-requests only build it, as an artifact to test first. To try the page locally, copy `build/app/eboot.bin` and
+requests only build it, as an artifact to test first. The app version the Vita shows (`APP_VER` in `param.sfo`) comes
+from the latest `v*` tag: v1.3.0 becomes 01.30 (`loader/CMakeLists.txt`). To try the page locally, copy `build/app/eboot.bin` and
 `build/app/KatanaZero.vpk_param.sfo` (as `param.sfo`) to `web/base/` and serve the repository root
 (`python -m http.server`), then open `/web/`.
