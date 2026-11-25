@@ -43,7 +43,7 @@
  * the runner's function for real; its vertices are read back from the runner's batch and compared (texture, primitive,
  * vertex size, count, every byte); mismatches are counted in the report.
  * exp_tilenativeverifyfault: the native x of the first vertex one float step off (negative control: every verified
- * draw with a tile must mismatch).
+ * draw with a tile mismatches by one byte; draws with no tile in view have nothing to fault).
  */
 #include <stdint.h>
 #include <stddef.h>
@@ -93,7 +93,7 @@ static int ab_off; // exp_tilenativeab: this report window runs the runner's cod
 static unsigned n_calls, n_native, n_tiles, n_uv_direct, n_fallback[4];
 static uint64_t prof_us[2], prof_alloc_us; // exp_tilenativeprof: draw time by path; the native path's AllocVerts
 static unsigned prof_calls[2];
-static unsigned v_calls, v_bad, v_bytes, v_skipped;
+static unsigned v_calls, v_bad, v_bytes, v_skipped, v_faulted;
 
 #define FNV_EXPECT 0x442dc622u // DrawLayerTilemapElement words 2..512, bl words skipped (they differ after PLT patching)
 #define MAX_COLS 1024
@@ -399,8 +399,10 @@ static void verify_draw(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t
 	static const sink scratch = {scratch_alloc, scratch_free};
 	const int native_ok = draw_native((const float *)a, (uint8_t *)b, (uint8_t *)c, fx, fy, fd, &scratch);
 	const int used = sc_count - sc_freed;
-	if (native_ok && fault && sc_n == 1 && used > 0)
+	if (native_ok && fault && sc_n == 1 && used > 0) {
 		((uint32_t *)scratch_buf)[0] ^= 1;
+		v_faulted++;
+	}
 	const int before = *vertex_count;
 	orig_draw(a, b, c, d, e, f);
 	const int after = *vertex_count;
@@ -469,8 +471,8 @@ void tilemap_native_report(int frames) {
 			(float)(prof_us[0] + prof_us[1]) / 1000.0f / frames, prof_calls[0] + prof_calls[1],
 			(float)prof_alloc_us / 1000.0f / frames);
 	if (verify && (v_calls || v_skipped))
-		debugPrintf("[TILEMAP] verify: %u draws compared, %u mismatched (%u bytes), %u skipped%s\n", v_calls, v_bad, v_bytes,
-			v_skipped, fault ? " (fault injected: all must mismatch)" : "");
+		debugPrintf("[TILEMAP] verify: %u draws compared, %u mismatched (%u bytes), %u skipped | fault injected into %u draws (exp_tilenativeverifyfault: each must mismatch by 1 byte)\n",
+			v_calls, v_bad, v_bytes, v_skipped, v_faulted);
 	n_calls = n_native = n_tiles = n_uv_direct = 0;
 	memset(n_fallback, 0, sizeof(n_fallback));
 	prof_us[0] = prof_us[1] = prof_alloc_us = 0;
