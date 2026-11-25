@@ -25,6 +25,7 @@ set(EXACT_SOURCES
   loader/move_contact_native.c
   loader/particle_lights.c
   loader/particle_native.c
+  loader/place_native.c
   loader/recolor_lights.c
   loader/region_native.c
   loader/rope_fast.c

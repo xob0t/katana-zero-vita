@@ -115,6 +115,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Flashlight mask culling | `flash_mask.c` | none | `exp_flashmask0` | | Exact native |
 | Mansion flashlights: obj_flashlightmaster user event 2 | `flashlight_native.c` | none | `exp_flashlightnative0` | `exp_flashlightverify`, `exp_flashlightfault` (negative control), `exp_flashlightflags` (prints flag differences), `exp_flashlightab`, `exp_flashlightprof` | Exact native |
 | `move_contact_solid` (Dragon dash aim) | `move_contact_native.c` | none | `exp_movecontact0` | `exp_mcverify`, `exp_mcdiff`, `exp_mcdiffbreak`, `exp_mcab`, `exp_mcprof` | Exact native |
+| `place_meeting` / `instance_place` (`Command_InstancePlace`): probe box without moving the caller, candidate test native | `place_native.c` | none | `exp_placenative0`; `exp_placecmd0` keeps only the candidate test | `exp_placeverify`, `exp_placeverifyfault` (negative control), `exp_placeab`, `exp_placeprof` | Exact native |
 | No replays or death rewind | `katana.c` | `replays` | none | `exp_bunkerreplay`, `exp_bunkertrace` | Visible |
 
 ### Bike chase
@@ -284,6 +285,12 @@ Rules:
    - `DrawLayerTilemapElement`: `pause_bg.c` takes the entry hook and hands its original to `tilemap_native_wrap`, so
      the call order is the paused-tile skip, then `tilemap_native.c`, then the runner. `tilemap_native_install` (after
      `pause_bg_install`) takes the entry itself only when pause_bg didn't (`exp_pausetiles0`).
+   - `place_native.c` entry-hooks `Command_InstancePlace` and veneers its `RTree::Search` call. `exp_crtverify`
+     (`collision_round_trip.c`, installed earlier) entry-hooks the same function, so with it the native command
+     doesn't install (only the candidate test). The native calls `ShouldUseFastCollision`, `UpdateTree`,
+     `Compute_BoundingBox(true)`, `CollisionMarkDirty` and `GetCollisionTreeForDomain` through their entries, so hooks
+     on those still run; it reproduces `SetPosition`, `SkeletonAnimation` and `Compute_BoundingBox(false)` and checks
+     their code at install, so an entry hook on `SetPosition` makes it decline.
    - `runner_fast.c` installs last in `katana_late_install`. It entry-hooks `Instance_Animate` and
      `HandleInstanceMovement` and patches the `Perform_Event` / `HasEventRecursive` calls in `HandleStep`,
      `ExecuteDrawEvent`, `DrawLayerInstanceElement` and those two through veneers. Its dispatch inlines
