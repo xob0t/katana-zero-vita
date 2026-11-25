@@ -91,7 +91,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Enemy AI every other tick | `enemy_half_rate.c`, `katana_menu.c` (ENEMY AI row) | `enemyHalfRate` | the setting or the menu | | Gameplay timing change |
 | Hidden blood drops skip their Step | `blood_drops.c` | none | `exp_blooddrops0` | | Exact for game state |
 | Enemy wobble springs at rest skip their Step | `wobble_rest.c` | none | `exp_wobblerest0` | `exp_wobbleverify` | Exact skip |
-| Enemy surface captures without render-target switches | `virtual_capture.c` | none | `exp_vcapture0` | `exp_vcapexact` (exact geometry instead of the default relaxed mode) | See the file |
+| Enemy surface captures without render-target switches | `virtual_capture.c` | none | `exp_vcapture0` | `exp_vcapexact` (exact geometry instead of the default relaxed mode), `exp_vcapab` | See the file |
 
 ### Rooms and effects
 
@@ -241,7 +241,9 @@ Rules:
    `entry_hook` returns NULL and that feature doesn't install. `hooks.c` records every `entry_hook` and `stub_event`
    with its call site, logs `[HOOKS] entry_hook NOT installed on <symbol> ... already hooked by ...` when this
    happens, and `hooks_report()` (end of `katana_late_install`) prints one `[HOOKS]` line with the hook count, RX
-   arena use and every hook that did not install. Check that line after adding a hook. Hooks a native installs with
+   arena use and every hook that did not install, followed by every line logged before it that says `NOT` and a
+   lowercase word (`NOT installed`, `NOT hooked`; `NOT drawn` is a setting and is left out), quoted, so a native that
+   declines in its own install checks is listed too. Check that line after adding a hook. Hooks a native installs with
    its own `hook_addr` are not in the registry, so the second hook's failure is listed without the owner.
 2. A later `hook_addr` or `stub_event` on a hooked function silently replaces the first hook. `stub_event` logs it;
    plain `hook_addr` does not.
@@ -275,10 +277,14 @@ Rules:
    - `smokedraw_native.c`'s verify recorder hooks its scripts on the first verified event, after every native has
      installed; on an entry another native hooked it puts itself in front.
    - `move_contact_native.c` installs its five entry hooks all or none.
+   - `virtual_capture.c` installs before `pause_stack.c`: pause_stack swaps `draw_surface_ext` in the function
+     registry, and vcapture declines unless the registry still holds `F_DrawSurfaceExt` (it didn't install from #115
+     until this order was fixed).
    - `katana_late_install` (once, after the runner's Startup, before the main loop) holds what needs the function
      registry (`the_functions`) or `g_FUNC_*` ids: sound limit, voices, input and held natives, virtual captures,
      the clothesline and tilemap builtin swaps, dossier, wavy and shadow natives.
-6. Every install prints `installed` or `NOT installed` in `yyl.log`. A new feature does the same.
+6. Every install prints `installed` or `NOT installed` in `yyl.log`. A new feature does the same, with `NOT` in
+   capitals on failure: that is what puts it in the `[HOOKS]` line.
 
 ## Building
 

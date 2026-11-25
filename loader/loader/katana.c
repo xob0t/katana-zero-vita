@@ -859,7 +859,10 @@ void katana_late_install(void) {
 		extern int virtual_capture_install(void *(*rx_alloc)(size_t));
 		extern int virtual_capture_relaxed;
 		virtual_capture_relaxed = !exp_flag("vcapexact");
-		debugPrintf("virtual enemy captures: %s\n", virtual_capture_install(katana_rx_alloc) ? "installed" : "NOT installed");
+		extern int virtual_capture_ab;
+		virtual_capture_ab = debugMode && exp_flag("vcapab");
+		debugPrintf("virtual enemy captures: %s%s\n", virtual_capture_install(katana_rx_alloc) ? "installed" : "NOT installed",
+			virtual_capture_ab ? ", A/B by report window" : "");
 	}
 	extern void pause_stack_late_install(void);
 	pause_stack_late_install();
