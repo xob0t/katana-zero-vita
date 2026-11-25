@@ -1168,6 +1168,10 @@ static void patch_performance() {
 	// touchControls=0: the game starts in its gamepad mode, so prompts show buttons at once (gamepad_prompts.c)
 	extern void gamepad_prompts_install(gml_func_entry *table);
 	gamepad_prompts_install(table);
+	// A new wavy dialogue letter on a frozen tick (hit-stop) skips its setup loop instead of spinning forever
+	// (letter_freeze.c). exp_letterfreeze0: off.
+	extern void letter_freeze_install(gml_func_entry *table);
+	letter_freeze_install(table);
 	katana_menu_install(table);
 
 	katana_display_install();
