@@ -20,6 +20,12 @@
  * probe of the page's size; one that lands outside VRAM anyway is flushed again and loads on use). The ones that
  * don't fit any more would load outside VRAM anyway once something draws from them, mid-play, so they are loaded
  * outside VRAM now, while the PHYCONT pool keeps PR_OUTSIDE_RESERVE free; otherwise they load on use, as before.
+ * The current room's own requests also load when PHYCONT is short of that, wherever vitaGL would put them when the room
+ * draws from them: its pools, or a heap block page_reserve.c holds for pages outside VRAM, as long as another held
+ * block stays for a page that loads on use. A room entered with one page already in PHYCONT left ~10 MB there, so its
+ * prefetched page was skipped and loaded mid-play from a held heap block: room_club_1's page 23 five seconds in (187
+ * ms, every playtest), room_club_4's page 14, room_club_0's page 37, room_club_4_2's page 37. Other rooms' requests
+ * (level select's UI pages) keep the PHYCONT rule. exp_pagerestoreown0 restores the PHYCONT-only rule for all pages.
  * In room_factory_0 that puts 3 and 40 back into VRAM and 45 (prompts and button glyphs) outside it; before, page 3
  * (the interior's tiles) ended up outside VRAM. The ~680 ms of loads move into the room's first frames.
  * Nothing runs while a scene is open or a virtual enemy capture is pending (as in title_pages.c); if that holds for
@@ -54,8 +60,10 @@ typedef struct {
 	uint32_t seq;
 } request_t;
 
-static int enabled, outside_ok;
+static int enabled, outside_ok, own_ok;
 extern int vgl_failed_allocs;
+extern unsigned page_reserve_handoffs;
+extern int page_reserve_spare(size_t alignment);
 static request_t requests[MAX_REQUESTS];
 static int nrequests, in_restore;
 static uint32_t request_seq;
@@ -67,6 +75,7 @@ static void **texture_first;
 static uint8_t **wad_base, **wad_end;
 
 static void *pending[MAX_RESTORE];
+static uint8_t pending_own[MAX_RESTORE]; // requested in the room the flush ran in
 static int npending, pending_room = -2, pending_wait;
 
 extern size_t vgl_gpu_fallback_bytes;
@@ -175,8 +184,10 @@ void page_restore_before_flush(void) {
 			*x = *y;
 			*y = t;
 		}
-	for (int i = 0; i < n && npending < MAX_RESTORE; i++)
+	for (int i = 0; i < n && npending < MAX_RESTORE; i++) {
+		pending_own[npending] = order[i].room == room;
 		pending[npending++] = order[i].tex;
+	}
 	pending_room = room;
 	pending_wait = 0;
 }
@@ -209,6 +220,10 @@ int page_restore_after_swap(size_t *spill_seen) {
 	size_t free_before = vglMemFree(VGL_MEM_VRAM);
 	int loaded = 0, skipped = 0, already = 0, outside = 0, kept_outside = 0, nrest = 0;
 	void *rest[MAX_RESTORE];
+	uint8_t rest_own[MAX_RESTORE];
+	char skipped_list[96];
+	int slen = 0;
+	skipped_list[0] = 0;
 	char list[200];
 	int len = 0;
 	list[0] = 0;
@@ -224,6 +239,7 @@ int page_restore_after_swap(size_t *spill_seen) {
 		// Into VRAM if it fits now (a probe of its size)
 		void *probe = vgl_memalign(16, page_bytes(t), VGL_MEM_VRAM);
 		if (!probe) {
+			rest_own[nrest] = pending_own[i];
 			rest[nrest++] = t;
 			continue;
 		}
@@ -245,18 +261,32 @@ int page_restore_after_swap(size_t *spill_seen) {
 	// The pages that don't fit in VRAM any more were resident before the flush too, and if the room draws from them they
 	// load then, outside VRAM, in the middle of play (room_factory_0: page 45 near the clothesline, 330 ms). They are
 	// loaded now, outside VRAM where they would end up anyway, while the PHYCONT pool keeps PR_OUTSIDE_RESERVE free.
+	// The current room's own requests also go wherever the room's draw would put them (vitaGL's pools after VRAM, else a
+	// held heap block, page_reserve.c) while a held block stays for a page that loads on use.
 	for (int i = 0; i < nrest; i++) {
 		void *t = rest[i];
 		size_t bytes = page_bytes(t);
 		void *probe = outside_ok && vglMemFree(VGL_MEM_PHYCONT) >= bytes + PR_OUTSIDE_RESERVE ?
 			vgl_memalign(16, bytes, VGL_MEM_PHYCONT) : NULL;
+		if (!probe && outside_ok && own_ok && rest_own[i]) {
+			static const vglMemType pools[] = {VGL_MEM_RAM, VGL_MEM_PHYCONT, VGL_MEM_BUDGET};
+			for (int p = 0; p < 3 && !probe; p++)
+				probe = vgl_memalign(16, bytes, pools[p]);
+			if (!probe && page_reserve_spare(16) > 0)
+				probe = (void *)1; // vitaGL is handed a held block (page_reserve_release, from page_evict.c's callback)
+		}
 		if (!probe) {
 			skipped++;
+			if (slen < (int)sizeof(skipped_list) - 16)
+				slen += snprintf(skipped_list + slen, sizeof(skipped_list) - slen, " %d%s", page_index(t),
+					rest_own[i] ? "" : "(other room)");
 			continue;
 		}
-		vgl_free(probe);
+		if (probe != (void *)1)
+			vgl_free(probe);
 		uint32_t p0 = sceKernelGetProcessTimeLow();
 		int failed = vgl_failed_allocs;
+		unsigned handoffs = page_reserve_handoffs;
 		orig_prefetch(t);
 		if (vgl_failed_allocs != failed) {
 			// Not allocated after all (it would draw black): flushed again, it loads on use as before
@@ -266,17 +296,19 @@ int page_restore_after_swap(size_t *spill_seen) {
 		}
 		kept_outside++;
 		if (len < (int)sizeof(list) - 24)
-			len += snprintf(list + len, sizeof(list) - len, " %d*(%.0fms)", page_index(t), (sceKernelGetProcessTimeLow() - p0) / 1000.0f);
+			len += snprintf(list + len, sizeof(list) - len, " %d*%s(%.0fms)", page_index(t),
+				page_reserve_handoffs != handoffs ? "h" : "", (sceKernelGetProcessTimeLow() - p0) / 1000.0f);
 	}
 	in_restore = 0;
 	invalidate_texture_state();
 	if (outside)
 		katana_texdrain_now("the page restore's pages outside VRAM");
 	*spill_seen = vgl_gpu_fallback_bytes;
-	debugPrintf("[PAGERESTORE] room %d: loaded %d requested pages back after the recovery flush:%s (* outside VRAM) | %d drawn "
-		"already, %d not loaded, %d unexpectedly outside VRAM (flushed) | free vram %uKB -> %uKB, phycont %uKB, %.1f ms\n",
-		pending_room, loaded + kept_outside, len ? list : " none", already, skipped, outside, free_before / 1024,
-		vglMemFree(VGL_MEM_VRAM) / 1024, vglMemFree(VGL_MEM_PHYCONT) / 1024, (sceKernelGetProcessTimeLow() - t0) / 1000.0f);
+	debugPrintf("[PAGERESTORE] room %d: loaded %d requested pages back after the recovery flush:%s (* outside VRAM, h in a "
+		"held heap block) | %d drawn "
+		"already, %d not loaded%s%s, %d unexpectedly outside VRAM (flushed) | free vram %uKB -> %uKB, phycont %uKB, %.1f ms\n",
+		pending_room, loaded + kept_outside, len ? list : " none", already, skipped, slen ? ":" : "", skipped_list, outside,
+		free_before / 1024, vglMemFree(VGL_MEM_VRAM) / 1024, vglMemFree(VGL_MEM_PHYCONT) / 1024, (sceKernelGetProcessTimeLow() - t0) / 1000.0f);
 	npending = 0;
 	return loaded || outside || kept_outside;
 }
@@ -300,5 +332,6 @@ void page_restore_install(void) {
 		orig_prefetch = entry_hook(prefetch, (void *)prefetch_hook);
 	enabled = orig_prefetch != NULL;
 	outside_ok = !exp_flag("pagerestorevram"); // exp_pagerestorevram: only pages that fit in VRAM
+	own_ok = !exp_flag("pagerestoreown0");     // exp_pagerestoreown0: outside VRAM only into PHYCONT, for every page
 	debugPrintf("requested pages back after the page recovery flush: %s\n", enabled ? "on" : "NOT installed");
 }
