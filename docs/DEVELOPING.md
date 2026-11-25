@@ -140,6 +140,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | LZ4 texture pages and the decoder self-test | `katana.c`, `scripts/prepare_apk.py` | none | none: never bypass the self-test | | Required |
 | Title pages loaded between frames | `title_pages.c` | none | `exp_titlepages0` | | Exact |
 | Drain after the game's texture flush, page recovery | `katana_display.c` | none | `exp_texdrain0`, `exp_texflush0` | | Port fix |
+| Heap blocks held for pages outside VRAM (white sprites fix) | `page_reserve.c` (`memalign` wrapped), `page_evict.c` | none | `exp_pagereserve0` | `exp_fragheap` (splits the heap's large holes after Startup, the state of a long session) | Port fix |
 | Application surface size, dynamic resolution | `katana_display.c`, `main.c` | `renderRes`, `dynamicRes` | `exp_appsurf1280` (original size) | `exp_appsurf640`, `exp_dynrestest` | Display |
 | vitaGL pools: 2 MB vertex pool, 8 MB parameter buffer, VRAM split | `main.c` | `squeezeMem` | `exp_pool3k`, `exp_parambuf16`, `exp_novramsplit` | | Memory |
 | Runner code in physically contiguous memory | `so_util.c` | none | `exp_nophycont` | | Memory |

@@ -292,11 +292,18 @@ static int evict_until_fits(size_t size, size_t alignment, const char *where) {
 }
 
 static int evict_cb(size_t size, size_t alignment) {
-	if (!enabled || busy || room_off || sceKernelGetThreadId() != game_thread)
-		return 0;
-	busy = 1;
-	int evicted = evict_until_fits(size, alignment, "mid-frame");
-	busy = 0;
+	int evicted = 0;
+	if (enabled && !busy && !room_off && sceKernelGetThreadId() == game_thread) {
+		busy = 1;
+		evicted = evict_until_fits(size, alignment, "mid-frame");
+		busy = 0;
+	}
+	// Still no room in VRAM: a held heap block for it if it would otherwise have to come from the newlib heap
+	// (page_reserve.c)
+	if (!evicted || !fits(size, alignment)) {
+		extern void page_reserve_release(size_t size, size_t alignment);
+		page_reserve_release(size, alignment);
+	}
 	return evicted;
 }
 
@@ -318,9 +325,28 @@ int page_evict_page_outside_vram(void) {
 	return 0;
 }
 
+// Between frames (page_reserve.c): texture pages whose storage is in the newlib heap
+int page_evict_pages_in_heap(void) {
+	if (!orig_load)
+		return 0;
+	extern int newlib_heap_contains(const void *p);
+	int n = 0;
+	for (void *t = *texture_first; t; t = (void *)TEX_U32(t, T_NEXT)) {
+		unsigned w, h;
+		uint32_t name = TEX_U32(t, T_GLID), last;
+		if (name == NOT_LOADED || !wad_page(t, &w, &h))
+			continue;
+		void *data = vgl_tex_usage(name, &last);
+		n += data && newlib_heap_contains(data);
+	}
+	return n;
+}
+
 static int load_hook(void *tex, int mip) {
 	uint32_t t0 = sceKernelGetProcessTimeLow();
 	size_t spill = vgl_gpu_fallback_bytes;
+	extern int vgl_failed_allocs;
+	int failed = vgl_failed_allocs;
 	int r = orig_load(tex, mip);
 	uint32_t now = vgl_framecount;
 	sync_room();
@@ -344,7 +370,8 @@ static int load_hook(void *tex, int mip) {
 		unsigned w = 0, h = 0;
 		wad_page(tex, &w, &h);
 		debugPrintf("[TEXLOAD] page %d %ux%u in %.1f ms%s%s | free vram %uKB\n", page_index(tex), w, h,
-			(sceKernelGetProcessTimeLow() - t0) / 1000.0f, vgl_gpu_fallback_bytes != spill ? " OUTSIDE VRAM" : "", again,
+			(sceKernelGetProcessTimeLow() - t0) / 1000.0f, vgl_failed_allocs != failed ? " NOT ALLOCATED (draws blank)" :
+			vgl_gpu_fallback_bytes != spill ? " OUTSIDE VRAM" : "", again,
 			vglMemFree(VGL_MEM_VRAM) / 1024);
 	}
 	return r;
@@ -357,6 +384,8 @@ void page_evict_frame(void) {
 }
 
 void page_evict_install(void) {
+	// The callback also releases page_reserve.c's heap blocks, with or without eviction
+	vgl_vram_evict_cb = evict_cb;
 	if (exp_flag("pageevict0")) {
 		debugPrintf("texture page eviction: off (exp_pageevict0)\n");
 		return;
@@ -386,6 +415,5 @@ void page_evict_install(void) {
 		return;
 	}
 	enabled = 1;
-	vgl_vram_evict_cb = evict_cb;
 	debugPrintf("texture page eviction: on (pages unused for %d frames)\n", EVICT_MIN_AGE);
 }

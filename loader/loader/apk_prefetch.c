@@ -421,6 +421,9 @@ static void *readfile_hook(const char *name, uint32_t *size) {
 				if (size)
 					*size = len;
 				deflated_done(name);
+				// The inflated copy's hole is the heap's largest now: blocks for pages outside VRAM come from it
+				extern void page_reserve_fill(const char *where);
+				page_reserve_fill("after the game.droid handover");
 				return buf;
 			}
 		}

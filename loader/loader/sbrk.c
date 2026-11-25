@@ -115,3 +115,9 @@ size_t newlib_heap_used(void)
 {
 	return _newlib_heap_cur - _newlib_heap_base;
 }
+
+// Whether p lies in the newlib heap (page_reserve.c: texture pages vitaGL placed there)
+int newlib_heap_contains(const void *p)
+{
+	return _newlib_heap_base && (const char *)p >= _newlib_heap_base && (const char *)p < _newlib_heap_end;
+}

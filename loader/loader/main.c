@@ -4112,6 +4112,9 @@ void *pthread_main(void *arg) {
 	
 	boot_mark("runner Startup");
 	apk_prefetch_release(); // Startup (its first room) has read everything the prefetcher reads
+	extern void page_reserve_fill(const char *where), page_reserve_fragheap(void);
+	page_reserve_fill("after Startup"); // heap blocks for texture pages outside VRAM (page_reserve.c)
+	page_reserve_fragheap();
 	fast_find_end();
 	exp_flag_boot_end(); // exp_ switches are checked on the card again
 	boot_prof_report("runner Startup done");

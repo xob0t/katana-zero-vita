@@ -50,6 +50,8 @@ file(GLOB APP_SOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} CONFIGURE_DEPENDS loa
 # qoi_decoder.c belongs to the selector build below
 list(REMOVE_ITEM APP_SOURCES loader/qoi_decoder.c)
 add_executable(YoYoLoader ${APP_SOURCES} loader/lz4/lz4.c)
+# page_reserve.c hands held heap blocks to vitaGL's newlib fallback (its memalign)
+target_link_options(YoYoLoader PRIVATE -Wl,--wrap,memalign)
 
 target_link_libraries(YoYoLoader
   -Wl,--whole-archive pthread -Wl,--no-whole-archive

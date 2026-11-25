@@ -288,6 +288,9 @@ uint32_t after_swap_dynres_us; // debug: dynamic_res_update of the last frame
 static void after_swap(uint32_t swap_us, uint32_t work_us);
 void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
 	after_swap(swap_us, work_us);
+	// Heap blocks for pages outside VRAM taken back once a flush freed the pages that used them (page_reserve.c)
+	extern void page_reserve_frame(void);
+	page_reserve_frame();
 	// The title pages' state as the next frame starts, after any recovery flush above
 	extern void title_pages_snapshot(void);
 	title_pages_snapshot();
