@@ -1181,6 +1181,9 @@ static void patch_performance() {
 	// touchControls=0: the game starts in its gamepad mode, so prompts show buttons at once (gamepad_prompts.c)
 	extern void gamepad_prompts_install(gml_func_entry *table);
 	gamepad_prompts_install(table);
+	// Bloom off by default; a saved GRAPHICS -> BLOOM FX choice is kept (bloom_default.c). bloomDefault=1: on.
+	extern void bloom_default_install(gml_func_entry *table);
+	bloom_default_install(table);
 	// A new wavy dialogue letter on a frozen tick (hit-stop) skips its setup loop instead of spinning forever
 	// (letter_freeze.c). exp_letterfreeze0: off.
 	extern void letter_freeze_install(gml_func_entry *table);

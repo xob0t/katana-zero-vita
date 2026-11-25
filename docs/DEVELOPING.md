@@ -139,6 +139,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | On-screen touch controls hidden, yes/no prompt preselection | `katana.c`, `katana_menu.c` | none | `exp_touchui`; `exp_btnnodraw0` (buttons drawn with colour writes off instead) | | Port UI |
 | Options menu without CONTROLS, the touch controls' page | `katana_menu.c` | `touchControls` (only with 0) | `exp_touchmenu0` | | Port UI |
 | Controller prompts from the start (`global.gamepadMode` set after obj_global_controller's Create) | `gamepad_prompts.c` | `touchControls` (only with 0) | `exp_padprompts0` | | Port UI |
+| Bloom off by default (`global.bloom_shader` = 0 before `load_options` reads the saved choice, and after `mobile_reset_game_data`) | `bloom_default.c` | `bloomDefault` | `bloomDefault=1` | | Visible (default only) |
 | Stick deadzone | `gamepad.c` | `stickDeadzone` | `stickDeadzone=0` | | Input |
 
 ### Textures, VRAM, display
