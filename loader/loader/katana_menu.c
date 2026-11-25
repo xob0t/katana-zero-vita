@@ -1,7 +1,8 @@
 /*
  * katana_menu.c
  *
- * GAME menu rows ENEMY AI, ENEMY TIMING and TIMER & SLOW-MO, and the yes/no prompt's starting selection.
+ * GAME menu rows ENEMY AI, ENEMY TIMING and TIMER & SLOW-MO, the options menu without its touch controls page, and
+ * the yes/no prompt's starting selection.
  */
 
 #include <vitasdk.h>
@@ -74,6 +75,21 @@
  * with vsync false, what every save had before (g_Sync 1 -> 0, one GR_D3D_Reset before the first room), and drops the
  * calls obj_optionsmenu Destroy makes (when global.vsync != prev_var_vsync), which would free every surface the next
  * frame. TIMER & SLOW-MO is installed only with the guard.
+ *
+ * CONTROLS (touchControls=0): the options main menu (obj_options_main_menu Create: GAME, CONTROLS, GRAPHICS, AUDIO,
+ * BACK; the title's OPTIONS and the pause menu's both create it) has no CONTROLS row. On Android that row opens the
+ * touch controls page and nothing else (Step line 173: "CONTROLS" or "GAMEPAD CONTROLS" ->
+ * create_mobile_controls_menu_options): JOYSTICK, INTERACT BUTTON, CUTSCENE BUTTON, LEFT HANDED MODE, EDIT BUTTONS (the
+ * drag-to-place screen, obj_mobile_control_menu), RESET TO DEFAULT, SAVE, CANCEL. The values (global.mobile_joystick_on,
+ * mobile_interaction_button_in_game / _in_cutscene, mobile_joystick_leftHanded, the button positions and sizes) are
+ * read by the touch controls (obj_onScreenKeyboard, obj_screenBtn, obj_screenJoystick) and the tutorials' touch art;
+ * the gamepad bindings page (create_controls_menu) is reached only from "KEYBOARD CONTROLS", which Android never adds.
+ * The row is left out where it is added: add_pausemenu_choice("CONTROLS", "end") is not run, so max_choice counts four
+ * rows and Up/Down wrap over them. Step picks a page by the row's string (choice[current_choice]), not its index, so
+ * GAME, GRAPHICS, AUDIO and BACK work as before. Only Create passes "CONTROLS" to add_pausemenu_choice
+ * (obj_mobile_control_menu Step and the main menu's Step use it as menu_title only). Every other page's
+ * obj_optionsmenu still copies the touch values in Create and back in SAVE, and save_options writes them, so they
+ * round-trip unchanged. touchControls 1 or 2 keep the row, and exp_touchmenu0 too.
  */
 static int enemy_half_cfg = -1; // enemyHalfRate from yyl.cfg, kept once enemy_half_rate follows the menu (-1: no row)
 static int *var_show_crap_settings, *var_var_show_crap_settings, *var_var_fullscreen;
@@ -126,9 +142,15 @@ static void rv_free(gml_rvalue *v) {
 		yy_free_rvalue(v);
 }
 
+static int hide_touch_page; // the options main menu without CONTROLS (the touch controls page)
+
 static void *menu_add_pausemenu_choice(void *self, void *other, void *result, int argc, void **args) {
-	void *r = orig_add_pausemenu_choice(self, other, result, argc, args);
 	const char *key = argc == 2 ? rv_string(args[0]) : NULL;
+	if (hide_touch_page && key && !strcmp(key, "CONTROLS")) { // obj_options_main_menu Create only
+		debugPrintf("options menu: CONTROLS (touch controls page) left out\n");
+		return result; // the script returns nothing; the caller's result stays as it set it
+	}
+	void *r = orig_add_pausemenu_choice(self, other, result, argc, args);
 	if (key && !strcmp(key, "SLOWDOWN CONTROL")) { // the GAME page only (obj_options_main_menu Step)
 		extern int eh_available(void);
 		// ENEMY AI, ENEMY TIMING, TIMER & SLOW-MO
@@ -440,12 +462,20 @@ void options_menu_install(gml_func_entry *table) {
 		orig_optionsmenu_step = gml_replace(table, "gml_Object_obj_optionsmenu_Step_0", enemy_optionsmenu_step);
 	if (orig_optionsmenu_step)
 		orig_optionsmenu_draw = gml_replace(table, "gml_Object_obj_optionsmenu_Draw_0", enemy_optionsmenu_draw);
-	if (orig_optionsmenu_draw)
+	// CONTROLS left out of the options main menu needs only this hook
+	extern int touch_controls;
+	int want_touch_hidden = !touch_controls && !exp_flag("touchmenu0");
+	if (orig_optionsmenu_draw || want_touch_hidden)
 		orig_add_pausemenu_choice = entry_hook(so_symbol(&yoyoloader_mod,
 			"_Z31gml_Script_add_pausemenu_choiceP9CInstanceS0_R8YYRValueiPPS1_"), menu_add_pausemenu_choice);
-	enemy_row = enemy_ok && orig_add_pausemenu_choice;
-	choices[ROW_TIMING].row = timing_ok && orig_add_pausemenu_choice;
-	choices[ROW_TIMER].row = timer_ok && orig_add_pausemenu_choice;
+	int rows_ok = orig_optionsmenu_draw && orig_add_pausemenu_choice;
+	enemy_row = enemy_ok && rows_ok;
+	choices[ROW_TIMING].row = timing_ok && rows_ok;
+	choices[ROW_TIMER].row = timer_ok && rows_ok;
+	hide_touch_page = want_touch_hidden && orig_add_pausemenu_choice;
+	debugPrintf("options menu CONTROLS (touch controls page): %s\n", hide_touch_page ? "hidden" :
+		want_touch_hidden ? "NOT hidden (hook not installed)" : touch_controls ? "kept (touchControls)" :
+		"kept (exp_touchmenu0)");
 	if (enemy_row)
 		enemy_half_cfg = enemy_half_rate; // from here on options_menu_sync owns enemy_half_rate
 	debugPrintf("enemy AI menu: %s (yyl.cfg enemyHalfRate %d)\n", enemy_row ? "on" : want_enemy ? "NOT installed" : "off",
