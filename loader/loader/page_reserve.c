@@ -40,7 +40,10 @@
  * still fails is drawn blank and retried (page_evict.c's load hook), so the GPU never sees a missing texture.
  *
  * At most PR_RESERVE_BLOCKS + 1 blocks of PR_HELD_BYTES of the heap are set aside this way (the runner uses ~140 MB of
- * the 240 MB heap; with the blocks ~191 MB is sbrk'd after Startup, the rest a ~55 MB tail). Game (GL) thread only.
+ * the 240 MB heap; with the blocks ~207 MB is sbrk'd after Startup, the rest a ~38 MB tail). Three page blocks: a
+ * room entered while a page sits in PHYCONT (club_0 -> room_title -> room_chinatown_2) loads three pages outside VRAM
+ * in one frame; with two, the third drew blank for a frame and vitaGL ran a forced collection with a scene open
+ * (exp_fragheap, Nov 25). Game (GL) thread only.
  * exp_pagereserve0 disables all of it; exp_reservedecode0 only the decode block (the runner's page buffer from
  * vglMalloc as before). Tests: exp_fragheap splits the free heap holes of 8 MB or more after Startup, the state of a
  * long session; exp_fragpools also takes vitaGL's RAM, PHYCONT and CDLG pools in pieces below a page's size;
@@ -60,7 +63,7 @@
 
 #include "katana_internal.h"
 
-#define PR_RESERVE_BLOCKS 2
+#define PR_RESERVE_BLOCKS 3
 #define PR_BLOCK_BYTES (16 * 1024 * 1024) // a 2048x2048 RGBA page
 #define PR_MIN_SIZE (4 * 1024 * 1024)
 #define PR_HELD_BYTES (PR_BLOCK_BYTES + 4096) // every held block: a page's decode buffer plus MemoryManager's header
