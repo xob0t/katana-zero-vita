@@ -37,6 +37,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <arm_neon.h>
 #include <psp2/kernel/processmgr.h>
 
 #include "main.h"
@@ -107,7 +108,7 @@ static inline uint32_t fbits(float f) {
 typedef struct {
 	uint32_t key[7]; // u offset, v offset, u size, v size, u step, v step (float bits), tileset columns
 	int used;
-	uint32_t valid[UV_N / 32];
+	uint8_t valid[UV_N];
 	uint64_t (*uv)[4];
 } uv_slot;
 static uv_slot slots[UV_SLOTS];
@@ -144,6 +145,13 @@ static uv_slot *uv_slot_for(const float *p, uint32_t cols) {
 }
 
 /* ---- the draw ---- */
+
+// Which of the UV table's corner pairs (0 TL, 1 TR, 2 BL, 3 BR) the vertices TL, TR, BL, BR get, by the cell's bits
+// 28-30 (mirror, flip, rotate), as the runner picks them
+static const uint8_t corner_order[8][4] = {
+	{0, 1, 2, 3}, {1, 0, 3, 2}, {2, 3, 0, 1}, {3, 2, 1, 0},
+	{2, 0, 3, 1}, {3, 1, 2, 0}, {0, 2, 1, 3}, {1, 3, 0, 2},
+};
 
 // Returns 0 when the runner's function must run instead (nothing was submitted then)
 static __attribute__((noinline)) int draw_native(const float *rect, uint8_t *layer, uint8_t *elem, float fx, float fy, float fdepth,
@@ -224,6 +232,7 @@ static __attribute__((noinline)) int draw_native(const float *rect, uint8_t *lay
 	const uint32_t fc = *(uint32_t *)(ts + 0x30);
 	const uint8_t *anim = *(uint8_t **)(ts + 0x48);
 	uv_slot *slot = uv_slot_for(p, tscols);
+	uint8_t *const valid = slot->valid;
 	const uint32_t zb = fbits(depth);
 
 	static uint32_t xs[2 * MAX_COLS]; // the column's left and right x (float bits)
@@ -233,13 +242,15 @@ static __attribute__((noinline)) int draw_native(const float *rect, uint8_t *lay
 		xs[2 * i] = fbits(x0);
 		xs[2 * i + 1] = fbits(x0 + tw);
 	}
-	unsigned tiles = 0;
+	// (depth, colour) of the corners: TL c0, TR c1, BR c2, BL c3
+	const uint32x2_t zc0 = vcreate_u32((uint64_t)zb | (uint64_t)c0 << 32), zc1 = vcreate_u32((uint64_t)zb | (uint64_t)c1 << 32);
+	const uint32x2_t zc2 = vcreate_u32((uint64_t)zb | (uint64_t)c2 << 32), zc3 = vcreate_u32((uint64_t)zb | (uint64_t)c3 << 32);
+	unsigned reserved = 0;
 	for (int32_t row = rs; row != re; row++) {
 		const float y0f = yoff + (float)row * th;
 		const uint32_t y0 = fbits(y0f), y1 = fbits(y0f + th);
 		const uint32_t *cells = (const uint32_t *)(data + (uint32_t)ew * ((uint32_t)row * 4u)) + cs;
-		const uint64_t c0z = (uint64_t)zb | (uint64_t)c0 << 32, c1z = (uint64_t)zb | (uint64_t)c1 << 32;
-		const uint64_t c2z = (uint64_t)zb | (uint64_t)c2 << 32, c3z = (uint64_t)zb | (uint64_t)c3 << 32;
+		const uint32x2_t y0v = vdup_n_u32(y0), y1v = vdup_n_u32(y1);
 		for (int i = 0; i < ncols; i++, remaining--) {
 			const uint32_t m = cells[i] & mask;
 			const uint32_t idx = m & 0x7ffff;
@@ -250,14 +261,15 @@ static __attribute__((noinline)) int draw_native(const float *rect, uint8_t *lay
 				continue;
 			if (!left_tiles) {
 				left_tiles = remaining < maxper ? remaining : maxper;
+				reserved += left_tiles;
 				o = out_fns->alloc(4, (void *)*(uint32_t *)tex, 0x18, left_tiles * 6);
 			}
 			const uint64_t *uv;
 			uint64_t direct_uv[4];
 			if (t < UV_N) {
-				if (!(slot->valid[t >> 5] & (1u << (t & 31)))) {
+				if (!valid[t]) {
 					uv_compute(slot->uv[t], t, tscols, p);
-					slot->valid[t >> 5] |= 1u << (t & 31);
+					valid[t] = 1;
 				}
 				uv = slot->uv[t];
 			} else {
@@ -266,35 +278,32 @@ static __attribute__((noinline)) int draw_native(const float *rect, uint8_t *lay
 				n_uv_direct++;
 			}
 			// Corners: mirror (bit 28) swaps u, flip (bit 29) swaps v, rotate (bit 30) turns the corners
-			uint64_t t0, t1, t2, t5;
-			if (!(m & 0x70000000u)) {
-				t0 = uv[0]; t1 = uv[1]; t2 = uv[2]; t5 = uv[3];
+			uint32x2_t t0, t1, t2, t5;
+			const uint32_t f = (m >> 28) & 7;
+			if (!f) {
+				t0 = vld1_u32((const uint32_t *)&uv[0]); t1 = vld1_u32((const uint32_t *)&uv[1]);
+				t2 = vld1_u32((const uint32_t *)&uv[2]); t5 = vld1_u32((const uint32_t *)&uv[3]);
 			} else {
-				const uint32_t x = (m >> 28) & 3;
-				if (!(m & 0x40000000u)) {
-					t0 = uv[x]; t1 = uv[x ^ 1]; t2 = uv[x ^ 2]; t5 = uv[x ^ 3];
-				} else {
-					t0 = uv[x ^ 2]; t1 = uv[x]; t2 = uv[x ^ 3]; t5 = uv[x ^ 1];
-				}
+				const uint8_t *k = corner_order[f];
+				t0 = vld1_u32((const uint32_t *)&uv[k[0]]); t1 = vld1_u32((const uint32_t *)&uv[k[1]]);
+				t2 = vld1_u32((const uint32_t *)&uv[k[2]]); t5 = vld1_u32((const uint32_t *)&uv[k[3]]);
 			}
-			const uint32_t x0 = xs[2 * i], x1 = xs[2 * i + 1];
-			uint64_t *q = (uint64_t *)o;
-			const uint64_t p00 = (uint64_t)x0 | (uint64_t)y0 << 32, p10 = (uint64_t)x1 | (uint64_t)y0 << 32;
-			const uint64_t p01 = (uint64_t)x0 | (uint64_t)y1 << 32, p11 = (uint64_t)x1 | (uint64_t)y1 << 32;
-			q[0] = p00;  q[1] = c0z;  q[2] = t0;
-			q[3] = p10;  q[4] = c1z;  q[5] = t1;
-			q[6] = p01;  q[7] = c3z;  q[8] = t2;
-			q[9] = p01;  q[10] = c3z; q[11] = t2;
-			q[12] = p10; q[13] = c1z; q[14] = t1;
-			q[15] = p11; q[16] = c2z; q[17] = t5;
+			const uint32x2_t xv = vld1_u32(&xs[2 * i]);
+			const uint32x2x2_t top = vzip_u32(xv, y0v), bot = vzip_u32(xv, y1v); // (x0, y), (x1, y)
+			uint32x2_t *q = (uint32x2_t *)o; // vstr d, [r, #imm]: 4-byte alignment is enough
+			q[0] = top.val[0];  q[1] = zc0;  q[2] = t0;
+			q[3] = top.val[1];  q[4] = zc1;  q[5] = t1;
+			q[6] = bot.val[0];  q[7] = zc3;  q[8] = t2;
+			q[9] = bot.val[0];  q[10] = zc3; q[11] = t2;
+			q[12] = top.val[1]; q[13] = zc1; q[14] = t1;
+			q[15] = bot.val[1]; q[16] = zc2; q[17] = t5;
 			o += 36;
 			left_tiles--;
-			tiles++;
 		}
 	}
 	if (left_tiles > 0)
 		out_fns->free(left_tiles * 6);
-	n_tiles += tiles;
+	n_tiles += reserved - (left_tiles > 0 ? left_tiles : 0);
 	return 1;
 }
 
