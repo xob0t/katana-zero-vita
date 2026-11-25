@@ -39,6 +39,16 @@
  * between frames was tried (GPU transfer copies): it can't make a 16 MB block there, and staging through PHYCONT isn't
  * safe with the CPU-cached pools. Leaving the page outside VRAM cost 6-8 fps in the giant phase, so the flush stays.
  * Debug mode logs every page load ([TEXLOAD]) and eviction ([PAGEEVICT]). exp_pageevict0 disables.
+ *
+ * The same load hook keeps a page whose decode failed away from the GPU. When the runner can't allocate the page's
+ * decode buffer (page_reserve.c), ReadQOIFFile returns NULL and LoadTextureFromQOIF returns without creating a GL
+ * texture: the Texture's GL name stays -1, the runner binds it anyway (glBindTexture(GL_TEXTURE_2D, 0xFFFFFFFF)) and
+ * vitaGL, built without error checks, draws with texture_slots[-1], garbage that crashed the GPU and the whole Vita.
+ * So the hook first unloads the pages eviction allows (VRAM is the decode buffer's last pool) and loads the page once
+ * more; if that fails too, it gives the page a 1x1 transparent texture (the page draws blank) and, for a game.droid
+ * page, flushes it DECODE_RETRY_FRAMES later between frames, so the runner loads it again on its next use. And the
+ * runner's glBindTexture (katana_glBindTexture, main.c's GL table) binds a 1x1 transparent texture for any name vitaGL
+ * has no slot for, whatever path leaves a Texture at -1. Both stay on with exp_pageevict0.
  */
 
 #include <vitasdk.h>
@@ -346,12 +356,112 @@ int page_evict_pages_in_heap(void) {
 	return n;
 }
 
+// Pages whose decode failed, drawn blank until their retry (see the top of the file)
+#define DECODE_FAILED_MAX 32
+#define DECODE_RETRY_FRAMES 60 // 1 s
+static struct { void *tex; GLuint name; uint32_t frame; } decode_failed[DECODE_FAILED_MAX];
+static int ndecode_failed;
+unsigned page_decode_failures, page_decode_retries;
+static void (*invalidate_texture_state)(void);
+
+// What LoadTextureFromQOIF sets after a decode (+0x04 width, +0x08 height from the blob header, format 6 at +0x00, flag
+// 0x40, the GL name), with a 1x1 transparent texture instead of the page's pixels
+static void blank_page(void *tex) {
+	static const uint32_t clear = 0;
+	GLuint name = 0;
+	glGenTextures(1, &name);
+	glBindTexture(GL_TEXTURE_2D, name);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, &clear);
+	invalidate_texture_state(); // the runner's cached binding: it binds the page itself right after the load
+	const uint8_t *b = (const uint8_t *)TEX_U32(tex, T_DATA);
+	if (b && TEX_U32(tex, T_SIZE) >= 12 && (!memcmp(b, "2zoq", 4) || !memcmp(b, "fioq", 4))) {
+		TEX_U32(tex, 0x04) = b[4] | b[5] << 8;
+		TEX_U32(tex, 0x08) = b[6] | b[7] << 8;
+	}
+	TEX_U32(tex, 0x00) = 6;
+	TEX_U32(tex, T_FLAGS) |= 0x40;
+	TEX_U32(tex, T_GLID) = name;
+	page_decode_failures++;
+	unsigned w, h;
+	int i = 0;
+	while (i < ndecode_failed && decode_failed[i].tex != tex)
+		i++;
+	int retry = wad_page(tex, &w, &h) && i < DECODE_FAILED_MAX;
+	if (retry) {
+		if (i == ndecode_failed)
+			ndecode_failed++;
+		decode_failed[i].tex = tex;
+		decode_failed[i].name = name;
+		decode_failed[i].frame = vgl_framecount;
+	}
+	debugPrintf("[TEXLOAD] page %d: DECODE FAILED (no memory for its pixels), drawn blank%s | %u failure(s) in the "
+		"session\n", page_index(tex), retry ? ", loaded again in 1 s" : "", page_decode_failures);
+}
+
+// The runner's glBindTexture (main.c's GL table and dlsym hooks). vitaGL is built without its range check (NO_DEBUG):
+// a name outside texture_slots (the -1 of a Texture whose load failed) would become the bound texture and the next draw
+// would read texture_slots[-1]. Such a name binds a 1x1 transparent texture instead.
+#define VGL_TEXTURES_NUM 16384 // vitaGL's TEXTURES_NUM (source/shared.h)
+unsigned page_bad_binds;
+static int bind_guard_test; // exp_decodeguard0 (test): a failed page stays at -1, only the bind guard protects the GPU
+static void **runner_bind_texture; // the runner's FuncPtr_glBindTexture
+void katana_glBindTexture(GLenum target, GLuint name) {
+	if (name >= VGL_TEXTURES_NUM) {
+		static GLuint guard;
+		if (!guard) {
+			static const uint32_t clear = 0;
+			glGenTextures(1, &guard);
+			glBindTexture(GL_TEXTURE_2D, guard);
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, &clear);
+		}
+		if (!page_bad_binds++ || !(page_bad_binds & 1023))
+			debugPrintf("[TEXLOAD] glBindTexture of name 0x%08X (no vitaGL slot): a blank texture bound instead (%u "
+				"in the session)\n", name, page_bad_binds);
+		name = guard;
+	}
+	glBindTexture(target, name);
+}
+
+// Between frames: failed pages still blank after DECODE_RETRY_FRAMES are flushed, for the runner to load them again on
+// their next use (a page the runner flushed or reloaded itself is dropped from the list)
+static void decode_retry_frame(void) {
+	for (int i = 0; i < ndecode_failed;) {
+		void *tex = decode_failed[i].tex;
+		int blank = TEX_U32(tex, T_GLID) == decode_failed[i].name;
+		if (blank && vgl_framecount - decode_failed[i].frame < DECODE_RETRY_FRAMES) {
+			i++;
+			continue;
+		}
+		if (blank) {
+			flush_texture(tex);
+			page_decode_retries++;
+		}
+		decode_failed[i] = decode_failed[--ndecode_failed];
+	}
+}
+
 static int load_hook(void *tex, int mip) {
 	uint32_t t0 = sceKernelGetProcessTimeLow();
 	size_t spill = vgl_gpu_fallback_bytes;
 	extern int vgl_failed_allocs;
 	int failed = vgl_failed_allocs;
 	int r = orig_load(tex, mip);
+	unsigned pw, ph;
+	if (TEX_U32(tex, T_GLID) == NOT_LOADED && enabled && !busy && !room_off && sceKernelGetThreadId() == game_thread &&
+		wad_page(tex, &pw, &ph)) {
+		// No room for the decode buffer: unload what eviction allows (VRAM, the buffer's last pool) and try once more
+		busy = 1;
+		int evicted = evict_until_fits((size_t)pw * ph * 4 + 32, 16, "failed decode");
+		busy = 0;
+		if (evicted)
+			r = orig_load(tex, mip);
+		debugPrintf("[TEXLOAD] page %d: decode failed, %d page(s) unloaded, %s\n", page_index(tex), evicted,
+			!evicted ? "not loaded again" : TEX_U32(tex, T_GLID) == NOT_LOADED ? "failed again" : "loaded now");
+	}
+	if (TEX_U32(tex, T_GLID) == NOT_LOADED && !bind_guard_test) {
+		blank_page(tex);
+		r = TEX_U32(tex, T_GLID);
+	}
 	uint32_t now = vgl_framecount;
 	sync_room();
 	int k = track_find(tex, 1);
@@ -384,21 +494,30 @@ static int load_hook(void *tex, int mip) {
 // katana_after_swap, on the game thread: room changes
 void page_evict_frame(void) {
 	game_thread = sceKernelGetThreadId();
+	if (!orig_load)
+		return;
+	static int bind_checked;
+	if (!bind_checked) {
+		bind_checked = 1;
+		int guarded = runner_bind_texture && *runner_bind_texture == (void *)katana_glBindTexture;
+		bind_guard_test = guarded && exp_flag("decodeguard0");
+		debugPrintf("[TEXLOAD] the runner's glBindTexture: %s%s\n", guarded ? "guarded" : "NOT guarded",
+			bind_guard_test ? "; exp_decodeguard0: failed pages are left unloaded (test)" : "");
+	}
 	sync_room();
+	decode_retry_frame();
 }
 
 void page_evict_install(void) {
 	// The callback also releases page_reserve.c's heap blocks, with or without eviction
 	vgl_vram_evict_cb = evict_cb;
-	if (exp_flag("pageevict0")) {
-		debugPrintf("texture page eviction: off (exp_pageevict0)\n");
-		return;
-	}
 	flush_texture = (void *)so_symbol(&yoyoloader_mod, "_ZN8Graphics12FlushTextureEPv");
 	texture_first = (void **)so_symbol(&yoyoloader_mod, "_ZN7Texture9ms_pFirstE");
 	last_texture = (void **)so_symbol(&yoyoloader_mod, "g_pLastTexture");
 	wad_base = (uint8_t **)so_symbol(&yoyoloader_mod, "g_pWADBaseAddress");
 	wad_end = (uint8_t **)so_symbol(&yoyoloader_mod, "g_pWADEndAddress");
+	invalidate_texture_state = (void *)so_symbol(&yoyoloader_mod, "_Z23_InvalidateTextureStatev");
+	runner_bind_texture = (void **)so_symbol(&yoyoloader_mod, "FuncPtr_glBindTexture");
 	uintptr_t load = so_symbol(&yoyoloader_mod, "_Z19LoadTextureFromQOIFP7Texture10eMipEnable");
 	uintptr_t flush_all = so_symbol(&yoyoloader_mod, "_ZN8Graphics12TextureFlushEb");
 	uintptr_t flush = (uintptr_t)flush_texture;
@@ -409,15 +528,22 @@ void page_evict_install(void) {
 		*(uint32_t *)(load + 0xdc) == 0xe5841018 && *(uint32_t *)(load + 0x120) == 0xe584001c &&
 		*(uint32_t *)(flush_all + 0x24) == 0xe5955068 && *(uint32_t *)(flush_all + 0x38) == 0xe5d50019 &&
 		*(uint32_t *)(flush + 0x50) == 0xe5b1201c && *(uint32_t *)(flush + 0x84) == 0xe584101c;
-	if (!layout || !texture_first || !wad_base || !wad_end) {
-		debugPrintf("texture page eviction: NOT installed (unknown runner)\n");
+	// What blank_page sets as a decode does: strd r0, [r4, #4] (width, height), str r1(6), [r4] (format)
+	layout = layout && *(uint32_t *)(load + 0x78) == 0xe1c400f4 && *(uint32_t *)(load + 0x11c) == 0xe5841000 &&
+		*(uint32_t *)(load + 0x114) == 0xe3a01006;
+	if (!layout || !texture_first || !wad_base || !wad_end || !invalidate_texture_state) {
+		debugPrintf("texture page eviction and failed-decode guard: NOT installed (unknown runner)\n");
 		return;
 	}
 	orig_load = entry_hook(load, load_hook);
 	if (!orig_load) {
-		debugPrintf("texture page eviction: NOT installed (load hook)\n");
+		debugPrintf("texture page eviction and failed-decode guard: NOT installed (load hook)\n");
+		return;
+	}
+	if (exp_flag("pageevict0")) {
+		debugPrintf("texture page eviction: off (exp_pageevict0); failed-decode guard on\n");
 		return;
 	}
 	enabled = 1;
-	debugPrintf("texture page eviction: on (pages unused for %d frames)\n", EVICT_MIN_AGE);
+	debugPrintf("texture page eviction: on (pages unused for %d frames); failed-decode guard on\n", EVICT_MIN_AGE);
 }
