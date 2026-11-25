@@ -851,6 +851,8 @@ void katana_late_install(void) {
 	psych_fix_late_install();
 	extern void pause_bg_late_install(void);
 	pause_bg_late_install();
+	extern void flashlight_native_late_install(void);
+	flashlight_native_late_install(); // the builtin ids of flashlight_native.c (registry)
 	// Virtual enemy captures before pause_stack: pause_stack swaps draw_surface_ext's registry entry, and
 	// virtual_capture_install requires the registry to still hold F_DrawSurfaceExt. Installed after pause_stack (as
 	// from #115) it never installed. Both work in this order: vcapture hooks GR_Surface_Draw, which F_DrawSurfaceExt
@@ -1258,6 +1260,12 @@ static void patch_performance() {
 	if (!exp_flag("minecartnative0")) { // minecart master and its rail helpers
 		extern int minecart_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native minecart master: %s\n", minecart_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
+	// obj_flashlightmaster user event 2 (the mansion gangsters' flashlights) native (exact; flashlight_native.c).
+	// exp_flashlightnative0: the original event.
+	if (!exp_flag("flashlightnative0")) {
+		extern int flashlight_native_install(gml_func_entry *table);
+		debugPrintf("native flashlight event: %s\n", flashlight_native_install(table) ? "installed" : "NOT installed");
 	}
 	if (!exp_flag("flashmask0")) {
 		extern int flash_mask_install(void *(*rx_alloc)(size_t));
