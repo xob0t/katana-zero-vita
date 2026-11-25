@@ -232,6 +232,17 @@ void page_reserve_release(size_t size, size_t alignment) {
 		(unsigned)(size / 1024), held());
 }
 
+// page_restore.c, before it loads one of the room's requested pages outside VRAM: how many held blocks vitaGL could be
+// handed for a page of `alignment`, beyond the one always kept for a page that loads on use
+int page_reserve_spare(size_t alignment) {
+	if (enabled != 1 || handoff)
+		return 0;
+	int n = 0;
+	for (int i = 0; i < PR_RESERVE_BLOCKS; i++)
+		n += blocks[i] && !((uintptr_t)blocks[i] & (alignment - 1));
+	return n > 1 ? n - 1 : 0;
+}
+
 // Between frames: a block not handed out after all is held again; blocks are taken back while fewer than
 // PR_RESERVE_BLOCKS pages are in the heap (a flush freed them). Both checks are cheap (a walk of the runner's texture
 // list, a failed malloc), so this runs every frame: right after a recovery flush frees the pages in the heap, before
