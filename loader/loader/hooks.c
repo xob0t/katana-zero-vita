@@ -83,7 +83,7 @@ typedef struct {
 typedef struct {
 	uintptr_t target, caller;
 	const char *why;
-	char name[64];
+	char name[96];
 } hook_failure;
 
 #define MAX_HOOKS 256
@@ -146,6 +146,32 @@ static void log_already_hooked(const char *what, uintptr_t target, uintptr_t cal
 	const char *name = runner_symbol_at(target);
 	debugPrintf("[HOOKS] %s %s (0x%08X) from 0x%08X: already hooked by %s 0x%08X from 0x%08X\n", what,
 		name ? name : "?", target, caller, hook_kind[by->kind], by->replacement, by->caller);
+}
+
+// Install lines logged with "NOT <word>" ("virtual enemy captures: NOT installed", "glow events at rest: tiles NOT
+// hooked"): every feature prints installed or NOT installed (docs/DEVELOPING.md, hook rule 6), but a native that
+// declines in its own checks never reaches the registry above. debugPrintf hands each line here until hooks_report
+// runs, so those failures are in the [HOOKS] line too. "NOT drawn" is a setting (psychEffects=0), not a failure.
+static int hooks_reported;
+
+void hooks_note_log(const char *line, int len) {
+	if (hooks_reported || len < 4 || !memchr(line, 'N', len) || !strncmp(line, "[HOOKS]", 7))
+		return;
+	for (const char *p = line; (p = strstr(p, "NOT ")) != NULL; p += 4) {
+		if (p[4] < 'a' || p[4] > 'z' || !strncmp(p + 4, "drawn", 5))
+			continue;
+		int n = len;
+		while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r' || line[n - 1] == ' '))
+			n--;
+		if (n_failures < MAX_FAILURES) {
+			hook_failure *f = &failures[n_failures];
+			memset(f, 0, sizeof(*f));
+			f->why = "logged";
+			snprintf(f->name, sizeof(f->name), "\"%.*s\"", n < 90 ? n : 90, line);
+		}
+		n_failures++;
+		return;
+	}
 }
 
 // --- Hookers ---
@@ -223,9 +249,13 @@ void hooks_report(void) {
 	list[0] = 0;
 	for (int i = 0; i < n_failures && i < MAX_FAILURES && len < (int)sizeof(list); i++) {
 		hook_failure *f = &failures[i];
-		len += snprintf(list + len, sizeof(list) - len, "%s%s (%s, from 0x%08X)", i ? ", " : "", f->name, f->why,
-			f->caller);
+		if (f->caller)
+			len += snprintf(list + len, sizeof(list) - len, "%s%s (%s, from 0x%08X)", i ? ", " : "", f->name, f->why,
+				f->caller);
+		else
+			len += snprintf(list + len, sizeof(list) - len, "%s%s (%s)", i ? ", " : "", f->name, f->why);
 	}
+	hooks_reported = 1;
 	debugPrintf("[HOOKS] %d entry hooks, %d stubs%s, rx arena %u of %u bytes%s; not installed: %s%s\n",
 		n_entry_hooks, n_stubs, hooks_unrecorded ? " (registry full)" : "",
 		(unsigned)rx_arena_used, RX_ARENA_SIZE, rx_arena_refused ? ", refused requests" : "",

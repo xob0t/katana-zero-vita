@@ -29,6 +29,10 @@ event_func gml_replace(gml_func_entry *table, const char *name, event_func wrapp
 // Makes the runner function `symbol` return at once (bx lr). Returns its address, 0 if the symbol isn't found.
 uintptr_t stub_event(const char *symbol);
 
+// Called by debugPrintf with each formatted log line (without its time prefix) until hooks_report: a line saying
+// "NOT installed", "NOT hooked" (any "NOT <lowercase word>" except "NOT drawn") is listed as a failure in the report
+void hooks_note_log(const char *line, int len);
+
 // Logs one "[HOOKS]" line: hook counts, rx arena use and every hook that did not install
 void hooks_report(void);
 

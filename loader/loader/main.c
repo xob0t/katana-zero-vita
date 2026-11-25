@@ -420,6 +420,7 @@ static int log_available(void) {
 }
 
 uint32_t debug_printf_us, debug_printf_calls; // time spent in debugPrintf (the exp_spikes report line)
+void hooks_note_log(const char *line, int len); // hooks.c
 
 // Appends preformatted text to the log buffer only if nobody holds its lock and it fits; never waits (the freeze
 // locator's reporter: the game thread may be stuck inside debugPrintf). Returns 1 if appended.
@@ -476,6 +477,7 @@ int debugPrintf(char *text, ...) {
 	}
 	sceClibMemcpy(&log_buf[log_len], string, len);
 	log_len += len;
+	hooks_note_log(string + prefix, len - prefix); // "NOT installed" lines into the [HOOKS] line (until it's logged)
 	sceKernelUnlockLwMutex(&log_mutex, 1);
 	if (string != local)
 		free(string);

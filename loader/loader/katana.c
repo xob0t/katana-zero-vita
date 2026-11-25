@@ -851,6 +851,16 @@ void katana_late_install(void) {
 	psych_fix_late_install();
 	extern void pause_bg_late_install(void);
 	pause_bg_late_install();
+	// Virtual enemy captures before pause_stack: pause_stack swaps draw_surface_ext's registry entry, and
+	// virtual_capture_install requires the registry to still hold F_DrawSurfaceExt. Installed after pause_stack (as
+	// from #115) it never installed. Both work in this order: vcapture hooks GR_Surface_Draw, which F_DrawSurfaceExt
+	// still reaches through pause_stack's wrapper, and the paused room picture is not a capture surface.
+	if (!exp_flag("vcapture0")) {
+		extern int virtual_capture_install(void *(*rx_alloc)(size_t));
+		extern int virtual_capture_relaxed;
+		virtual_capture_relaxed = !exp_flag("vcapexact");
+		debugPrintf("virtual enemy captures: %s\n", virtual_capture_install(katana_rx_alloc) ? "installed" : "NOT installed");
+	}
 	extern void pause_stack_late_install(void);
 	pause_stack_late_install();
 	if (orig_lighting_user0) {
@@ -874,12 +884,6 @@ void katana_late_install(void) {
 	if (!exp_flag("heldnative0")) {
 		extern int held_native_install(void *(*rx_alloc)(size_t));
 		debugPrintf("native controller_check: %s\n", held_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
-	}
-	if (!exp_flag("vcapture0")) {
-		extern int virtual_capture_install(void *(*rx_alloc)(size_t));
-		extern int virtual_capture_relaxed;
-		virtual_capture_relaxed = !exp_flag("vcapexact");
-		debugPrintf("virtual enemy captures: %s\n", virtual_capture_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
 	extern int rope_lights;
 	if (!rope_lights) {
