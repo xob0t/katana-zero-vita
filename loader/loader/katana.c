@@ -849,6 +849,8 @@ void katana_late_install(void) {
 	appsurf_copy_install();
 	extern void psych_fix_late_install(void);
 	psych_fix_late_install();
+	extern void pause_bg_late_install(void);
+	pause_bg_late_install();
 	if (orig_lighting_user0) {
 		runner_function **functions = (runner_function **)so_symbol(&yoyoloader_mod, "the_functions");
 		int *count = (int *)so_symbol(&yoyoloader_mod, "the_numb");
@@ -1447,6 +1449,8 @@ static void patch_performance() {
 	glow_rest_install(table);
 	extern void crt_native_install(void);
 	crt_native_install(); // pause screen and options menu CRT rows (crt_native.c)
+	extern void pause_bg_install(gml_func_entry *table);
+	pause_bg_install(table); // paused room tile layers under the opaque pause background: skipped (pause_bg.c)
 	extern void corpse_rest_install(gml_func_entry *table);
 	corpse_rest_install(table);
 	// Secret Psychiatrist fight: empty surface passes skipped, surfaces reused across restarts (psych_fix.c)

@@ -961,6 +961,8 @@ void katana_prof_report(int frames) {
 	glow_rest_report(frames);
 	extern void crt_native_report(int frames);
 	crt_native_report(frames);
+	extern void pause_bg_report(int frames);
+	pause_bg_report(frames);
 	extern void corpse_rest_report(int frames);
 	corpse_rest_report(frames);
 	extern void wobble_rest_report(int frames);
