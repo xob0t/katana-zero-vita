@@ -69,7 +69,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Lighting at 30 Hz | `katana_display.c` | none | `exp_lighting60` | | Visible |
 | No lamp glow in club_0 and haunted_cart2 | `room_lighting.c` | `roomLighting` | none | `exp_roomlighting1` (A/B, read at Room Start) | Visible |
 | obj_orangelight and obj_lightback Step natives | `light_fast_inline.c` (default), `light_fast.c` (`exp_lightfast`) | none | `exp_lightfast0` | | Exact native |
-| Off-screen obj_lightback user event 0 | `lightback_native.c` | none | `exp_lightbacknative0` | `exp_lbverify`, `exp_lbab` | Exact native |
+| obj_lightback user event 0 (off-screen and on-screen lights) | `lightback_native.c` | none | `exp_lightbacknative0`; `exp_lbvisible0` (on-screen lights only) | `exp_lbverify`, `exp_lbverifyfault` (negative control), `exp_lbab`, `exp_lbvisab` | Exact native |
 | `update_light_array` loop | `light_array_native.c` | none | `exp_lightarray0` | `exp_lightarrayverify` | Exact native |
 | `draw_sprite_recolored` light loop | `recolor_lights.c` | none | `exp_recolorlights0` | `exp_recolorlightsverify`, `exp_recolorlightsab`, `exp_recolorlightsprof` | Exact native |
 | Afterimage trails: far lights skipped, tint native | `trail_lights.c` | `trailLights` (afterimage tint) | `exp_traillights0`; `exp_traillightsnative0` keeps only the skipping | `exp_traillightscheck`, `exp_traillightsverify` | Exact; the tint off is visible |
