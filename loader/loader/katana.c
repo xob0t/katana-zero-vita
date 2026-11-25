@@ -904,6 +904,10 @@ void katana_late_install(void) {
 			}
 		}
 	}
+	// Runner per-instance fast paths (runner_fast.c, exact): event dispatch through cached CEvents, instance movement
+	// and animation. exp_runnerfast0 / exp_rfdispatch0 / exp_rfmove0 / exp_rfanim0: off.
+	extern void runner_fast_install(void);
+	runner_fast_install();
 	hooks_report();
 }
 

@@ -28,6 +28,7 @@ set(EXACT_SOURCES
   loader/recolor_lights.c
   loader/region_native.c
   loader/rope_fast.c
+  loader/runner_fast.c
   loader/shadow_native.c
   loader/smoke_create.c
   loader/tilemap_native.c
