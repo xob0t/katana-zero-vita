@@ -45,6 +45,11 @@ Defaults come from the variable definitions in the file listed. "Nonzero" means 
 | `replays` | 0 | 0, nonzero | 1 brings back the end-of-level replay and the death rewind. | `main.c`, `katana.c` |
 | `pauseStack` | 1 | 0, nonzero | 1 draws the paused room picture's 10 stacked layers (behind the pause and options menus) as one quad with a shader that applies the 10 blends; 0 the game's 10 draws. | `pause_stack.c` |
 | `dancerGlow` | 2 | 0 to 2 | The club dancers' rim glow. 2: the loader draws it with the game's lights, distances and alphas, one composited outline per side (`dancer_glow.c`; about 0.6 ms in club_0); 1: the game's own glow (`katana.c` also tries the exact native `clubber_native.c`, which declines while `visibility_native.c` has `inside_screen` hooked, the default, so the original GML draws it; in club_0 it also needs `roomLighting=1`); 0: no glow. | `katana.c`, `dancer_glow.c`, `clubber_native.c` |
+| `bloomDefault` | 0 | 0, nonzero | 1: BLOOM FX defaults to on, as in the game. 0: off on a fresh install and after the game's option resets. A choice saved in the GRAPHICS menu is kept either way. | `option_defaults.c` |
+| `restartFxDefault` | 0 | 0, nonzero | The same for RESTART FX (the wave distortion of the restart transition). | `option_defaults.c` |
+| `rewindFxDefault` | 0 | 0, nonzero | The same for REWIND FX (the VHS look of the death rewind; nothing to see unless `replays=1`). | `option_defaults.c` |
+| `shadersDefault` | 0 | 0, nonzero | The same for SHADERS (needed by bloom, RESTART FX, REWIND FX and the replay's VHS look). | `option_defaults.c` |
+| `bloodSprayDefault` | 0 | 0, nonzero | The same for BLOOD SPRAY (blood drops and splatter). | `option_defaults.c` |
 | `roomLighting` | 0 | 0, nonzero | 1 keeps the lamp glow in room_club_0 and room_haunted_cart2. | `room_lighting.c` |
 | `ropeLights` | 0 | 0, nonzero | 1 keeps the light tint on clotheslines. | `main.c`, `katana.c` |
 | `cathedralDust` | 0 | 0, nonzero | 1 keeps the dust in the cathedral's window light (with an exact native, `exp_dustnative0` for the GML). | `katana.c`, `dustspawner_native.c` |

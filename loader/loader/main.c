@@ -232,6 +232,10 @@ void loadConfig(const char *game) {
 			else if (strcmp("waveStrips", buffer) == 0) { extern int wave_strips; wave_strips = value; }
 			else if (strcmp("lampSway", buffer) == 0) { extern int lamp_sway; lamp_sway = value; }
 			else if (strcmp("bloomDefault", buffer) == 0) { extern int bloom_default; bloom_default = value; }
+			else if (strcmp("restartFxDefault", buffer) == 0) { extern int restart_fx_default; restart_fx_default = value; }
+			else if (strcmp("rewindFxDefault", buffer) == 0) { extern int rewind_fx_default; rewind_fx_default = value; }
+			else if (strcmp("shadersDefault", buffer) == 0) { extern int shaders_default; shaders_default = value; }
+			else if (strcmp("bloodSprayDefault", buffer) == 0) { extern int blood_spray_default; blood_spray_default = value; }
 			else if (strcmp("dynamicRes", buffer) == 0) { extern int dynamic_res; dynamic_res = value; }
 			else if (strcmp("skipNetflixLogo", buffer) == 0) { extern int skip_netflix_logo; skip_netflix_logo = value; }
 			else if (strcmp("noSplash", buffer) == 0) forceSplashSkip = value;

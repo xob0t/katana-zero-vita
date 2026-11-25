@@ -1004,6 +1004,8 @@ void katana_prof_report(int frames) {
 	runner_fast_report(frames);
 	extern void place_native_report(int frames);
 	place_native_report(frames);
+	extern void option_defaults_report(int frames);
+	option_defaults_report(frames);
 	static int builtins_hooked = 0;
 	if (!builtins_hooked) {
 		builtins_hooked = 1;
