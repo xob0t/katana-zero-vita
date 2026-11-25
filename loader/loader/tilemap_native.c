@@ -18,8 +18,20 @@
  *   BL, TR, BR, with the runner's float operations (this file is built with -ffp-contract=off; VFP vmla rounds twice,
  *   like a C multiply then add). Mirror, flip and rotate pick the same UV corners.
  * What changes is only how the floats are reached: the per-tile UVs come from a table per tileset parameter set
- * (filled with the runner's operations on first use of a tile index), and the column positions are computed once per
- * draw, not once per tile.
+ * (the four corner (u, v) pairs, filled with the runner's operations on first use of a tile index; the tables grow to
+ * the highest index used, about 250 KB in the heavy rooms), the column positions are computed once per draw, not once
+ * per tile, and each vertex is written as three 64-bit stores.
+ * Nothing is kept across frames except those UV entries, which depend only on the tile index and the parameters they
+ * are keyed on: tile edits, animation frames, layer moves and camera moves need no invalidation.
+ *
+ * Measured on the Vita (500 MHz, in-run A/B, ~1980 tiles/frame in 4-6 layers): the draw takes 1.05-1.33 ms/frame
+ * with the runner's code, 0.81-1.09 with this one (-0.12 to -0.27 ms by room). What remains is the batch itself:
+ * AllocVerts flushing the previous layer's quads (~0.26 ms) and writing 144 bytes per tile into the runner's vertex
+ * batch (~0.8 ms for ~290 KB): building the tiles in a small cached buffer and copying them out with sceClibMemcpy was
+ * slower (back to the runner's time).
+ * Why not a vertex cache (build a static layer's quads once, copy them each frame): the same bytes still have to go
+ * into the batch every frame, which is the part that remains, and the view-culled window changes with every camera move
+ * (an earlier window-keyed cache, work/codex/tilemap_cache.c, got 0 hits).
  *
  * Admission (anything else runs the runner's function): the installed function's code matches the analysed one
  * (checksum of every non-bl word after the entry hook), CalcLayerTilemapParams takes its direct-texture path (all
@@ -79,7 +91,7 @@ static int installed, ab_mode, prof, verify, fault;
 static int ab_off; // exp_tilenativeab: this report window runs the runner's code
 
 static unsigned n_calls, n_native, n_tiles, n_uv_direct, n_fallback[4];
-static uint64_t prof_us[2];
+static uint64_t prof_us[2], prof_alloc_us; // exp_tilenativeprof: draw time by path; the native path's AllocVerts
 static unsigned prof_calls[2];
 static unsigned v_calls, v_bad, v_bytes, v_skipped;
 
@@ -305,7 +317,10 @@ static __attribute__((noinline)) int draw_native(const float *rect, uint8_t *lay
 			if (!left_tiles) {
 				left_tiles = remaining < maxper ? remaining : maxper;
 				reserved += left_tiles;
+				const uint32_t ta = prof ? sceKernelGetProcessTimeLow() : 0;
 				o = out_fns->alloc(4, (void *)*(uint32_t *)tex, 0x18, left_tiles * 6);
+				if (prof)
+					prof_alloc_us += sceKernelGetProcessTimeLow() - ta;
 			}
 			const uint64_t *uv;
 			if (t < cap && valid[t])
@@ -450,14 +465,15 @@ void tilemap_native_report(int frames) {
 			(float)n_calls / frames, (float)n_native / frames, (float)n_tiles / frames, n_fallback[0], n_fallback[1],
 			n_fallback[2], n_uv_direct, uv_bytes >> 10, uv_max_t, ab_mode ? (ab_off ? " | A/B: runner this window" : " | A/B: native this window") : "");
 	if (prof && (prof_calls[0] || prof_calls[1]))
-		debugPrintf("[TILEMAP] time %s %.3f ms/frame (%u draws)\n", prof_calls[1] ? "native" : "runner",
-			(float)(prof_us[0] + prof_us[1]) / 1000.0f / frames, prof_calls[0] + prof_calls[1]);
+		debugPrintf("[TILEMAP] time %s %.3f ms/frame (%u draws), of it AllocVerts %.3f\n", prof_calls[1] ? "native" : "runner",
+			(float)(prof_us[0] + prof_us[1]) / 1000.0f / frames, prof_calls[0] + prof_calls[1],
+			(float)prof_alloc_us / 1000.0f / frames);
 	if (verify && (v_calls || v_skipped))
 		debugPrintf("[TILEMAP] verify: %u draws compared, %u mismatched (%u bytes), %u skipped%s\n", v_calls, v_bad, v_bytes,
 			v_skipped, fault ? " (fault injected: all must mismatch)" : "");
 	n_calls = n_native = n_tiles = n_uv_direct = 0;
 	memset(n_fallback, 0, sizeof(n_fallback));
-	prof_us[0] = prof_us[1] = 0;
+	prof_us[0] = prof_us[1] = prof_alloc_us = 0;
 	prof_calls[0] = prof_calls[1] = 0;
 	if (ab_mode)
 		ab_off = !ab_off;
