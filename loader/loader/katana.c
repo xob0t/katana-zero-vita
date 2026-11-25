@@ -1411,12 +1411,13 @@ static void patch_performance() {
 		debugPrintf("light fast: %s (inline), lampSway %d%s\n", light_fast_mode ? "installed" : "NOT installed", lamp_sway,
 			lamp_sway_ab ? " (A/B)" : "");
 	}
-	// Exact native of the off-screen path of obj_lightback user event 0, the lighting pass's per-light event
-	// (lightback_native.c): visible lights run the original. In-run A/B (exp_lbab): haunted_cart2 (111 of 129
-	// lights off-screen) -0.44 ms process per frame. exp_lightbacknative0: the original for every light.
+	// Exact native of obj_lightback user event 0, the lighting pass's per-light event (lightback_native.c). In-run
+	// A/B (exp_lbab): haunted_cart2 (111 of 129 lights off-screen) -0.44 ms process per frame for the off-screen
+	// part; the on-screen part (exp_lbvisab): see the file header. exp_lightbacknative0: the original for every
+	// light; exp_lbvisible0: for on-screen lights.
 	if (!exp_flag("lightbacknative0")) {
 		extern int lightback_native_install(void *(*rx_alloc)(size_t));
-		debugPrintf("native off-screen lightback: %s\n", lightback_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
+		debugPrintf("native lightback user 0: %s\n", lightback_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
 	// Cathedral dust (obj_cathedral_dustspawner): every visible spawner redraws all ~208 particles through
 	// event_user(0), ~7.4 ms per frame: room_cathedral runs at 41 fps with it, 59 without. cathedralDust=0 (default)
