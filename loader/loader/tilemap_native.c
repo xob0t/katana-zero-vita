@@ -28,8 +28,8 @@
  * Switches: exp_tilenative0 off. exp_tilenativeab: the runner's code in every other report window (in-run A/B).
  * exp_tilenativeprof: time spent in tile layer draws per frame, both paths (sceKernelGetProcessTimeLow per call).
  * exp_tilenativeverify (debugMode): every draw runs the native path into scratch memory first (nothing drawn), then
- * the runner's function for real with Graphics::AllocVerts entry-hooked to capture its vertices; the submissions
- * (primitive, texture, stride, counts, freed tail, every vertex byte) are compared and mismatches counted.
+ * the runner's function for real; its vertices are read back from the runner's batch and compared (texture, primitive,
+ * vertex size, count, every byte); mismatches are counted in the report.
  * exp_tilenativeverifyfault: the native x of the first vertex one float step off (negative control: every verified
  * draw with a tile must mismatch).
  */
@@ -104,15 +104,17 @@ static inline uint32_t fbits(float f) {
  * tileset column count. Filled on first use with the runner's operations (u = u offset + column * u step, then + u
  * size; v likewise), so the bits are the runner's. ---- */
 #define UV_SLOTS 8
-#define UV_N 1024
+#define UV_MAX 4096 // tile indices from here on are computed per tile
 typedef struct {
 	uint32_t key[7]; // u offset, v offset, u size, v size, u step, v step (float bits), tileset columns
 	int used;
-	uint8_t valid[UV_N];
+	uint32_t cap;    // entries allocated (a power of two, grown on demand)
+	uint8_t *valid;
 	uint64_t (*uv)[4];
 } uv_slot;
 static uv_slot slots[UV_SLOTS];
 static int next_slot;
+static unsigned uv_max_t, uv_bytes;
 
 static inline uint64_t pair(float u, float v) {
 	return (uint64_t)fbits(u) | (uint64_t)fbits(v) << 32;
@@ -139,9 +141,47 @@ static uv_slot *uv_slot_for(const float *p, uint32_t cols) {
 	uv_slot *s = &slots[next_slot];
 	next_slot = (next_slot + 1) % UV_SLOTS;
 	memcpy(s->key, key, sizeof(key));
-	memset(s->valid, 0, sizeof(s->valid));
+	if (s->cap)
+		memset(s->valid, 0, s->cap);
 	s->used = 1;
 	return s;
+}
+
+// A tile index not in the table yet: grow the table if needed, fill the entry; past UV_MAX (or without memory) the
+// corners go to scratch
+static __attribute__((noinline)) const uint64_t *uv_miss(uv_slot *s, uint32_t t, uint32_t cols, const float *p,
+		uint64_t *scratch) {
+	if (t > uv_max_t)
+		uv_max_t = t;
+	if (t >= s->cap && t < UV_MAX) {
+		uint32_t cap = s->cap ? s->cap : 256;
+		while (cap <= t)
+			cap <<= 1;
+		uint8_t *mem = malloc((size_t)cap * (sizeof(*s->uv) + 1));
+		if (mem) {
+			uint64_t (*uv)[4] = (uint64_t (*)[4])mem;
+			uint8_t *valid = mem + (size_t)cap * sizeof(*s->uv);
+			memset(valid, 0, cap);
+			if (s->cap) {
+				memcpy(uv, s->uv, (size_t)s->cap * sizeof(*s->uv));
+				memcpy(valid, s->valid, s->cap);
+				free(s->uv);
+				uv_bytes -= s->cap * (sizeof(*s->uv) + 1);
+			}
+			uv_bytes += cap * (sizeof(*s->uv) + 1);
+			s->uv = uv;
+			s->valid = valid;
+			s->cap = cap;
+		}
+	}
+	if (t < s->cap) {
+		uv_compute(s->uv[t], t, cols, p);
+		s->valid[t] = 1;
+		return s->uv[t];
+	}
+	n_uv_direct++;
+	uv_compute(scratch, t, cols, p);
+	return scratch;
 }
 
 /* ---- the draw ---- */
@@ -231,8 +271,11 @@ static __attribute__((noinline)) int draw_native(const float *rect, uint8_t *lay
 	const uint32_t frame4 = (uint32_t)vcvt_s32(*(float *)(elem + 0x30)) << 2;
 	const uint32_t fc = *(uint32_t *)(ts + 0x30);
 	const uint8_t *anim = *(uint8_t **)(ts + 0x48);
-	uv_slot *slot = uv_slot_for(p, tscols);
-	uint8_t *const valid = slot->valid;
+	uv_slot *const slot = uv_slot_for(p, tscols);
+	uint32_t cap = slot->cap;
+	const uint8_t *valid = slot->valid;
+	const uint64_t (*uvtab)[4] = (const uint64_t (*)[4])slot->uv;
+	uint64_t direct_uv[4];
 	const uint32_t zb = fbits(depth);
 
 	static uint32_t xs[2 * MAX_COLS]; // the column's left and right x (float bits)
@@ -265,17 +308,13 @@ static __attribute__((noinline)) int draw_native(const float *rect, uint8_t *lay
 				o = out_fns->alloc(4, (void *)*(uint32_t *)tex, 0x18, left_tiles * 6);
 			}
 			const uint64_t *uv;
-			uint64_t direct_uv[4];
-			if (t < UV_N) {
-				if (!valid[t]) {
-					uv_compute(slot->uv[t], t, tscols, p);
-					valid[t] = 1;
-				}
-				uv = slot->uv[t];
-			} else {
-				uv_compute(direct_uv, t, tscols, p);
-				uv = direct_uv;
-				n_uv_direct++;
+			if (t < cap && valid[t])
+				uv = uvtab[t];
+			else {
+				uv = uv_miss(slot, t, tscols, p, direct_uv);
+				cap = slot->cap;
+				valid = slot->valid;
+				uvtab = slot->uv;
 			}
 			// Corners: mirror (bit 28) swaps u, flip (bit 29) swaps v, rotate (bit 30) turns the corners
 			uint32x2_t t0, t1, t2, t5;
@@ -307,81 +346,33 @@ static __attribute__((noinline)) int draw_native(const float *rect, uint8_t *lay
 	return 1;
 }
 
-/* ---- exp_tilenativeverify ---- */
-#define CAP_CHUNKS 16
-#define CAP_BYTES (1024 * 1024)
-typedef struct {
-	int n, freed, overflow;
-	int prim[CAP_CHUNKS], stride[CAP_CHUNKS], count[CAP_CHUNKS];
-	uint32_t tex[CAP_CHUNKS];
-	uint32_t off[CAP_CHUNKS];
-	uint8_t *ptr[CAP_CHUNKS]; // original pass: where the runner's chunk is
-	uint32_t used;
-	uint8_t *buf;
-} capture;
-static capture cap_native, cap_orig;
-static int capturing; // the runner's function runs with AllocVerts captured into cap_orig
-static int cur_after_alloc;
-static alloc_fn orig_alloc_hooked;
+/* ---- exp_tilenativeverify ----
+ * The native pass writes into scratch memory (nothing drawn), then the runner's function draws for real. Its vertices
+ * are read back from the runner's batch (SrcVerts): a tile layer draw that reserves once ends its quads at
+ * g_CurrentVertexCount (a triangle-list AllocVerts appends, or flushes and starts at 0; FreeVerts drops the unused
+ * tail). Compared: the texture, primitive and vertex size AllocVerts recorded, the vertex count added, and every byte.
+ * No hook on Graphics::AllocVerts (virtual_capture.c owns its entry). Draws with more than one reservation (over
+ * 2730 tiles) are skipped. */
+#define SCRATCH_BYTES (0x4000 * 24)
+static uint8_t *scratch_buf;
+static int sc_n, sc_freed, sc_count;
+static uint32_t sc_tex, sc_prim, sc_stride;
+static uint8_t **src_verts;
+static void **last_texture;
+static int *last_prim, *last_vsize;
 
 static void *ABI scratch_alloc(int prim, void *tex, int stride, int count) {
-	capture *c = &cap_native;
-	uint32_t bytes = (uint32_t)stride * (uint32_t)count;
-	if (c->n >= CAP_CHUNKS || c->used + bytes > CAP_BYTES) {
-		// keep writing somewhere harmless (one reservation is at most 0x4000 vertices, 384 KB); not compared
-		c->overflow = 1;
-		c->n = CAP_CHUNKS - 1;
-		c->used = 0;
-	}
-	int i = c->n++;
-	c->prim[i] = prim;
-	c->tex[i] = (uint32_t)tex;
-	c->stride[i] = stride;
-	c->count[i] = count;
-	c->off[i] = c->used;
-	void *r = c->buf + c->used;
-	c->used += bytes;
-	return r;
+	sc_n++;
+	sc_prim = prim;
+	sc_tex = (uint32_t)tex;
+	sc_stride = stride;
+	sc_count = count;
+	return (uint32_t)stride * (uint32_t)count <= SCRATCH_BYTES ? scratch_buf : scratch_buf + SCRATCH_BYTES; // the
+	// second half is a sink for an oversized reservation (not compared)
 }
 
 static void ABI scratch_free(int count) {
-	cap_native.freed += count;
-}
-
-static void cap_close_last(int count) {
-	capture *c = &cap_orig;
-	if (!c->n || c->overflow)
-		return;
-	int i = c->n - 1;
-	uint32_t bytes = (uint32_t)c->stride[i] * (uint32_t)count;
-	if (c->used + bytes > CAP_BYTES) {
-		c->overflow = 1;
-		return;
-	}
-	c->off[i] = c->used;
-	memcpy(c->buf + c->used, c->ptr[i], bytes);
-	c->used += bytes;
-}
-
-static void *ABI alloc_capture(int prim, void *tex, int stride, int count) {
-	if (!capturing)
-		return orig_alloc_hooked(prim, tex, stride, count);
-	capture *c = &cap_orig;
-	if (c->n)
-		cap_close_last(c->count[c->n - 1]); // a flush in this call may reuse the previous chunk's memory
-	void *r = orig_alloc_hooked(prim, tex, stride, count);
-	if (c->n >= CAP_CHUNKS) {
-		c->overflow = 1;
-		return r;
-	}
-	int i = c->n++;
-	c->prim[i] = prim;
-	c->tex[i] = (uint32_t)tex;
-	c->stride[i] = stride;
-	c->count[i] = count;
-	c->ptr[i] = r;
-	cur_after_alloc = *vertex_count;
-	return r;
+	sc_freed += count;
 }
 
 static void verify_draw(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint32_t f) {
@@ -389,55 +380,40 @@ static void verify_draw(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t
 	memcpy(&fx, &d, 4);
 	memcpy(&fy, &e, 4);
 	memcpy(&fd, &f, 4);
-	cap_native.n = cap_native.freed = cap_native.overflow = 0;
-	cap_native.used = 0;
+	sc_n = sc_freed = sc_count = 0;
 	static const sink scratch = {scratch_alloc, scratch_free};
-	int native_ok = draw_native((const float *)a, (uint8_t *)b, (uint8_t *)c, fx, fy, fd, &scratch);
-	if (native_ok && fault && cap_native.n && cap_native.count[0] > 0) {
-		uint32_t *x = (uint32_t *)(cap_native.buf + cap_native.off[0]);
-		x[0] ^= 1;
-	}
-	cap_orig.n = cap_orig.freed = cap_orig.overflow = 0;
-	cap_orig.used = 0;
-	capturing = 1;
+	const int native_ok = draw_native((const float *)a, (uint8_t *)b, (uint8_t *)c, fx, fy, fd, &scratch);
+	const int used = sc_count - sc_freed;
+	if (native_ok && fault && sc_n == 1 && used > 0)
+		((uint32_t *)scratch_buf)[0] ^= 1;
+	const int before = *vertex_count;
 	orig_draw(a, b, c, d, e, f);
-	capturing = 0;
-	if (cap_orig.n && !cap_orig.overflow) {
-		int freed = cur_after_alloc - *vertex_count;
-		cap_orig.freed = freed;
-		int last = cap_orig.count[cap_orig.n - 1] - freed;
-		cap_close_last(last > 0 ? last : 0);
-	}
-	if (!native_ok || cap_native.overflow || cap_orig.overflow) {
+	const int after = *vertex_count;
+	if (!native_ok || sc_n > 1 || (uint32_t)sc_stride * (uint32_t)sc_count > SCRATCH_BYTES) {
 		v_skipped++;
 		return;
 	}
 	v_calls++;
-	const capture *n = &cap_native, *g = &cap_orig;
-	int bad = n->n != g->n || n->freed != g->freed;
-	for (int i = 0; !bad && i < n->n; i++) {
-		if (n->prim[i] != g->prim[i] || n->tex[i] != g->tex[i] || n->stride[i] != g->stride[i] ||
-				n->count[i] != g->count[i]) {
-			bad = 1;
-			break;
-		}
-		int cnt = i == n->n - 1 ? n->count[i] - n->freed : n->count[i];
-		uint32_t bytes = (uint32_t)n->stride[i] * (uint32_t)(cnt > 0 ? cnt : 0);
-		const uint8_t *x = n->buf + n->off[i], *y = g->buf + g->off[i];
-		if (memcmp(x, y, bytes)) {
-			bad = 1;
-			for (uint32_t k = 0; k < bytes; k++)
-				v_bytes += x[k] != y[k];
-		}
-	}
-	if (bad) {
-		if (v_bad++ < 5) {
-			debugPrintf("[TILEMAP] verify mismatch: chunks %d/%d freed %d/%d", n->n, g->n, n->freed, g->freed);
-			if (n->n && g->n)
-				debugPrintf(" first count %d/%d tex %08x/%08x", n->count[0], g->count[0], n->tex[0], g->tex[0]);
-			debugPrintf("\n");
+	int bad;
+	if (!sc_n)
+		bad = after != before;
+	else {
+		bad = (uint32_t)*last_texture != sc_tex || (uint32_t)*last_prim != sc_prim || (uint32_t)*last_vsize != sc_stride ||
+			used < 0 || after < used || (after - before != used && after != used);
+		if (!bad) {
+			const uint8_t *x = scratch_buf, *y = *src_verts + (uint32_t)(after - used) * sc_stride;
+			const uint32_t bytes = (uint32_t)used * sc_stride;
+			if (memcmp(x, y, bytes)) {
+				bad = 1;
+				for (uint32_t k = 0; k < bytes; k++)
+					v_bytes += x[k] != y[k];
+			}
 		}
 	}
+	if (bad && v_bad++ < 5)
+		debugPrintf("[TILEMAP] verify mismatch: reservations %d, vertices %d (native) / %d (runner, %d -> %d), tex %08x/%08x prim %u/%d size %u/%d\n",
+			sc_n, used, after - before, before, after, sc_tex, (uint32_t)*last_texture, sc_prim, *last_prim, sc_stride,
+			*last_vsize);
 }
 
 /* ---- entry ---- */
@@ -470,9 +446,9 @@ void tilemap_native_report(int frames) {
 	if (!installed || frames <= 0)
 		return;
 	if (n_calls)
-		debugPrintf("[TILEMAP] layer draws %.1f/frame, native %.1f, tiles %.0f/frame | fallback direct %u cols %u wide %u | uv direct %u%s\n",
+		debugPrintf("[TILEMAP] layer draws %.1f/frame, native %.1f, tiles %.0f/frame | fallback direct %u cols %u wide %u | uv direct %u, table %u KB, top tile %u%s\n",
 			(float)n_calls / frames, (float)n_native / frames, (float)n_tiles / frames, n_fallback[0], n_fallback[1],
-			n_fallback[2], n_uv_direct, ab_mode ? (ab_off ? " | A/B: runner this window" : " | A/B: native this window") : "");
+			n_fallback[2], n_uv_direct, uv_bytes >> 10, uv_max_t, ab_mode ? (ab_off ? " | A/B: runner this window" : " | A/B: native this window") : "");
 	if (prof && (prof_calls[0] || prof_calls[1]))
 		debugPrintf("[TILEMAP] time %s %.3f ms/frame (%u draws)\n", prof_calls[1] ? "native" : "runner",
 			(float)(prof_us[0] + prof_us[1]) / 1000.0f / frames, prof_calls[0] + prof_calls[1]);
@@ -537,21 +513,16 @@ static int prepare(void) {
 		debugPrintf("tile layer native: NOT installed\n");
 		return 0;
 	}
-	uint64_t (*mem)[4] = malloc(sizeof(*mem) * UV_N * UV_SLOTS); // 256 KB
-	if (!mem) {
-		debugPrintf("tile layer native: NOT installed (no memory)\n");
-		return 0;
-	}
-	for (int i = 0; i < UV_SLOTS; i++)
-		slots[i].uv = mem + i * UV_N;
 	verify = debugMode && exp_flag("tilenativeverify");
 	if (verify) {
 		fault = exp_flag("tilenativeverifyfault");
-		cap_native.buf = malloc(CAP_BYTES);
-		cap_orig.buf = malloc(CAP_BYTES);
-		uintptr_t av = so_symbol(&yoyoloader_mod, "_ZN8Graphics10AllocVertsE9ePrimTypePvii");
-		if (!cap_native.buf || !cap_orig.buf || !(orig_alloc_hooked = entry_hook(av, alloc_capture))) {
-			debugPrintf("tile layer native: verify NOT available (memory or AllocVerts hook)\n");
+		scratch_buf = malloc(2 * SCRATCH_BYTES);
+		src_verts = (uint8_t **)so_symbol(&yoyoloader_mod, "SrcVerts");
+		last_texture = (void **)so_symbol(&yoyoloader_mod, "g_pLastTexture");
+		last_prim = (int *)so_symbol(&yoyoloader_mod, "g_LastPrimType");
+		last_vsize = (int *)so_symbol(&yoyoloader_mod, "g_LastVertexSize");
+		if (!scratch_buf || !src_verts || !last_texture || !last_prim || !last_vsize) {
+			debugPrintf("tile layer native: verify NOT available (memory or symbols)\n");
 			verify = 0;
 		}
 	}
