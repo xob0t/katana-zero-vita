@@ -1663,13 +1663,28 @@ static const char *const alloc_names[6] = { "malloc", "free", "realloc", "calloc
 	alloc_time[i] += sceKernelGetProcessTimeLow() - t0; \
 	alloc_calls[i]++; \
 	return r;
-static void *prof_malloc(size_t n) { ALLOC_PROF(0, vglMalloc(n)) }
-static void *prof_realloc(void *p, size_t n) { ALLOC_PROF(2, vglRealloc(p, n)) }
+// Allocations of a texture page's size (the runner decodes each page into one) go through page_reserve.c: its held
+// decode block when the heap has no hole, and no forced garbage collection with a scene open
+void *page_reserve_runner_malloc(size_t n);
+int page_reserve_runner_free(void *p, int keep);
+static inline void *runner_malloc(size_t n) {
+	return n >= 4 * 1024 * 1024 ? page_reserve_runner_malloc(n) : vglMalloc(n);
+}
+static inline void runner_free(void *p) {
+	if (!page_reserve_runner_free(p, 1))
+		vglFree(p);
+}
+static inline void *runner_realloc(void *p, size_t n) {
+	page_reserve_runner_free(p, 0);
+	return vglRealloc(p, n);
+}
+static void *prof_malloc(size_t n) { ALLOC_PROF(0, runner_malloc(n)) }
+static void *prof_realloc(void *p, size_t n) { ALLOC_PROF(2, runner_realloc(p, n)) }
 static void *prof_calloc(size_t a, size_t b) { ALLOC_PROF(3, vglCalloc(a, b)) }
 static void *prof_new(size_t n) { ALLOC_PROF(4, ((void *(*)(size_t))&_Znwj)(n)) }
 static void prof_free(void *p) {
 	uint32_t t0 = alloc_prof_on ? sceKernelGetProcessTimeLow() : 0;
-	vglFree(p);
+	runner_free(p);
 	if (alloc_prof_on) { alloc_time[1] += sceKernelGetProcessTimeLow() - t0; alloc_calls[1]++; }
 }
 static void prof_delete(void *p) {
@@ -1915,9 +1930,11 @@ void glShaderSourceHook(GLuint shader, GLsizei count, const GLchar **string, con
 	glShaderSource(shader, count, string, length);
 }
 
+void katana_glBindTexture(GLenum target, GLuint name);
 static so_default_dynlib gl_hook[] = {
 	{"glTexParameterf", (uintptr_t)&glTexParameterfHook},
 	{"glTexParameteri", (uintptr_t)&glTexParameteriHook},
+	{"glBindTexture", (uintptr_t)&katana_glBindTexture}, // page_evict.c: no slot for the name, a blank texture
 	{"glBindFramebuffer", (uintptr_t)&glBindFramebuffer},
 	{"glReadPixels", (uintptr_t)&glReadPixelsHook},
 	{"glShaderSource", (uintptr_t)&glShaderSourceHook},
@@ -2719,7 +2736,7 @@ static so_default_dynlib default_dynlib[] = {
 	{ "glAlphaFunc", (uintptr_t)&glAlphaFunc },
 	{ "glBindBuffer", (uintptr_t)&glBindBuffer },
 	{ "glBindFramebufferOES", (uintptr_t)&glBindFramebuffer },
-	{ "glBindTexture", (uintptr_t)&glBindTexture },
+	{ "glBindTexture", (uintptr_t)&katana_glBindTexture },
 	{ "glBlendFunc", (uintptr_t)&glBlendFunc },
 	{ "glBufferData", (uintptr_t)&glBufferData },
 	{ "glCheckFramebufferStatusOES", (uintptr_t)&glCheckFramebufferStatus },
