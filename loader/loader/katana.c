@@ -1391,6 +1391,14 @@ static void patch_performance() {
 		debugPrintf("native move_contact_solid: %s%s\n", move_contact_native_install(entry_hook) ? "installed" : "NOT installed",
 			mc_off ? " (off: exp_movecontact0)" : "");
 	}
+	// place_meeting / instance_place natively (place_native.c, exact): Command_InstancePlace computes the probe box
+	// without moving the caller (one CollisionMarkDirty instead of two SetPositions) and walks the runner's R-tree with
+	// a native candidate test (filters, cached IsDecendentOf, Collision_Instance for rectangle masks).
+	// exp_placenative0 off, exp_placecmd0 keeps only the candidate test.
+	{
+		extern void place_native_install(void);
+		place_native_install();
+	}
 	// Exact natives of obj_orangelight Step and obj_lightback Step, from the static recompiler kill test
 	// (work/cpu_research/kill_test/REPORT.md): the events with the runner's compare/truth/variable helpers inlined
 	// (light_fast_inline.c). room_haunted_cart2 (129 lights): orangelight 2.13 -> 1.53 ms, lightback 0.51 -> 0.42 ms.
