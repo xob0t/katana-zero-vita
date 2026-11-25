@@ -58,7 +58,7 @@ NEW_SDK_MEMBERS = ("*/arm-vita-eabi/include/psp2*", "*/arm-vita-eabi/include/vit
                    "*/arm-vita-eabi/lib/*_stub.a", "*/arm-vita-eabi/lib/*_stub_weak.a")
 
 # Our vitaGL changes (patches/vitagl.patch) are made against this commit
-VITAGL_COMMIT = "464876a79cdd00650bb0eb9629b85d81f9908fd8"
+VITAGL_COMMIT = "788c61d527cfafc3a11bab5870c9f1bf0132ec26"
 VITAGL_FLAGS = ("DEPTH_STENCIL_HACK=1", "SOFTFP_ABI=1", "NO_DEBUG=1", "SHARED_RENDERTARGETS=1", "NO_SPLASHSCREEN=1",
                 "ENABLE_LEGACY_PIPELINE=1", "HAVE_SHADER_CACHE=1")
 REPOS = {
