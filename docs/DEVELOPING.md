@@ -103,6 +103,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Tile and door glow fades at rest | `glow_rest.c` | none | `exp_glowrest0` | `exp_glowverify` | Exact skip |
 | Pause screen and options menu CRT rows (`draw_crt_surface`, `draw_crt_image`) | `crt_native.c` | none | `exp_crtnative0` | `exp_crtverify`, `exp_crtab` | Exact native |
 | Paused room's tile layers, covered by the pause background's opaque rectangle, not drawn | `pause_bg.c` (`page_evict.c` keeps their pages) | none | `exp_pausetiles0` | `exp_pausetilesverify`, `exp_pausetilesab` | Exact skip |
+| Paused room picture's 10 stacked draws as one shader pass | `pause_stack.c` | `pauseStack` | none | `exp_pausestackverify`, `exp_pausestackab` | Visible (1/255 on a few pixels) |
 | Cathedral dust off | `katana.c` (stubs), `dustspawner_native.c` (native when on) | `cathedralDust` | `exp_dustnative0` (GML when on) | | Visible; native exact |
 | Dossier burn natives, fewer decorative circles | `dossier_native.c` | `dossierCircles` | `exp_dossiernative0`; `exp_dossierexact0` (keeps part) | `exp_dossiercleanup`, `exp_dossierverify` | Exact; circles visible |
 | Wavy dialogue backgrounds | `wavy_native.c` | `waveStrips` | `exp_wavynative0` | `exp_wavyverify`, `exp_waveab`, `exp_waveprof` | Exact native; strips visible |

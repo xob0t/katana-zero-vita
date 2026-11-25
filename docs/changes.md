@@ -19,6 +19,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Roll dust is unlit, and afterimages have no light tint | `trailLights=1` (`fogTrailLights=1`: only in the foggy rooms) |
 | Highlighted words in dialogue glow as before, but drawn in one batch: the glow's outline can sit a tiny fraction of a pixel off | `letterGlow=1` (`letterGlow=0`: no glow) |
 | The wavy dialogue backgrounds sway in coarser steps | `waveStrips=1` (`waveStrips=2`: half as coarse) |
+| The paused room picture behind the pause and options menus is drawn in one pass instead of ten stacked layers; about 20 of its 518,400 pixels per frame differ by 1/255 | `pauseStack=0` |
 | Laser deaths cut the body into fewer, thicker slices | `dissolveChunkScale=1` |
 | At most 3 copies of one sound and 32 voices at once | `sameSoundLimit=0`, `maxVoices=0` |
 | Checkpoints are saved in the background: a crash right after one can lose it, never corrupt it | `asyncSave=0` |
