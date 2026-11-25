@@ -13,6 +13,7 @@ set(EXACT_SOURCES
   loader/explosion_lite.c
   loader/far_rocket.c
   loader/flash_mask.c
+  loader/flashlight_native.c
   loader/held_native.c
   loader/input_native.c
   loader/laser_native.c

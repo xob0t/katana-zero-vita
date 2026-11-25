@@ -112,6 +112,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Laser deaths in fewer slices | `katana.c` (`dissolve_install`) | `dissolveChunkScale` | none | | Visible |
 | Minecart master and rails | `minecart_native.c` | none | `exp_minecartnative0` | | Exact native |
 | Flashlight mask culling | `flash_mask.c` | none | `exp_flashmask0` | | Exact native |
+| Mansion flashlights: obj_flashlightmaster user event 2 | `flashlight_native.c` | none | `exp_flashlightnative0` | `exp_flashlightverify`, `exp_flashlightfault` (negative control), `exp_flashlightflags` (prints flag differences), `exp_flashlightab`, `exp_flashlightprof` | Exact native |
 | `move_contact_solid` (Dragon dash aim) | `move_contact_native.c` | none | `exp_movecontact0` | `exp_mcverify`, `exp_mcdiff`, `exp_mcdiffbreak`, `exp_mcab`, `exp_mcprof` | Exact native |
 | No replays or death rewind | `katana.c` | `replays` | none | `exp_bunkerreplay`, `exp_bunkertrace` | Visible |
 
