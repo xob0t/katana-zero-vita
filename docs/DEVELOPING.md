@@ -170,6 +170,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Thread-safe APK reads | `stdio_mt.c` | none | none | Fix |
 | Startup: game.droid and audio groups read on a worker during the CPU-bound setup, handed to the runner's reads | `apk_prefetch.c`, `stdio_mt.c` | none | `exp_noprefetch` | Exact (same bytes) |
 | Startup: deflated runner and game.droid inflated while read, CRC checked | `runner_inflate.c`, `apk_prefetch.c`, `scripts/prepare_apk.py` | none | none (stored entries still load) | Exact |
+| Startup: game.droid inflated into the block the runner's `MemoryManager::Alloc` returns (its header in front, no copy); the runner's ELF image in the heap's untouched tail while it loads. The newlib heap after Startup is back to ~158 MB before the page blocks (233 MB with the copy) | `apk_prefetch.c`, `main.c`, `sbrk.c` | none | `exp_droidcopy`, `exp_sobufmalloc` (the old layout, tests) | Exact (same bytes) |
 | Startup: hashed `Code_Function_Find` during Startup | `fast_find.c` | none | `exp_nofastfind` | Exact; `exp_findverify` |
 | Startup: buffered minizip reads, GNU-hash misses, flushing only written code | `ioapi.c`, `so_util.c` | none | none | Exact |
 | Netflix logo skipped | `katana.c` | `skipNetflixLogo` | `skipNetflixLogo=0` | Visible |
