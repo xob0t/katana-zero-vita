@@ -10,7 +10,8 @@ minute. Nothing to install on your computer, and your APK isn't uploaded anywher
 
 1. Install kubridge, FdFix and `libshacccg.suprx` on the Vita.
 2. Open the web builder, drop in the Katana ZERO APK (Netflix Android release, version 1.1.10) and save the
-   `KatanaZero.vpk` it makes.
+   `KatanaZero.vpk` it makes. An APK bundle works too (APKMirror's `.apkm`, `.xapk` or `.apks`) if it includes the
+   armeabi-v7a split.
 3. Copy the VPK to `ux0:VPK/` and install it with VitaShell.
 4. For the best experience, overclock: install [PSVshell](https://github.com/Electry/PSVshell) and give the game a
    500 MHz CPU profile. Without it the heavy rooms drop more frames (the loader alone sets 444 MHz).

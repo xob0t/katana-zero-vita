@@ -469,7 +469,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description="Builds the Katana ZERO Vita app (build/app/KatanaZero.vpk) and the "
                                 "YoYo Loader drop-in loader (build/loader/loader2.bin).")
     p.add_argument("apk", nargs="?", type=Path,
-                   help="Katana ZERO APK (or XAPK/game.droid); needed for the LiveArea art and --game-apk")
+                   help="Katana ZERO APK (or APKM/XAPK/APKS bundle, or game.droid); needed for the LiveArea art and --game-apk")
     p.add_argument("--game-apk", action="store_true",
                    help="also make build/game.apk, the game for ux0:data/gms/katanazero/game.apk")
     p.add_argument("--game-apk-out", type=Path, metavar="PATH", help="--game-apk to another path")
