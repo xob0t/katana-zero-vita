@@ -3070,6 +3070,8 @@ static void *dlsym_resolve(void *handle, const char *symbol) {
 
 void *dlsym_hook(void *handle, const char *symbol) {
 	void *func = dlsym_resolve(handle, symbol);
+	extern void *tilemap_native_glwrap(const char *symbol, void *func);
+	func = tilemap_native_glwrap(symbol, func); // tilemap_native.c: 4-vertex tile batches drawn through an index buffer
 	return heavy_profiling ? glprof_wrap(symbol, func) : func;
 }
 

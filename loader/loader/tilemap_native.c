@@ -37,6 +37,27 @@
  * (checksum of every non-bl word after the entry hook), CalcLayerTilemapParams takes its direct-texture path (all
  * tilesets of the game do), the tileset has at least one column, the window is at most 1024 columns wide.
  *
+ * Four vertices per tile (exp_tile4v0 off). The six vertices of a tile are TL, TR, BL, BL, TR, BR: the fourth and fifth
+ * repeat the third and second bit for bit (the runner writes them from the same registers). The native draw writes
+ * only TL, TR, BL, BR, and the batch is drawn with glDrawRangeElements through a static index buffer of 0, 1, 2, 2,
+ * 1, 3 per tile (vitaGL reads it in place and copies 4 vertices per tile instead of 6). The GPU gets the same
+ * triangles with the same vertex values in the same order, so the pixels are the same; a third less is stored into
+ * the batch and copied by vitaGL. To keep such a batch free of other quads, the runner's batch is flushed before the
+ * layer's first tile when it isn't empty, and the layer's batch is flushed when the layer is done (Graphics::Flush:
+ * at most two more draw calls, only where a sprite on the same texture page would have shared the batch). Splitting a
+ * batch changes nothing drawn: Graphics::Flush draws with the GL state applied when the batch began and only then
+ * applies pending render states (RenderStateManager::Flush, Shader_Commit); a pending render state already makes
+ * AllocVerts flush at that same point, and uniform, matrix, shader, viewport and target setters flush first. Every
+ * glDrawArrays the runner makes while such a batch is open (Graphics::Flush, AllocVerts filling up mid-layer) goes
+ * through the index buffer; that happens in this file's glDrawArrays wrapper (dlsym, main.c), which otherwise calls
+ * vitaGL's glDrawArrays directly. The index buffer is checked after creation (mapped and compared); without it the
+ * six-vertex path runs. Measured on the Vita (Nov 26, 500 MHz, in-run A/B of the whole game-thread frame): bunker2_3
+ * -0.66 +- 0.08 ms/frame, club_4_2 -0.57 +- 0.18, haunted_alien2 -0.50 +- 0.10.
+ * exp_tile4ab (debugMode): six vertices per tile in every other report window (in-run A/B; the [TILEMAP] line names
+ * the state of the window it reports). exp_tile4verify (with exp_tilenativeverify): the four-vertex pass goes into
+ * scratch memory and is compared with the runner's six vertices at positions 0, 1, 2, 5, and the runner's own vertices
+ * 3 and 4 are checked against 2 and 1.
+ *
  * Switches: exp_tilenative0 off. exp_tilenativeab: the runner's code in every other report window (in-run A/B).
  * exp_tilenativeprof: time spent in tile layer draws per frame, both paths (sceKernelGetProcessTimeLow per call).
  * exp_tilenativeverify (debugMode): every draw runs the native path into scratch memory first (nothing drawn), then
@@ -51,6 +72,7 @@
 #include <string.h>
 #include <arm_neon.h>
 #include <psp2/kernel/processmgr.h>
+#include <vitaGL.h>
 
 #include "main.h"
 #include "so_util.h"
@@ -88,6 +110,19 @@ static draw_fn orig_draw;
 static sink live; // the runner's Graphics::AllocVerts and FreeVerts
 
 static int installed, ab_mode, prof, verify, fault;
+typedef void ABI (*void_fn)(void);
+static void_fn graphics_flush;
+// four vertices per tile: on (exp_tile4v0 off), the index buffer is ready, a batch of 4-vertex tiles is open
+static int quad4_on, quad4_ready, quad4_failed, quad4_batch, quad4_verify, quad4_ab;
+static GLuint quad4_ibo, runner_ibo;
+static uint32_t quad4_tex; // the open 4-vertex batch's texture
+static void **last_texture; // the runner's batch: texture, primitive type, vertex size
+static int *last_prim, *last_vsize;
+static int quad4_maxv;
+static void (*orig_gl_draw_arrays)(GLenum, GLint, GLsizei);
+static void (*orig_gl_bind_buffer)(GLenum, GLuint);
+static unsigned n_q4_layers, n_q4_draws, n_q4_bad, n_q4_preflush;
+static unsigned v4_calls, v4_bad, v4_dup_bad;
 static int ab_off; // exp_tilenativeab: this report window runs the runner's code
 
 static unsigned n_calls, n_native, n_tiles, n_uv_direct, n_fallback[4];
@@ -207,7 +242,7 @@ static const uint8_t corner_order[8][4] = {
 
 // Returns 0 when the runner's function must run instead (nothing was submitted then)
 static __attribute__((noinline)) int draw_native(const float *rect, uint8_t *layer, uint8_t *elem, float fx, float fy, float fdepth,
-		const sink *out_fns) {
+		const sink *out_fns, int q4) {
 	if (!tileset_exists(*(int *)(elem + 0x1c)))
 		return 1;
 	uint8_t *ts = tileset_data(*(int *)(elem + 0x1c));
@@ -272,7 +307,8 @@ static __attribute__((noinline)) int draw_native(const float *rect, uint8_t *lay
 		n_fallback[2]++;
 		return 0;
 	}
-	const int maxper = maxv / 6;
+	const int vpt = q4 ? 4 : 6; // vertices per tile
+	const int maxper = maxv / vpt;
 	int32_t remaining = (int32_t)((uint32_t)(ce - cs) * (uint32_t)(re - rs));
 	int32_t left_tiles = 0;
 	uint32_t *o = NULL;
@@ -316,9 +352,17 @@ static __attribute__((noinline)) int draw_native(const float *rect, uint8_t *lay
 				continue;
 			if (!left_tiles) {
 				left_tiles = remaining < maxper ? remaining : maxper;
+				if (q4 && !reserved && out_fns == &live) { // the batch must hold only this layer's 4-vertex tiles
+					if (*vertex_count > 0) {
+						graphics_flush();
+						n_q4_preflush++;
+					}
+					quad4_batch = 1;
+					quad4_tex = *(uint32_t *)tex;
+				}
 				reserved += left_tiles;
 				const uint32_t ta = prof ? sceKernelGetProcessTimeLow() : 0;
-				o = out_fns->alloc(4, (void *)*(uint32_t *)tex, 0x18, left_tiles * 6);
+				o = out_fns->alloc(4, (void *)*(uint32_t *)tex, 0x18, left_tiles * vpt);
 				if (prof)
 					prof_alloc_us += sceKernelGetProcessTimeLow() - ta;
 			}
@@ -345,19 +389,117 @@ static __attribute__((noinline)) int draw_native(const float *rect, uint8_t *lay
 			const uint32x2_t xv = vld1_u32(&xs[2 * i]);
 			const uint32x2x2_t top = vzip_u32(xv, y0v), bot = vzip_u32(xv, y1v); // (x0, y), (x1, y)
 			uint32x2_t *q = (uint32x2_t *)o; // vstr d, [r, #imm]: 4-byte alignment is enough
-			q[0] = top.val[0];  q[1] = zc0;  q[2] = t0;
-			q[3] = top.val[1];  q[4] = zc1;  q[5] = t1;
-			q[6] = bot.val[0];  q[7] = zc3;  q[8] = t2;
-			q[9] = bot.val[0];  q[10] = zc3; q[11] = t2;
-			q[12] = top.val[1]; q[13] = zc1; q[14] = t1;
-			q[15] = bot.val[1]; q[16] = zc2; q[17] = t5;
-			o += 36;
+			if (q4) { // TL, TR, BL, BR: the six-vertex order without its repeats (indices 0, 1, 2, 2, 1, 3)
+				q[0] = top.val[0];  q[1] = zc0;  q[2] = t0;
+				q[3] = top.val[1];  q[4] = zc1;  q[5] = t1;
+				q[6] = bot.val[0];  q[7] = zc3;  q[8] = t2;
+				q[9] = bot.val[1];  q[10] = zc2; q[11] = t5;
+				o += 24;
+			} else {
+				q[0] = top.val[0];  q[1] = zc0;  q[2] = t0;
+				q[3] = top.val[1];  q[4] = zc1;  q[5] = t1;
+				q[6] = bot.val[0];  q[7] = zc3;  q[8] = t2;
+				q[9] = bot.val[0];  q[10] = zc3; q[11] = t2;
+				q[12] = top.val[1]; q[13] = zc1; q[14] = t1;
+				q[15] = bot.val[1]; q[16] = zc2; q[17] = t5;
+				o += 36;
+			}
 			left_tiles--;
 		}
 	}
 	if (left_tiles > 0)
-		out_fns->free(left_tiles * 6);
+		out_fns->free(left_tiles * vpt);
 	n_tiles += reserved - (left_tiles > 0 ? left_tiles : 0);
+	if (quad4_batch) { // draw the layer's 4-vertex batch now, through the index buffer
+		graphics_flush();
+		quad4_batch = 0;
+		n_q4_layers++;
+	}
+	return 1;
+}
+
+/* ---- four vertices per tile: the index buffer and the draw ---- */
+// The runner's glDrawArrays (resolved through dlsym): a batch of 4-vertex tiles is drawn through the index buffer
+static void q4_gl_draw_arrays(GLenum mode, GLint first, GLsizei count) {
+	// Only the batch of 4-vertex tiles: its texture, triangle list, 24-byte vertices (anything else the runner draws
+	// meanwhile, say a quad another hook drew inside AllocVerts, flushed the tiles first and has its own texture)
+	if (!quad4_batch || count <= 0 || (uint32_t)*last_texture != quad4_tex || *last_prim != 4 || *last_vsize != 0x18) {
+		orig_gl_draw_arrays(mode, first, count);
+		return;
+	}
+	if (mode != GL_TRIANGLES || first != 0 || (count & 3) || count > quad4_maxv) {
+		n_q4_bad++; // can't happen: the batch holds whole 4-vertex tiles (reported; drawn as they are, never past the batch)
+		orig_gl_draw_arrays(mode, first, count);
+		return;
+	}
+	n_q4_draws++;
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, quad4_ibo);
+	glDrawRangeElements(GL_TRIANGLES, 0, (GLuint)count - 1, count / 4 * 6, GL_UNSIGNED_SHORT, NULL);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, runner_ibo);
+}
+
+// The runner's glBindBuffer: its element buffer binding, put back after each indexed tile draw
+static void q4_gl_bind_buffer(GLenum target, GLuint buffer) {
+	if (target == GL_ELEMENT_ARRAY_BUFFER)
+		runner_ibo = buffer;
+	orig_gl_bind_buffer(target, buffer);
+}
+
+void *tilemap_native_glwrap(const char *symbol, void *func) {
+	if (!func || exp_flag("tile4v0") || exp_flag("tilenative0"))
+		return func;
+	if (!strcmp(symbol, "glDrawArrays")) {
+		orig_gl_draw_arrays = func;
+		return (void *)q4_gl_draw_arrays;
+	}
+	if (!strcmp(symbol, "glBindBuffer")) {
+		orig_gl_bind_buffer = func;
+		return (void *)q4_gl_bind_buffer;
+	}
+	return func;
+}
+
+// First tile draw (game thread, GL context): the static index buffer for the largest batch AllocVerts allows
+static int quad4_prepare(void) {
+	if (quad4_ready || quad4_failed)
+		return quad4_ready;
+	quad4_failed = 1;
+	if (!orig_gl_draw_arrays || !orig_gl_bind_buffer || !graphics_flush) {
+		debugPrintf("tile layer native: 4 vertices per tile NOT used (glDrawArrays/glBindBuffer not wrapped)\n");
+		return 0;
+	}
+	int maxv = max_verts() / 4 * 4;
+	if (maxv <= 0 || maxv > 0x10000) {
+		debugPrintf("tile layer native: 4 vertices per tile NOT used (max batch %d vertices)\n", maxv);
+		return 0;
+	}
+	const int n = maxv / 4 * 6;
+	uint16_t *idx = malloc(n * sizeof(uint16_t));
+	if (!idx)
+		return 0;
+	for (int t = 0; t < maxv / 4; t++) {
+		uint16_t b = (uint16_t)(t * 4);
+		uint16_t *d = idx + t * 6;
+		d[0] = b; d[1] = b + 1; d[2] = b + 2; d[3] = b + 2; d[4] = b + 1; d[5] = b + 3;
+	}
+	glGenBuffers(1, &quad4_ibo);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, quad4_ibo);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, n * sizeof(uint16_t), idx, GL_STATIC_DRAW);
+	// vitaGL is built without error reporting: map the buffer back to see it was allocated and filled
+	const void *m = quad4_ibo ? glMapBuffer(GL_ELEMENT_ARRAY_BUFFER, GL_READ_ONLY) : NULL;
+	int ok = m && !memcmp(m, idx, n * sizeof(uint16_t));
+	if (m)
+		glUnmapBuffer(GL_ELEMENT_ARRAY_BUFFER);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, runner_ibo);
+	free(idx);
+	if (!ok) {
+		debugPrintf("tile layer native: 4 vertices per tile NOT used (index buffer %s)\n", m ? "content differs" : "not allocated");
+		return 0;
+	}
+	quad4_maxv = maxv;
+	quad4_failed = 0;
+	quad4_ready = 1;
+	debugPrintf("tile layer native: 4 vertices per tile, index buffer of %d indices (batches up to %d vertices)\n", n, maxv);
 	return 1;
 }
 
@@ -373,8 +515,6 @@ static uint8_t *scratch_buf;
 static int sc_n, sc_freed, sc_count;
 static uint32_t sc_tex, sc_prim, sc_stride;
 static uint8_t **src_verts;
-static void **last_texture;
-static int *last_prim, *last_vsize;
 
 static void *ABI scratch_alloc(int prim, void *tex, int stride, int count) {
 	sc_n++;
@@ -397,7 +537,7 @@ static void verify_draw(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t
 	memcpy(&fd, &f, 4);
 	sc_n = sc_freed = sc_count = 0;
 	static const sink scratch = {scratch_alloc, scratch_free};
-	const int native_ok = draw_native((const float *)a, (uint8_t *)b, (uint8_t *)c, fx, fy, fd, &scratch);
+	const int native_ok = draw_native((const float *)a, (uint8_t *)b, (uint8_t *)c, fx, fy, fd, &scratch, quad4_verify);
 	const int used = sc_count - sc_freed;
 	if (native_ok && fault && sc_n == 1 && used > 0) {
 		((uint32_t *)scratch_buf)[0] ^= 1;
@@ -415,9 +555,30 @@ static void verify_draw(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t
 	if (!sc_n)
 		bad = after != before;
 	else {
-		bad = (uint32_t)*last_texture != sc_tex || (uint32_t)*last_prim != sc_prim || (uint32_t)*last_vsize != sc_stride ||
-			used < 0 || after < used || (after - before != used && after != used);
-		if (!bad) {
+		bad = (uint32_t)*last_texture != sc_tex || (uint32_t)*last_prim != sc_prim || (uint32_t)*last_vsize != sc_stride;
+		if (!bad && quad4_verify) { // 4 native vertices per tile against the runner's 6: 0, 1, 2, 5 equal; its 3 = 2, 4 = 1
+			const int tiles = used / 4, rused = tiles * 6;
+			bad = used < 0 || (used & 3) || after < rused || (after - before != rused && after != rused);
+			if (!bad) {
+				const uint8_t *x = scratch_buf, *y = *src_verts + (uint32_t)(after - rused) * sc_stride;
+				for (int t = 0; t < tiles; t++, x += 4 * 24, y += 6 * 24) {
+					if (memcmp(x, y, 3 * 24) || memcmp(x + 3 * 24, y + 5 * 24, 24)) {
+						bad = 1;
+						for (int k = 0; k < 3 * 24; k++)
+							v_bytes += x[k] != y[k];
+						for (int k = 0; k < 24; k++)
+							v_bytes += x[3 * 24 + k] != y[5 * 24 + k];
+					}
+					if (memcmp(y + 3 * 24, y + 2 * 24, 24) || memcmp(y + 4 * 24, y + 24, 24))
+						v4_dup_bad++;
+				}
+			}
+			v4_calls++;
+			if (bad)
+				v4_bad++;
+		} else if (!bad)
+			bad = used < 0 || after < used || (after - before != used && after != used);
+		if (!bad && !quad4_verify) {
 			const uint8_t *x = scratch_buf, *y = *src_verts + (uint32_t)(after - used) * sc_stride;
 			const uint32_t bytes = (uint32_t)used * sc_stride;
 			if (memcmp(x, y, bytes)) {
@@ -445,7 +606,7 @@ static void tilemap_draw(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_
 		memcpy(&fx, &d, 4);
 		memcpy(&fy, &e, 4);
 		memcpy(&fd, &f, 4);
-		native = draw_native((const float *)a, (uint8_t *)b, (uint8_t *)c, fx, fy, fd, &live);
+		native = draw_native((const float *)a, (uint8_t *)b, (uint8_t *)c, fx, fy, fd, &live, quad4_on && quad4_prepare());
 		if (native)
 			n_native++;
 		else
@@ -470,6 +631,13 @@ void tilemap_native_report(int frames) {
 		debugPrintf("[TILEMAP] time %s %.3f ms/frame (%u draws), of it AllocVerts %.3f\n", prof_calls[1] ? "native" : "runner",
 			(float)(prof_us[0] + prof_us[1]) / 1000.0f / frames, prof_calls[0] + prof_calls[1],
 			(float)prof_alloc_us / 1000.0f / frames);
+	if (quad4_ready)
+		debugPrintf("[TILEMAP] %s vertices per tile: %.1f layers/frame, %.1f indexed draws/frame, %.2f pre-flushes/frame, wrong draws %u\n",
+			quad4_on ? "4" : "6 (A/B)", (float)n_q4_layers / frames, (float)n_q4_draws / frames, (float)n_q4_preflush / frames, n_q4_bad);
+	n_q4_layers = n_q4_draws = n_q4_preflush = 0;
+	if (verify && quad4_verify && v4_calls)
+		debugPrintf("[TILEMAP] verify 4 vertices per tile: %u draws, %u mismatched, runner repeats differing %u\n", v4_calls,
+			v4_bad, v4_dup_bad);
 	if (verify && (v_calls || v_skipped))
 		debugPrintf("[TILEMAP] verify: %u draws compared, %u mismatched (%u bytes), %u skipped | fault injected into %u draws (exp_tilenativeverifyfault: each must mismatch by 1 byte)\n",
 			v_calls, v_bad, v_bytes, v_skipped, v_faulted);
@@ -479,6 +647,8 @@ void tilemap_native_report(int frames) {
 	prof_calls[0] = prof_calls[1] = 0;
 	if (ab_mode)
 		ab_off = !ab_off;
+	if (quad4_ab) // exp_tile4ab: 6 vertices per tile in every other report window
+		quad4_on = !quad4_on;
 }
 
 static int resolve(void) {
@@ -494,6 +664,10 @@ static int resolve(void) {
 	R(tiledata_mask, const uint32_t *, "_ZN13CLayerManager14m_TiledataMaskE");
 	R(ignore_cull, const uint8_t *, "_ZN7CSprite13ms_ignoreCullE");
 	R(vertex_count, int *, "g_CurrentVertexCount");
+	R(graphics_flush, void_fn, "_ZN8Graphics5FlushEv");
+	R(last_texture, void **, "g_pLastTexture");
+	R(last_prim, int *, "g_LastPrimType");
+	R(last_vsize, int *, "g_LastVertexSize");
 #undef R
 	live.alloc = alloc_verts;
 	live.free = free_verts;
@@ -536,14 +710,14 @@ static int prepare(void) {
 		fault = exp_flag("tilenativeverifyfault");
 		scratch_buf = malloc(2 * SCRATCH_BYTES);
 		src_verts = (uint8_t **)so_symbol(&yoyoloader_mod, "SrcVerts");
-		last_texture = (void **)so_symbol(&yoyoloader_mod, "g_pLastTexture");
-		last_prim = (int *)so_symbol(&yoyoloader_mod, "g_LastPrimType");
-		last_vsize = (int *)so_symbol(&yoyoloader_mod, "g_LastVertexSize");
-		if (!scratch_buf || !src_verts || !last_texture || !last_prim || !last_vsize) {
+		if (!scratch_buf || !src_verts) {
 			debugPrintf("tile layer native: verify NOT available (memory or symbols)\n");
 			verify = 0;
 		}
 	}
+	quad4_on = !exp_flag("tile4v0");
+	quad4_verify = verify && exp_flag("tile4verify");
+	quad4_ab = debugMode && quad4_on && exp_flag("tile4ab");
 	ab_mode = debugMode && exp_flag("tilenativeab");
 	prof = debugMode && exp_flag("tilenativeprof");
 	return 1;
@@ -551,7 +725,8 @@ static int prepare(void) {
 
 static void announce(const char *how) {
 	installed = 1;
-	debugPrintf("tile layer native: installed (%s)%s%s%s%s\n", how, verify ? ", verify" : "", fault ? " with fault" : "",
+	debugPrintf("tile layer native: installed (%s)%s%s%s%s%s\n", how, quad4_on ? ", 4 vertices per tile" : ", 6 vertices per tile (exp_tile4v0)",
+		verify ? (quad4_verify ? ", verify (4 vertices)" : ", verify") : "", fault ? " with fault" : "",
 		ab_mode ? ", A/B by report window" : "", prof ? ", timed" : "");
 }
 
