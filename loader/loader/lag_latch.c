@@ -1,5 +1,5 @@
 /*
- * lag_latch.c: keep the game's lag mode on once leaving it failed (lagLatch, off by default; visible)
+ * lag_latch.c: keep the game's lag mode on once leaving it failed (lagLatch, 2 by default; visible)
  *
  * The game's own effects governor, obj_opto_master user event 5 (work/cpu_research/lag_mode.md), enters "lag mode"
  * when fps_real (1 / work time) stays under 70 and leaves it after 30 ticks at 80 or more. Out of lag mode it turns
@@ -24,7 +24,7 @@
 #include "so_util.h"
 #include "katana_internal.h"
 
-int lag_latch; // yyl.cfg lagLatch: 0 off (game behaviour), 1 latch at the first failed exit, 2 also per room
+int lag_latch = 2; // yyl.cfg lagLatch (default 2): 0 off (game behaviour), 1 latch at the first failed exit, 2 also per room
 
 #define RETRY_TICKS 60 // a dip this soon after leaving lag mode counts as a failed exit (chinatown_4: 5-9 ticks)
 #define MAX_ROOMS 1024

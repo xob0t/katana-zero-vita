@@ -1361,7 +1361,7 @@ static void patch_performance() {
 	extern void hud_sparks_install(gml_func_entry *table), flame_lights_install(gml_func_entry *table);
 	hud_sparks_install(table);
 	extern void lag_latch_install(gml_func_entry *table);
-	lag_latch_install(table); // lagLatch (lag_latch.c), off by default
+	lag_latch_install(table); // lagLatch (lag_latch.c), 2 by default
 	flame_lights_install(table);
 
 	katana_display_hook_draw();
