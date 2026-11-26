@@ -5,9 +5,9 @@
 ## Checklist
 
 - [ ] Exact or visible? A visible change has a row in `docs/changes.md`; any new `yyl.cfg` key has a row in
-      `docs/settings.md` (default, range, effect).
+      `docs/settings.md` (default, range, effect); CI's `tests/test_settings_docs.py` checks the keys and defaults.
 - [ ] Off-switch: the `exp_*` flag (or setting) that turns the change off is named here and in the file's header
-      comment.
+      comment, and in `docs/DEVELOPING.md`'s feature map; `python scripts/exp_index.py` updates `docs/exp-flags.md`.
 - [ ] The module owns its report: an `xxx_report(int frames)` in the feature's own file, not a new block in
       `katana_prof.c`.
 - [ ] Verifier: the command or `exp_*verify` flag that checks the change, and its result on this branch.
