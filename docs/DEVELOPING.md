@@ -68,6 +68,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 |---|---|---|---|---|---|
 | Lighting at 30 Hz | `katana_display.c` | none | `exp_lighting60` | | Visible |
 | No lamp glow in club_0 and haunted_cart2 | `room_lighting.c` | `roomLighting` | none | `exp_roomlighting1` (A/B, read at Room Start) | Visible |
+| Flamethrower flames don't light the room: their obj_orangelight (and its obj_lightback) isn't created; their instance and element ids are taken as the creations would; the light list refresh the light's Create asks for (`global.update_lights`, read only by drawing code) isn't | `flame_lights.c` | `flameLights` | none | `exp_flamelightsverify`, `exp_flamelightsfault` (negative control), `exp_flamelightsab` | Visible; game state exact except the collision tree's shape and the id order within one frame |
 | obj_orangelight and obj_lightback Step natives | `light_fast_inline.c` (default), `light_fast.c` (`exp_lightfast`) | none | `exp_lightfast0` | | Exact native |
 | obj_lightback user event 0 (off-screen and on-screen lights) | `lightback_native.c` | none | `exp_lightbacknative0`; `exp_lbvisible0` (on-screen lights only) | `exp_lbverify`, `exp_lbverifyfault` (negative control), `exp_lbab`, `exp_lbvisab` | Exact native |
 | `update_light_array` loop | `light_array_native.c` | none | `exp_lightarray0` | `exp_lightarrayverify` | Exact native |
@@ -112,6 +113,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Ceiling laser beams | `laser_native.c` | none | `exp_lasernative0`; `exp_laserfast0` (temporary array as before) | `exp_laserab`, `exp_laserprof` | Exact native |
 | obj_ceiling_laser Step for lasers that don't move: the runner's calls without the event's lookups; a hit puts back what it wrote and runs the original | `hazard_native.c` | none | `exp_hzlaser0` | `exp_hzlaserverify`, `exp_hzlaserfault` (negative control), `exp_hzlaserab`, `exp_hzlaserprof` | Exact native |
 | Laser deaths in fewer slices | `katana.c` (`dissolve_install`) | `dissolveChunkScale` | none | | Visible |
+| No HUD sparks in slow motion: not created; their random numbers, ids and the HUD's two checks on them are reproduced | `hud_sparks.c` | `hudSparks` | none | `exp_hudsparksverify`, `exp_hudsparksfault` (negative control), `exp_hudsparksab` | Visible; game state exact |
 | Minecart master and rails | `minecart_native.c` | none | `exp_minecartnative0` | | Exact native |
 | Flashlight mask culling | `flash_mask.c` | none | `exp_flashmask0` | | Exact native |
 | Mansion flashlights: obj_flashlightmaster user event 2 | `flashlight_native.c` | none | `exp_flashlightnative0` | `exp_flashlightverify`, `exp_flashlightfault` (negative control), `exp_flashlightflags` (prints flag differences), `exp_flashlightab`, `exp_flashlightprof` | Exact native |
@@ -281,6 +283,9 @@ Rules:
    - `clubber_native.c` installs after `visibility_native.c`, which hooks `inside_screen`, one of clubber's checked
      helpers. With the default flags the clubber native therefore never installs, and `dancerGlow=1` runs the GML.
    - `fog_skip_install` runs inside `fog_install` (`katana.c`), after the fog Create/Step hooks.
+   - `instance_create_depth` in the runner's function registry: `fog_skip.c`, `rain_skip.c`, `hud_sparks.c` and
+     `flame_lights.c` each wrap the entry they find, in that order (all in `katana_late_install`, once the registry is
+     filled), and pass on every call that isn't theirs.
    - `smokedraw_native.c`'s verify recorder hooks its scripts on the first verified event, after every native has
      installed; on an entry another native hooked it puts itself in front.
    - `move_contact_native.c` installs its five entry hooks all or none.

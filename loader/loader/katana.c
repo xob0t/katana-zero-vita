@@ -818,6 +818,10 @@ void katana_late_install(void) {
 	// destroys them as before.
 	extern void rain_skip_install(void);
 	rain_skip_install();
+	extern void hud_sparks_late_install(void);
+	hud_sparks_late_install(); // chains instance_create_depth after rain_skip (hud_sparks.c)
+	extern void flame_lights_late_install(void);
+	flame_lights_late_install(); // and after hud_sparks (flame_lights.c)
 	if (!exp_flag("dossiernative0")) {
 		extern int dossier_native_install(void *(*hook)(uintptr_t entry, void *replacement));
 		debugPrintf("native dossier burn steps: %s\n", dossier_native_install(entry_hook) ? "installed" : "NOT installed");
@@ -1509,6 +1513,11 @@ static void patch_performance() {
 	blood_drops_install(table);
 	extern void room_lighting_install(gml_func_entry *table);
 	room_lighting_install(table); // after blood_drops_install: chains its opto_master Room Start
+	// No HUD sparks in slow motion (hud_sparks.c; its instance_create_depth hook waits for katana_late_install) and
+	// no light from the flamethrower's flames (flame_lights.c)
+	extern void hud_sparks_install(gml_func_entry *table), flame_lights_install(gml_func_entry *table);
+	hud_sparks_install(table);
+	flame_lights_install(table);
 
 	// Frame skipping (and its guard stubs) only when opted in with frameSkip=1
 	uintptr_t *draw_slot = frame_skip ? so_got_slot(&yoyoloader_mod, "_Z12DoAStep_Drawv") : NULL;

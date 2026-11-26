@@ -16,6 +16,7 @@ set(EXACT_SOURCES
   loader/flashlight_native.c
   loader/hazard_native.c
   loader/held_native.c
+  loader/hud_sparks.c
   loader/input_native.c
   loader/laser_native.c
   loader/letter_glyph.c

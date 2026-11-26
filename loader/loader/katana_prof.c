@@ -998,6 +998,9 @@ void katana_prof_report(int frames) {
 	fog_skip_report(frames);
 	extern void rain_skip_report(int frames);
 	rain_skip_report(frames);
+	extern void hud_sparks_report(int frames), flame_lights_report(int frames);
+	hud_sparks_report(frames);
+	flame_lights_report(frames);
 	extern void flashlight_native_report(int frames);
 	flashlight_native_report(frames);
 	extern void runner_fast_report(int frames);
