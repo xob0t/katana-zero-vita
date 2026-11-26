@@ -44,6 +44,14 @@ jobs:
           uv run --locked build.py --deps-dir "$RUNNER_TEMP/deps"
           test -s build/app/eboot.bin && test -s build/app/KatanaZero.vpk_param.sfo
 
+      - name: DIAG ONLY loader ELF
+        uses: actions/upload-artifact@v4
+        with:
+          name: loader-elf
+          path: |
+            build/app/YoYoLoader
+            build/app/eboot.bin
+
       - name: Loader checks
         # No global defined twice across the app's objects (the link merges them silently), extern declarations that
         # match their definitions (an LTO partial link), and the natives' host test builds (scripts/check_loader.py)
