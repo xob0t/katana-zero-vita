@@ -40,6 +40,8 @@ Some of the speedups change what you see or play:
 - Bloom, shaders, blood spray and the restart and rewind effects are off by default. With bloom on, some rooms run
   at half the frame rate. They can be turned on in **GRAPHICS**.
 - Simpler effects in heavy scenes: less lighting, lighter smoke, fog and explosions.
+- No sparks fly off the HUD's battery meter during slow motion.
+- The flamethrower's flames don't light up the room.
 
 Each can be undone in `ux0:data/gms/katanazero/yyl.cfg`; [docs/changes.md](docs/changes.md) lists them all.
 

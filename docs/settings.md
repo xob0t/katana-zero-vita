@@ -51,6 +51,8 @@ Defaults come from the variable definitions in the file listed. "Nonzero" means 
 | `shadersDefault` | 0 | 0, nonzero | The same for SHADERS (needed by bloom, RESTART FX, REWIND FX and the replay's VHS look). | `option_defaults.c` |
 | `bloodSprayDefault` | 0 | 0, nonzero | The same for BLOOD SPRAY (blood drops and splatter). | `option_defaults.c` |
 | `roomLighting` | 0 | 0, nonzero | 1 keeps the lamp glow in room_club_0 and room_haunted_cart2. | `room_lighting.c` |
+| `hudSparks` | 0 | 0, nonzero | 1 keeps the sparks the HUD's battery meter throws during slow motion. 0 doesn't create them, but draws their random numbers. | `hud_sparks.c` |
+| `flameLights` | 0 | 0, nonzero | 1 keeps the light of the player's flamethrower flames (room_mansion_2_2, room_mansion_3). 0 doesn't create those lights, but takes their instance ids. | `flame_lights.c` |
 | `ropeLights` | 0 | 0, nonzero | 1 keeps the light tint on clotheslines. | `main.c`, `katana.c` |
 | `cathedralDust` | 0 | 0, nonzero | 1 keeps the dust in the cathedral's window light (with an exact native, `exp_dustnative0` for the GML). | `katana.c`, `dustspawner_native.c` |
 | `fogScale` | 4 | 1 or less = original, N > 1 | Keeps one prison fog puff in N, drawn denser. | `katana.c`, `fog_skip.c` |

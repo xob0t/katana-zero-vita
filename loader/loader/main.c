@@ -227,6 +227,8 @@ void loadConfig(const char *game) {
 			else if (strcmp("letterGlow", buffer) == 0 && value >= 0 && value <= 2) { extern int letter_glow; letter_glow = value; }
 			else if (strcmp("cathedralDust", buffer) == 0) { extern int cathedral_dust; cathedral_dust = value; }
 			else if (strcmp("roomLighting", buffer) == 0) { extern int room_lighting; room_lighting = value; }
+			else if (strcmp("hudSparks", buffer) == 0) { extern int hud_sparks; hud_sparks = value; }
+			else if (strcmp("flameLights", buffer) == 0) { extern int flame_lights; flame_lights = value; }
 			else if (strcmp("enemyTiming", buffer) == 0) { extern int enemy_timing_cfg; enemy_timing_cfg = value; }
 			else if (strcmp("timerSlowmo", buffer) == 0) { extern int timer_slowmo_cfg; timer_slowmo_cfg = value; }
 			else if (strcmp("waveStrips", buffer) == 0) { extern int wave_strips; wave_strips = value; }

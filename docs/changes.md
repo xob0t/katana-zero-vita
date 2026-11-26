@@ -23,6 +23,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Laser deaths cut the body into fewer, thicker slices | `dissolveChunkScale=1` |
 | At most 3 copies of one sound and 32 voices at once | `sameSoundLimit=0`, `maxVoices=0` |
 | Checkpoints are saved in the background: a crash right after one can lose it, never corrupt it | `asyncSave=0` |
+| In slow motion the HUD's battery meter throws no sparks. Everything else on the HUD stays, and the game's random numbers come out the same | `hudSparks=1` |
 | Rain is plain dark streaks and grey splashes, without the game's fading trails and lamp-lit drops | `rain=2` (`rain=0`: no rain) |
 | No end-of-level replay and no death rewind | `replays=1` |
 | No touch controls: the mobile build's virtual stick and buttons are gone, and the front touch screen does nothing | `touchControls=1` (`touchControls=2`: also drawn) |
@@ -37,6 +38,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Club | The dancers' rim glow is one outline per side with all the nearby lights mixed into it, not one per light; only the outline corners can differ | `dancerGlow=1` (in club_0 also `roomLighting=1`; `dancerGlow=0`: no glow) |
 | club_0, haunted_cart2 | No lamp glow on walls and floors | `roomLighting=1` |
 | Clotheslines | No coloured light on them | `ropeLights=1` |
+| mansion_2_2, mansion_3 | The flamethrower's flames don't light up the room. They burn, spread and alert enemies as before | `flameLights=1` |
 | Clotheslines | Ropes and their cloth move every other frame, and stop while more than 512 px outside the view | — |
 | Cathedral | No dust in the window light | `cathedralDust=1` |
 | Prison | Thinner fog | `fogScale=1` |
