@@ -5,7 +5,7 @@ hand. `tests/test_exp_flags.py` fails when it is out of date. What each switch d
 [DEVELOPING.md](DEVELOPING.md#feature-map) (every switch must be named there) and the owning file's header
 comment. Kinds are guessed from the name.
 
-288 switches.
+289 switches.
 
 | Switch | Owner | Also read in | Kind |
 |---|---|---|---|
@@ -145,6 +145,7 @@ comment. Kinds are guessed from the name.
 | `exp_lighting60` | `katana_display.c` |  | other |
 | `exp_lightmapbig` | `katana.c` |  | other |
 | `exp_lightparts` | `katana.c` |  | other |
+| `exp_logformatverify` | `main.c` |  | verify |
 | `exp_mcab` | `move_contact_native.c` |  | A/B |
 | `exp_mcdiff` | `move_contact_native.c` |  | other |
 | `exp_mcdiffbreak` | `move_contact_native.c` |  | negative control |
