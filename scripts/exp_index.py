@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Index of the loader's exp_* experiment switches: which file reads each one.
+
+    python scripts/exp_index.py            # rewrite docs/exp-flags.md
+    python scripts/exp_index.py --check    # exit 1 if docs/exp-flags.md is out of date
+
+tests/test_exp_flags.py runs the check in CI and also requires every flag to be named in docs/DEVELOPING.md (or
+settings.md / changes.md).
+
+What counts as a flag read (regexes over loader/loader/*.c and *.h, comments not stripped):
+- `exp_flag("name")` and `exp_number("name", ...)` with a string literal: FLAG_CALL below.
+- `exp_flag(<expression>)`: a computed name. Each such call site must be listed in DYNAMIC with the names it can
+  produce, else the scan fails (the test then says which file and line to add).
+A flag has one owner: the only file that reads it. A flag read in several files must be listed in SHARED with its
+owner and the exact set of files, else the scan fails: two features must not answer to one switch by accident.
+"""
+import argparse
+import re
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "loader" / "loader"
+OUT = ROOT / "docs" / "exp-flags.md"
+
+FLAG_CALL = re.compile(r'\bexp_(?:flag|number)\(\s*"([A-Za-z0-9_]+)"')
+# exp_flag( followed by something other than a string literal (the definition in so_util.c has `const char *`)
+DYNAMIC_CALL = re.compile(r'\bexp_flag\(\s*(?!")(?!const\b)([^)]*)\)')
+
+# Computed flag names: (file, the call's argument text) -> the names it can produce
+DYNAMIC = {
+    ("rain_cheap.c", "name"): [f"rainkeep{n}" for n in range(2, 9)],  # snprintf(name, ..., "rainkeep%d", n), n 2..8
+}
+
+# Flags read by more than one file on purpose: flag -> (owner, every file that reads it)
+SHARED = {
+    # katana.c skips the install call, hazard_native.c checks again for its own callers
+    "hzlaser0": ("hazard_native.c", {"hazard_native.c", "katana.c"}),
+    # katana.c sets letter_timing for letter_native.c; letter_glyph.c times its own part
+    "lettertime": ("letter_glyph.c", {"katana.c", "letter_glyph.c"}),
+    # one switch times both halves of the recolor work
+    "recolorlightsprof": ("recolor_lights.c", {"particle_lights.c", "recolor_lights.c"}),
+    # crt_native.c (the CRT rows) reuses collision_round_trip.c's names; separated in the build-checks PR
+    "crtab": ("collision_round_trip.c", {"collision_round_trip.c", "crt_native.c"}),
+    "crtverify": ("collision_round_trip.c", {"collision_round_trip.c", "crt_native.c"}),
+}
+
+
+def kind(flag):
+    """A rough kind from the name, for the index only (DEVELOPING.md 'Kinds of switch')."""
+    if "fault" in flag or flag.endswith("break"):
+        return "negative control"
+    if "verify" in flag or flag.endswith(("check", "compare")):
+        return "verify"
+    if flag.endswith("ab"):
+        return "A/B"
+    if re.search(r"(prof|time|sample|stat|class)$", flag):
+        return "profiling"
+    if re.search(r"[a-z]0$", flag):  # not exp_appsurf640
+        return "off-switch"
+    return "other"
+
+
+def scan(src=SRC):
+    """{flag: set of files} for every exp_* flag read under src; raises ValueError on an unlisted dynamic call."""
+    readers = defaultdict(set)
+    errors = []
+    for path in sorted(list(src.glob("*.c")) + list(src.glob("*.h"))):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for m in FLAG_CALL.finditer(text):
+            readers[m.group(1)].add(path.name)
+        for m in DYNAMIC_CALL.finditer(text):
+            key = (path.name, m.group(1).strip())
+            if key not in DYNAMIC:
+                line = text.count("\n", 0, m.start()) + 1
+                errors.append(f"{path.name}:{line}: exp_flag({key[1]}) has a computed name: list it in DYNAMIC "
+                              "in scripts/exp_index.py")
+                continue
+            for name in DYNAMIC[key]:
+                readers[name].add(path.name)
+    if errors:
+        raise ValueError("\n".join(errors))
+    return dict(readers)
+
+
+def owner_problems(readers):
+    """Flags read in more than one file that SHARED doesn't list with exactly those files."""
+    problems = []
+    for flag, files in sorted(readers.items()):
+        if len(files) > 1:
+            if flag not in SHARED:
+                problems.append(f"exp_{flag} is read in {', '.join(sorted(files))}: give each feature its own flag, "
+                                "or list it in SHARED in scripts/exp_index.py")
+            elif SHARED[flag][1] != files:
+                problems.append(f"exp_{flag}: SHARED lists {sorted(SHARED[flag][1])}, the code reads it in "
+                                f"{sorted(files)}")
+    for flag in sorted(set(SHARED) - set(readers)):
+        problems.append(f"exp_{flag} is in SHARED but no longer read: remove it")
+    return problems
+
+
+def render(readers):
+    lines = [
+        "# exp_* switches",
+        "",
+        "Generated by `python scripts/exp_index.py` from the `exp_flag(\"...\")` calls in `loader/loader/`; don't edit by",
+        "hand. `tests/test_exp_flags.py` fails when it is out of date. What each switch does is in",
+        "[DEVELOPING.md](DEVELOPING.md#feature-map) (every switch must be named there) and the owning file's header",
+        "comment. Kinds are guessed from the name.",
+        "",
+        f"{len(readers)} switches.",
+        "",
+        "| Switch | Owner | Also read in | Kind |",
+        "|---|---|---|---|",
+    ]
+    for flag in sorted(readers):
+        files = readers[flag]
+        owner = SHARED[flag][0] if flag in SHARED else min(files)
+        others = ", ".join(f"`{f}`" for f in sorted(files - {owner}))
+        lines.append(f"| `exp_{flag}` | `{owner}` | {others} | {kind(flag)} |")
+    return "\n".join(lines) + "\n"
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--check", action="store_true", help="only check that docs/exp-flags.md is current")
+    args = ap.parse_args()
+    try:
+        readers = scan()
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 1
+    problems = owner_problems(readers)
+    for p in problems:
+        print(p, file=sys.stderr)
+    text = render(readers)
+    current = OUT.read_text(encoding="utf-8").replace("\r\n", "\n") if OUT.exists() else ""
+    if args.check:
+        if current != text:
+            print(f"{OUT.relative_to(ROOT)} is out of date: run python scripts/exp_index.py", file=sys.stderr)
+            return 1
+        return 1 if problems else 0
+    if current != text:
+        OUT.write_text(text, encoding="utf-8", newline="\n")
+        print(f"wrote {OUT.relative_to(ROOT)} ({len(readers)} switches)")
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

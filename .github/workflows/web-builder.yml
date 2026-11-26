@@ -8,8 +8,8 @@ on:
   push:
     tags: ['v*']
   pull_request:
-    paths: ['loader/**', 'patches/**', 'scripts/**', 'web/**', 'tests/**', 'livearea/template.xml', 'build.py',
-            'pyproject.toml', 'uv.lock', '.github/workflows/web-builder.yml']
+    paths: ['loader/**', 'patches/**', 'scripts/**', 'web/**', 'tests/**', 'docs/**', 'livearea/template.xml',
+            'build.py', 'pyproject.toml', 'uv.lock', '.github/workflows/web-builder.yml']
   workflow_dispatch:
 
 permissions:
@@ -60,11 +60,17 @@ jobs:
         with:
           path: site
 
-  # C host tests that need no game files: the background save writer, plain and under the sanitizers
+  # Host tests that need no game files: docs vs code, and the background save writer, plain and under the sanitizers
   host-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      - name: Docs match the code
+        # yyl.cfg keys and defaults vs docs/settings.md, exp_* switches vs docs/exp-flags.md and DEVELOPING.md
+        # (standard library only; the build job's unittest run includes them too)
+        working-directory: tests
+        run: python3 -m unittest -v test_settings_docs test_exp_flags
 
       - name: asyncsave
         run: |
