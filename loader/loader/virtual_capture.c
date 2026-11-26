@@ -754,7 +754,7 @@ int virtual_capture_install(void *(*rx_alloc)(size_t)) {
     replacements[H_TARGET] = (uintptr_t)virtual_capture_target;
     replacements[H_TEXTURE_GET] = (uintptr_t)virtual_capture_texture_get;
     for (i = 0; i < NHOOKS; ++i) {
-        hook_addr(entries[i], replacements[i]);
+        hook_raw(entries[i], replacements[i]);
         kuKernelFlushCaches((void *)entries[i], 8);
     }
     installed = 1; return 1;

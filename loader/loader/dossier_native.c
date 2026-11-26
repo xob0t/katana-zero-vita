@@ -991,8 +991,8 @@ int dossier_native_install(void *(*entry_hook)(uintptr_t entry, void *replacemen
 		for (int i = 0; functions && *functions && count && i < *count; i++) {
 			runner_function *f = &(*functions)[i];
 			if (f->name && !strcmp(f->name, "instance_create_depth")) {
-				orig_create_depth = f->func;
-				f->func = create_depth_record;
+				orig_create_depth = builtin_chain((void **)&f->func, create_depth_record);
+				// (chained: see hooks.c)
 				break;
 			}
 		}

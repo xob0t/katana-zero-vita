@@ -241,7 +241,7 @@ static void install_nursery_align(void) {
 	kuKernelCpuUnrestrictedMemcpy(tramp, code, sizeof(code));
 	kuKernelFlushCaches(tramp, sizeof(code));
 	orig_nursery_alloc = (void *)tramp;
-	hook_addr(entry, (uintptr_t)&nursery_alloc_aligned);
+	hook_raw(entry, (uintptr_t)&nursery_alloc_aligned);
 	kuKernelFlushCaches((void *)entry, 8);
 	debugPrintf("nursery align: installed\n");
 }
@@ -278,12 +278,12 @@ static void install_lz4_pages(void) {
 	uintptr_t bz2 = so_symbol(&yoyoloader_mod, "BZ2_bzBuffToBuffDecompress");
 	if (!bz2)
 		fatal_error("BZ2_bzBuffToBuffDecompress not found in the runner");
-	hook_addr(bz2, (uintptr_t)&lz4_page_decompress);
+	hook_raw(bz2, (uintptr_t)&lz4_page_decompress);
 	kuKernelFlushCaches((void *)(bz2 & ~3), 16);
 	// Also swap the PLT slot so nothing depends on the entry patch alone
 	uintptr_t *slot = so_got_slot(&yoyoloader_mod, "BZ2_bzBuffToBuffDecompress");
 	if (slot)
-		*slot = (uintptr_t)&lz4_page_decompress;
+		got_write(slot, (uintptr_t)&lz4_page_decompress);
 }
 
 // Game bug fix: obj_new_platform_lighting's User event 0 passes room_width/room_height (pixels) to
@@ -723,8 +723,7 @@ void katana_late_install(void) {
 		for (int i = 0; functions && *functions && count && i < *count; i++) {
 			runner_function *f = &(*functions)[i];
 			if (f->name && !strcmp(f->name, "layer_tilemap_create")) {
-				orig_layer_tilemap_create = f->func;
-				f->func = layer_tilemap_create_fixed;
+				orig_layer_tilemap_create = builtin_swap((void **)&f->func, layer_tilemap_create_fixed);
 				debugPrintf("lighting tilemap size fix: installed\n");
 			}
 		}
@@ -746,8 +745,7 @@ void katana_late_install(void) {
 		for (int i = 0; functions && *functions && count && i < *count; i++) {
 			runner_function *f = &(*functions)[i];
 			if (f->name && !strcmp(f->name, "instance_exists")) {
-				orig_instance_exists = f->func;
-				f->func = cloth_instance_exists;
+				orig_instance_exists = builtin_swap((void **)&f->func, cloth_instance_exists);
 				debugPrintf("clothesline without light tint: installed\n");
 				break;
 			}
@@ -1374,7 +1372,7 @@ void patch_katana() {
 	BundleFileExists = (void *)so_symbol(&yoyoloader_mod, "_ZN8LoadSave16BundleFileExistsEPKc");
 	uintptr_t file_exists = so_symbol(&yoyoloader_mod, "_Z10FileExistsPKc");
 	if (file_exists && SaveFileExists && BundleFileExists)
-		hook_addr(file_exists, (uintptr_t)&FileExists_hook);
+		hook_raw(file_exists, (uintptr_t)&FileExists_hook);
 
 	katana_prof_install();
 }

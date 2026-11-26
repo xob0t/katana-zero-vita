@@ -350,7 +350,7 @@ int rope_fast_install(void *rx, size_t rx_size) {
     uint32_t code[4] = {0xe92d4ff0, 0xe28db01c, 0xe51ff004, (uint32_t)(entry+8)};
     kuKernelCpuUnrestrictedMemcpy(rx, code, sizeof(code));
     kuKernelFlushCaches(rx, sizeof(code)); original = (script_fn)rx;
-    hook_addr(entry, (uintptr_t)rope_constraint_fast);
+    hook_raw(entry, (uintptr_t)rope_constraint_fast);
     kuKernelFlushCaches((void *)entry, 8); installed = true;
     return 1;
 }

@@ -484,8 +484,7 @@ void appsurf_copy_install(void) {
 		debugPrintf("app surface copy scaling: NOT installed\n");
 		return;
 	}
-	orig_surface_copy = copy->func;
-	copy->func = surface_copy_scaled;
+	orig_surface_copy = builtin_swap((void **)&copy->func, surface_copy_scaled);
 	debugPrintf("app surface copy scaling: installed\n");
 }
 
@@ -516,8 +515,7 @@ void katana_display_hook_draw(void) {
 	uintptr_t *slot = so_got_slot(&yoyoloader_mod, "_Z12DoAStep_Drawv");
 	if (slot) {
 		lighting30 = global_obj_ptr && var_recolor_timer && !exp_flag("lighting60");
-		katana_orig_draw = (void *)*slot;
-		*slot = (uintptr_t)&DoAStep_Draw_katana;
+		katana_orig_draw = (void *)got_write(slot, (uintptr_t)&DoAStep_Draw_katana);
 	}
 	debugPrintf("draw hook: %s, lighting %s\n", slot ? "installed" : "NOT installed", lighting30 ? "30 Hz" : "60 Hz");
 

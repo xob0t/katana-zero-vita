@@ -308,7 +308,7 @@ int flash_mask_install(void *(*rx_alloc)(size_t)) {
     uint32_t code[4] = {0xe92d4ff0u, 0xe28db01cu, 0xe51ff004u, (uint32_t)(entry + 8)};
     kuKernelCpuUnrestrictedMemcpy(rx, code, sizeof(code));
     kuKernelFlushCaches(rx, sizeof(code)); original = (script_fn)rx;
-    hook_addr(entry, (uintptr_t)flashlight_draw_fast);
+    hook_raw(entry, (uintptr_t)flashlight_draw_fast);
     kuKernelFlushCaches((void *)entry, 8); installed = true;
     return 1;
 }

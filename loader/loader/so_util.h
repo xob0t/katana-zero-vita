@@ -49,6 +49,16 @@ typedef struct {
 so_hook hook_thumb(uintptr_t addr, uintptr_t dst);
 so_hook hook_arm(uintptr_t addr, uintptr_t dst);
 so_hook hook_addr(uintptr_t addr, uintptr_t dst);
+// The port's hook registry (hooks.c) records these; a second module on the same target, or a replaced value that
+// wasn't the runner's own, is logged as "[HOOKS] CONFLICT" and listed in the [HOOKS] report.
+// hook_raw: hook_addr. got_write: stores fn in a PLT GOT slot from so_got_slot, returns the old value.
+// builtin_swap: replaces a GML builtin in the runner's registry (func = &entry->func of a the_functions entry),
+// returns the old function; builtin_chain: the same for a wrapper that passes on every call it doesn't handle, so an
+// earlier recorded swap of the entry is expected (instance_create_depth).
+so_hook hook_raw(uintptr_t addr, uintptr_t dst);
+uintptr_t got_write(uintptr_t *slot, uintptr_t fn);
+void *builtin_swap(void **func, void *fn);
+void *builtin_chain(void **func, void *fn);
 
 void so_flush_caches(so_module *mod);
 int so_file_load(so_module *mod, const char *filename, uintptr_t load_addr);

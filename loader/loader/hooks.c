@@ -10,6 +10,17 @@
  * themselves behave exactly as before: the registry only logs. hooks_report() logs one summary line at startup
  * listing every hook that did not install. Owners are code addresses (the call site of entry_hook): look them up in
  * build/app/YoYoLoader with arm-vita-eabi-addr2line -f.
+ *
+ * The other ways the port changes the runner are recorded the same way, through these helpers:
+ *  - hook_raw (so_util.h): hook_addr, a jump over a function's entry with no trampoline;
+ *  - got_write: a PLT GOT slot (so_got_slot) set to a replacement;
+ *  - builtin_swap / builtin_chain: a GML builtin's function pointer in the runner's registry (the_functions).
+ * They write exactly what the bare write did, and log "[HOOKS] CONFLICT ..." when a second module takes a target
+ * someone else holds (a raw hook replaces the first one silently; a second swap hides the first module's
+ * replacement from anyone who checks the entry, the vcapture/pause_stack bug of #115) or when the value replaced isn't
+ * the runner's own (someone wrote it without the registry). builtin_chain is for wrappers that pass every call
+ * they don't handle on to the entry they found (instance_create_depth): there a recorded earlier swap is expected.
+ * hooks_report() logs a second [HOOKS] line with these counts and the conflicts.
  */
 
 #include <vitasdk.h>
@@ -72,8 +83,10 @@ void *katana_rx_alloc(size_t size) {
 
 // --- Registry (log only) ---
 
-enum { HOOK_ENTRY, HOOK_STUB };
-static const char *const hook_kind[] = {"entry_hook", "stub_event"};
+enum { HOOK_ENTRY, HOOK_STUB, HOOK_RAW, HOOK_GOT, HOOK_BUILTIN };
+static const char *const hook_kind[] = {"entry_hook", "stub_event", "hook_raw", "got_write", "builtin_swap"};
+// Code patches (a function's entry) and pointer writes (a GOT slot, a registry entry) are separate targets
+#define CODE_KIND(k) ((k) <= HOOK_RAW)
 
 typedef struct {
 	uintptr_t target, replacement, caller;
@@ -86,11 +99,14 @@ typedef struct {
 	char name[96];
 } hook_failure;
 
-#define MAX_HOOKS 256
+#define MAX_HOOKS 512 // virtual_capture.c alone raw-hooks ~250 runner functions
 #define MAX_FAILURES 32
+#define MAX_CONFLICTS 16
 static hook_record hooks[MAX_HOOKS];
 static hook_failure failures[MAX_FAILURES];
 static int n_hooks, n_failures, n_entry_hooks, n_stubs, hooks_unrecorded;
+static int n_raw, n_got, n_builtin, n_chained, n_conflicts;
+static char conflicts[MAX_CONFLICTS][96];
 
 // The runner symbol at addr, NULL if none (only on the logging paths: a linear walk of .dynsym)
 static const char *runner_symbol_at(uintptr_t addr) {
@@ -105,11 +121,16 @@ static const char *runner_symbol_at(uintptr_t addr) {
 	return NULL;
 }
 
-static hook_record *hook_find(uintptr_t target) {
-	for (int i = 0; target && i < n_hooks; i++)
-		if (hooks[i].target == target)
+// The latest record on target: a code patch (code != 0) or a pointer write
+static hook_record *hook_find_kind(uintptr_t target, int code) {
+	for (int i = n_hooks - 1; target && i >= 0; i--)
+		if (hooks[i].target == target && !CODE_KIND(hooks[i].kind) == !code)
 			return &hooks[i];
 	return NULL;
+}
+
+static hook_record *hook_find(uintptr_t target) {
+	return hook_find_kind(target, 1);
 }
 
 static void hook_add(uintptr_t target, uintptr_t replacement, uintptr_t caller, int kind) {
@@ -119,8 +140,14 @@ static void hook_add(uintptr_t target, uintptr_t replacement, uintptr_t caller, 
 		hooks_unrecorded++;
 	if (kind == HOOK_STUB)
 		n_stubs++;
-	else
+	else if (kind == HOOK_ENTRY)
 		n_entry_hooks++;
+	else if (kind == HOOK_RAW)
+		n_raw++;
+	else if (kind == HOOK_GOT)
+		n_got++;
+	else
+		n_builtin++;
 }
 
 static void hook_failed(uintptr_t target, uintptr_t caller, const char *why, const char *name) {
@@ -146,6 +173,24 @@ static void log_already_hooked(const char *what, uintptr_t target, uintptr_t cal
 	const char *name = runner_symbol_at(target);
 	debugPrintf("[HOOKS] %s %s (0x%08X) from 0x%08X: already hooked by %s 0x%08X from 0x%08X\n", what,
 		name ? name : "?", target, caller, hook_kind[by->kind], by->replacement, by->caller);
+}
+
+// A second module on a target, or a replaced value that wasn't the runner's: logged at once and in the report
+static void conflict(const char *what, const char *name, uintptr_t target, uintptr_t caller, hook_record *by,
+		uintptr_t found) {
+	if (by)
+		debugPrintf("[HOOKS] CONFLICT %s %s (0x%08X) from 0x%08X: already taken by %s 0x%08X from 0x%08X\n", what,
+			name ? name : "?", target, caller, hook_kind[by->kind], by->replacement, by->caller);
+	else
+		debugPrintf("[HOOKS] CONFLICT %s %s (0x%08X) from 0x%08X: replaces 0x%08X, not the runner's own\n", what,
+			name ? name : "?", target, caller, found);
+	if (n_conflicts < MAX_CONFLICTS)
+		snprintf(conflicts[n_conflicts], sizeof(conflicts[0]), "%s %s from 0x%08X", what, name ? name : "?", caller);
+	n_conflicts++;
+}
+
+static int in_runner_text(uintptr_t p) {
+	return p >= yoyoloader_mod.text_base && p < yoyoloader_mod.text_base + yoyoloader_mod.text_size;
 }
 
 // Install lines logged with "NOT <word>" ("virtual enemy captures: NOT installed", "glow events at rest: tiles NOT
@@ -234,13 +279,77 @@ uintptr_t stub_event(const char *symbol) {
 	if (entry) {
 		uintptr_t caller = (uintptr_t)__builtin_return_address(0);
 		hook_record *by = hook_find(entry);
-		if (by && by->kind == HOOK_ENTRY)
+		if (by && by->kind != HOOK_STUB)
 			log_already_hooked("stub_event disables the hook on", entry, caller, by);
 		kuKernelCpuUnrestrictedMemcpy((void *)entry, &bx_lr, 4);
 		kuKernelFlushCaches((void *)entry, 4);
 		hook_add(entry, 0, caller, HOOK_STUB);
 	}
 	return entry;
+}
+
+so_hook hook_raw(uintptr_t addr, uintptr_t dst) {
+	uintptr_t caller = (uintptr_t)__builtin_return_address(0);
+	if (addr) {
+		hook_record *by = hook_find(addr);
+		if (by && by->caller != caller)
+			conflict("hook_raw on", runner_symbol_at(addr), addr, caller, by, 0);
+		else if (!by && !(addr & 1) && *(const uint32_t *)addr == 0xe51ff004) // ldr pc, [pc, #-4]: hooked off the record
+			conflict("hook_raw on", runner_symbol_at(addr), addr, caller, NULL, *(const uint32_t *)(addr + 4));
+		hook_add(addr, dst, caller, HOOK_RAW);
+	}
+	return hook_addr(addr, dst);
+}
+
+// The imported or exported symbol whose PLT GOT slot is slot, NULL if none (logging and install only)
+static const char *got_symbol(const uintptr_t *slot) {
+	so_module *mod = &yoyoloader_mod;
+	for (int i = 0; i < mod->num_relplt; i++)
+		if ((uintptr_t *)(mod->text_base + mod->relplt[i].r_offset) == slot)
+			return mod->dynstr + mod->dynsym[ELF32_R_SYM(mod->relplt[i].r_info)].st_name;
+	return NULL;
+}
+
+uintptr_t got_write(uintptr_t *slot, uintptr_t fn) {
+	uintptr_t caller = (uintptr_t)__builtin_return_address(0);
+	uintptr_t prev = *slot;
+	hook_record *by = hook_find_kind((uintptr_t)slot, 0);
+	if (by && by->caller != caller)
+		conflict("got_write on", got_symbol(slot), (uintptr_t)slot, caller, by, 0);
+	else if (!by) {
+		// A runner function's slot holds its address until someone writes it; an import's holds the loader's target
+		const char *name = got_symbol(slot);
+		uintptr_t own = name ? so_symbol(&yoyoloader_mod, name) : 0;
+		if (own && in_runner_text(own) && prev != own)
+			conflict("got_write on", name, (uintptr_t)slot, caller, NULL, prev);
+	}
+	hook_add((uintptr_t)slot, fn, caller, HOOK_GOT);
+	*slot = fn;
+	return prev;
+}
+
+// A registry entry is { const char *name; void *func; int argc; }: the name is the word before func
+static void *builtin_write(void **func, void *fn, int chain, uintptr_t caller) {
+	void *prev = *func;
+	const char *name = func[-1];
+	hook_record *by = hook_find_kind((uintptr_t)func, 0);
+	if (by && by->caller != caller && !chain)
+		conflict("builtin_swap on", name, (uintptr_t)func, caller, by, 0);
+	else if (!by && !in_runner_text((uintptr_t)prev))
+		conflict(chain ? "builtin_chain on" : "builtin_swap on", name, (uintptr_t)func, caller, NULL, (uintptr_t)prev);
+	if (chain && by)
+		n_chained++;
+	hook_add((uintptr_t)func, (uintptr_t)fn, caller, HOOK_BUILTIN);
+	*func = fn;
+	return prev;
+}
+
+void *builtin_swap(void **func, void *fn) {
+	return builtin_write(func, fn, 0, (uintptr_t)__builtin_return_address(0));
+}
+
+void *builtin_chain(void **func, void *fn) {
+	return builtin_write(func, fn, 1, (uintptr_t)__builtin_return_address(0));
 }
 
 void hooks_report(void) {
@@ -260,4 +369,10 @@ void hooks_report(void) {
 		n_entry_hooks, n_stubs, hooks_unrecorded ? " (registry full)" : "",
 		(unsigned)rx_arena_used, RX_ARENA_SIZE, rx_arena_refused ? ", refused requests" : "",
 		n_failures ? list : "none", n_failures > MAX_FAILURES ? ", ..." : "");
+	len = 0;
+	list[0] = 0;
+	for (int i = 0; i < n_conflicts && i < MAX_CONFLICTS && len < (int)sizeof(list); i++)
+		len += snprintf(list + len, sizeof(list) - len, "%s%s", i ? ", " : "", conflicts[i]);
+	debugPrintf("[HOOKS] also %d raw hooks, %d GOT slots, %d registry swaps (%d chained); conflicts: %s%s\n", n_raw,
+		n_got, n_builtin, n_chained, n_conflicts ? list : "none", n_conflicts > MAX_CONFLICTS ? ", ..." : "");
 }

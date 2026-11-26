@@ -33,7 +33,10 @@ uintptr_t stub_event(const char *symbol);
 // "NOT installed", "NOT hooked" (any "NOT <lowercase word>" except "NOT drawn") is listed as a failure in the report
 void hooks_note_log(const char *line, int len);
 
-// Logs one "[HOOKS]" line: hook counts, rx arena use and every hook that did not install
+// hook_raw, got_write, builtin_swap and builtin_chain (recorded here) are declared in so_util.h, next to hook_addr
+
+// Logs the "[HOOKS]" lines: hook counts, rx arena use and every hook that did not install; then the raw hooks, GOT
+// slots and registry swaps, and every conflict among them
 void hooks_report(void);
 
 #endif

@@ -591,10 +591,10 @@ int minecart_native_install(void *(*rx_alloc)(size_t)) {
     original_rail = (script_fn)rx; original_bottom = (script_fn)((uint8_t *)rx + 16);
     original_master = (event_fn)((uint8_t *)rx + 32);
     original_fastline = (script_fn)((uint8_t *)rx + 48);
-    hook_addr(master, (uintptr_t)minecart_native_draw);
-    hook_addr(fastline, (uintptr_t)minecart_native_fastline);
-    hook_addr(rail, (uintptr_t)minecart_rail_native_draw);
-    hook_addr(bottom, (uintptr_t)minecart_rail_native_bottom);
+    hook_raw(master, (uintptr_t)minecart_native_draw);
+    hook_raw(fastline, (uintptr_t)minecart_native_fastline);
+    hook_raw(rail, (uintptr_t)minecart_rail_native_draw);
+    hook_raw(bottom, (uintptr_t)minecart_rail_native_bottom);
     kuKernelFlushCaches((void *)rail, 8); kuKernelFlushCaches((void *)bottom, 8);
     kuKernelFlushCaches((void *)master, 8); kuKernelFlushCaches((void *)fastline, 8);
     installed = 1; return 1;

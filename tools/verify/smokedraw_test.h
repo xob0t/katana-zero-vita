@@ -13,6 +13,7 @@ extern int debugMode;
 uintptr_t so_symbol(so_module *, const char *);
 uintptr_t *so_got_slot(so_module *, const char *);
 so_hook hook_addr(uintptr_t, uintptr_t);
+so_hook hook_raw(uintptr_t, uintptr_t);
 void kuKernelCpuUnrestrictedMemcpy(void *, const void *, size_t);
 void kuKernelFlushCaches(void *, size_t);
 int exp_flag(const char *name);

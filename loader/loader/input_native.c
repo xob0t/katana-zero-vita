@@ -285,7 +285,7 @@ int input_native_install(void *(*rx_alloc)(size_t)) {
  rx=rx_alloc(16); if(!rx || ((uintptr_t)rx&3)) return 0;
  code[0]=0xe92d4ff0; code[1]=0xe28db01c; code[2]=0xe51ff004; code[3]=(uint32_t)(entry+8);
  kuKernelCpuUnrestrictedMemcpy(rx,code,sizeof code); kuKernelFlushCaches(rx,sizeof code);
- original=(Script)rx; hook_addr(entry,(uintptr_t)input_native_pressed); kuKernelFlushCaches((void *)entry,8);
+ original=(Script)rx; hook_raw(entry,(uintptr_t)input_native_pressed); kuKernelFlushCaches((void *)entry,8);
  installed=1; return 1;
 }
 

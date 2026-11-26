@@ -655,7 +655,7 @@ int held_native_install(void *(*rx_alloc)(size_t)) {
 	held_ab = debugMode && exp_flag("heldab");
 	extern int heavy_profiling;
 	held_timing = heavy_profiling;
-	hook_addr(entry, (uintptr_t)held_entry);
+	hook_raw(entry, (uintptr_t)held_entry);
 	kuKernelFlushCaches((void *)entry, 8);
 	return 1;
 }

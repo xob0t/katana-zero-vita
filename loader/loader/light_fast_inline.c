@@ -598,7 +598,7 @@ int light_fast_inline_install(void *(*rx_alloc)(size_t)) {
     }
     kuKernelFlushCaches(rx, 32);
     for (int i = 0; i < NEVENTS; ++i) {
-        hook_addr(entries[i], (uintptr_t)replacements[i]);
+        hook_raw(entries[i], (uintptr_t)replacements[i]);
         kuKernelFlushCaches((void *)entries[i], 8);
     }
     installed = true; return 1;
