@@ -5,7 +5,7 @@ hand. `tests/test_exp_flags.py` fails when it is out of date. What each switch d
 [DEVELOPING.md](DEVELOPING.md#feature-map) (every switch must be named there) and the owning file's header
 comment. Kinds are guessed from the name.
 
-289 switches.
+291 switches.
 
 | Switch | Owner | Also read in | Kind |
 |---|---|---|---|
@@ -19,6 +19,8 @@ comment. Kinds are guessed from the name.
 | `exp_bloodab` | `option_defaults.c` |  | A/B |
 | `exp_blooddrops0` | `blood_drops.c` |  | off-switch |
 | `exp_bootprof` | `boot_prof.c` |  | profiling |
+| `exp_bootwatch` | `boot_watch.c` |  | other |
+| `exp_bootwatchtest` | `boot_watch.c` |  | other |
 | `exp_btnnodraw0` | `katana.c` |  | off-switch |
 | `exp_builtinprof` | `katana_prof.c` |  | profiling |
 | `exp_bunkerreplay` | `katana.c` |  | other |

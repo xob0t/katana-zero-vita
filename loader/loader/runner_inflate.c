@@ -41,6 +41,8 @@ typedef struct {
 static void *reader_thread(void *arg) {
 	inflate_job *j = arg;
 	sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), j->cpu_mask);
+	extern void boot_watch_thread(const char *label, void *start);
+	boot_watch_thread("inflate reader", reader_thread);
 	SceUID fd = sceIoOpen(j->path, SCE_O_RDONLY, 0);
 	int ok = fd >= 0 && sceIoLseek(fd, j->offset, SCE_SEEK_SET) == (SceOff)j->offset;
 	uint32_t done = 0;

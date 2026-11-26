@@ -222,6 +222,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Log line formatting | `log_format.c` (fast path of `debugPrintf` in `main.c`; `vsnprintf` for the rest) | `exp_logformatverify` (also formats every fast-path line with `vsnprintf` and logs that text on a mismatch) | `[LOGFORMAT]` line in the report |
 | Allocation profilers | `main.c`, `gcalloc.c` | `exp_allocprof`, `exp_gcalloc` | `[GCALLOC]` and allocation lines |
 | Freeze locator | `hang_watch.c` | on in debugMode; `exp_hangwatch0` off, `exp_hangdump` core dump after 30 s | `hang.log` |
+| Startup stall locator | `boot_watch.c` | `exp_bootwatch` (`exp_bootwatchtest`: a 30-s stall before the runner's Startup, to test it) | `[BOOTWATCH]` thread report in `hang.log` after 8 s without a log line before the main loop, core dump after 20 s; `_ReadFile` lines in `yyl.log` |
 | Hook registry | `hooks.c` | always | one `[HOOKS]` line at startup |
 | Startup timeline | `boot_prof.c` | always in debugMode | `[BOOT]` lines from `main()` on (kept until the log opens) |
 | Startup profiler | `boot_prof.c` | `exp_bootprof` | `[BOOTFN]` runner function times, `[BOOTIO]` stdio/zlib counts, `[BOOTSAMPLE]` game-thread samples, `[PREFETCH]` |

@@ -15,6 +15,7 @@
 
 #include <errno.h>
 #include <pthread.h>
+#include <psp2/kernel/threadmgr.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -31,6 +32,16 @@ typedef struct {
 } mt_slot;
 
 static pthread_mutex_t mt_lock = PTHREAD_MUTEX_INITIALIZER;
+// The thread holding mt_lock (exp_bootwatch's stall report reads it)
+volatile int mt_lock_owner;
+static inline void mt_lock_take(void) {
+	pthread_mutex_lock(&mt_lock);
+	mt_lock_owner = sceKernelGetThreadId();
+}
+static inline void mt_lock_drop(void) {
+	mt_lock_owner = 0;
+	pthread_mutex_unlock(&mt_lock);
+}
 static mt_slot mt_slots[MT_SLOTS];
 static unsigned mt_clock;
 
@@ -46,10 +57,10 @@ int mt_register_apk(FILE *f) {
 	if (!stream)
 		return -1;
 	stream->file = f;
-	pthread_mutex_lock(&mt_lock);
+	mt_lock_take();
 	stream->next = apk_streams;
 	apk_streams = stream;
-	pthread_mutex_unlock(&mt_lock);
+	mt_lock_drop();
 	return 0;
 }
 
@@ -61,10 +72,10 @@ static apk_stream **mt_apk_link(FILE *f) {
 }
 
 static int mt_lock_apk(FILE *f) {
-	pthread_mutex_lock(&mt_lock);
+	mt_lock_take();
 	if (*mt_apk_link(f))
 		return 1;
-	pthread_mutex_unlock(&mt_lock);
+	mt_lock_drop();
 	return 0;
 }
 
@@ -115,7 +126,7 @@ int mt_fseeko(FILE *f, off_t offset, int whence) {
 	// SEEK_CUR is relative to this thread's position, not wherever another thread left the FILE
 	if (s && whence == SEEK_CUR) {
 		if (__builtin_add_overflow(offset, s->pos, &offset)) {
-			pthread_mutex_unlock(&mt_lock);
+			mt_lock_drop();
 			errno = EOVERFLOW;
 			return -1;
 		}
@@ -124,7 +135,7 @@ int mt_fseeko(FILE *f, off_t offset, int whence) {
 	int ret = fseeko(f, offset, whence);
 	if (!ret)
 		ret = mt_record(f, s);
-	pthread_mutex_unlock(&mt_lock);
+	mt_lock_drop();
 	return ret;
 }
 
@@ -137,7 +148,7 @@ off_t mt_ftello(FILE *f) {
 		return ftello(f);
 	mt_slot *s = mt_find(f, 0);
 	off_t pos = s ? s->pos : ftello(f);
-	pthread_mutex_unlock(&mt_lock);
+	mt_lock_drop();
 	return pos;
 }
 
@@ -163,14 +174,14 @@ size_t mt_fread(void *buf, size_t size, size_t count, FILE *f) {
 			off_t pos = size == 1 && count ? ftello(f) : -1;
 			long got = pos >= 0 ? apk_prefetch_serve((uint64_t)pos, buf, count) : 0;
 			if (got < 0) {
-				pthread_mutex_unlock(&mt_lock);
+				mt_lock_drop();
 				if (apk_prefetch_wait((uint64_t)pos, count))
 					continue;
 				if (!mt_lock_apk(f))
 					return fread(buf, size, count, f);
 				s = mt_find(f, 0);
 				if (mt_restore(f, s)) {
-					pthread_mutex_unlock(&mt_lock);
+					mt_lock_drop();
 					return 0;
 				}
 				got = 0;
@@ -185,7 +196,7 @@ size_t mt_fread(void *buf, size_t size, size_t count, FILE *f) {
 				ret += fread((char *)buf + got, size, count - got, f);
 			mt_record(f, s);
 		}
-		pthread_mutex_unlock(&mt_lock);
+		mt_lock_drop();
 		return ret;
 	}
 }
@@ -199,7 +210,7 @@ int mt_fgetc(FILE *f) {
 		ret = fgetc(f);
 		mt_record(f, s);
 	}
-	pthread_mutex_unlock(&mt_lock);
+	mt_lock_drop();
 	return ret;
 }
 
@@ -212,12 +223,12 @@ char *mt_fgets(char *str, int n, FILE *f) {
 		ret = fgets(str, n, f);
 		mt_record(f, s);
 	}
-	pthread_mutex_unlock(&mt_lock);
+	mt_lock_drop();
 	return ret;
 }
 
 int mt_fclose(FILE *f) {
-	pthread_mutex_lock(&mt_lock);
+	mt_lock_take();
 	apk_stream **link = mt_apk_link(f);
 	if (*link) {
 		apk_stream *stream = *link;
@@ -225,7 +236,7 @@ int mt_fclose(FILE *f) {
 		free(stream);
 		mt_forget(f);
 	}
-	pthread_mutex_unlock(&mt_lock);
+	mt_lock_drop();
 	int ret = fclose(f);
 	extern void hang_io_file_close(void *file);
 	hang_io_file_close(f); // after the close: save I/O ends when the file is flushed and closed

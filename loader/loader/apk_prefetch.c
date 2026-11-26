@@ -73,6 +73,21 @@ static pf_range ranges[PF_MAX_RANGES];
 static int n_ranges;
 static pthread_mutex_t pf_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pf_cond = PTHREAD_COND_INITIALIZER;
+// The thread holding pf_lock (exp_bootwatch's stall report reads it)
+volatile int pf_lock_owner;
+static inline void pf_lock_take(void) {
+	pthread_mutex_lock(&pf_lock);
+	pf_lock_owner = sceKernelGetThreadId();
+}
+static inline void pf_lock_drop(void) {
+	pf_lock_owner = 0;
+	pthread_mutex_unlock(&pf_lock);
+}
+static inline void pf_lock_wait(void) {
+	pf_lock_owner = 0;
+	pthread_cond_wait(&pf_cond, &pf_lock);
+	pf_lock_owner = sceKernelGetThreadId();
+}
 static int pf_active;     // ranges set up; serve() looks at reads
 static int pf_stop;       // release: the thread stops, nothing more is handed out
 static int pf_blocked;    // the thread waits for memory (PF_MAX_HELD): readers mustn't wait for it
@@ -103,21 +118,23 @@ static int pf_cpu_mask;
 // own (a sceKernelCreateThread thread crashed in pte_osSemaphorePend at the first wait)
 static void *prefetch_thread(void *arg) {
 	sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), pf_cpu_mask);
+	extern void boot_watch_thread(const char *label, void *start);
+	boot_watch_thread("apk prefetch", prefetch_thread);
 	SceUID fd = sceIoOpen(pf_path, SCE_O_RDONLY, 0);
 	int ri = 0, ci = 0;
 	for (; fd >= 0 && ri < n_ranges; ri++) {
 		pf_range *r = &ranges[ri];
 		if (r->deflated) {
 			uint32_t len = (uint32_t)r->size;
-			pthread_mutex_lock(&pf_lock);
+			pf_lock_take();
 			while (!pf_stop && pf_held + len > PF_MAX_HELD) {
 				pf_blocked = 1;
 				pthread_cond_broadcast(&pf_cond);
-				pthread_cond_wait(&pf_cond, &pf_lock);
+				pf_lock_wait();
 			}
 			pf_blocked = 0;
 			int stop = pf_stop;
-			pthread_mutex_unlock(&pf_lock);
+			pf_lock_drop();
 			if (stop)
 				goto out;
 			extern int runner_inflate(const char *path, uint64_t offset, uint32_t comp_size, uint32_t size,
@@ -129,7 +146,7 @@ static void *prefetch_thread(void *arg) {
 			int ok = buf && runner_inflate(pf_path, r->start, r->comp_size, len, r->crc, buf + MM_HEADER, pf_cpu_mask) == 0;
 			if (ok)
 				buf[MM_HEADER + len] = 0;
-			pthread_mutex_lock(&pf_lock);
+			pf_lock_take();
 			if (ok && !pf_stop) {
 				r->chunk[0] = buf;
 				r->state[0] = PF_READY;
@@ -140,21 +157,21 @@ static void *prefetch_thread(void *arg) {
 				r->state[0] = PF_FAILED;
 			}
 			pthread_cond_broadcast(&pf_cond);
-			pthread_mutex_unlock(&pf_lock);
+			pf_lock_drop();
 			free(buf);
 			continue;
 		}
 		for (ci = 0; ci < r->nchunks; ci++) {
 			uint32_t len = chunk_len(r, ci);
-			pthread_mutex_lock(&pf_lock);
+			pf_lock_take();
 			while (!pf_stop && pf_held + len > PF_MAX_HELD) {
 				pf_blocked = 1;
 				pthread_cond_broadcast(&pf_cond);
-				pthread_cond_wait(&pf_cond, &pf_lock);
+				pf_lock_wait();
 			}
 			pf_blocked = 0;
 			int stop = pf_stop;
-			pthread_mutex_unlock(&pf_lock);
+			pf_lock_drop();
 			if (stop)
 				goto out;
 			uint8_t *buf = malloc(len);
@@ -177,9 +194,9 @@ static void *prefetch_thread(void *arg) {
 				free(buf);
 				goto out;
 			}
-			pthread_mutex_lock(&pf_lock);
+			pf_lock_take();
 			if (pf_stop) {
-				pthread_mutex_unlock(&pf_lock);
+				pf_lock_drop();
 				free(buf);
 				goto out;
 			}
@@ -188,19 +205,19 @@ static void *prefetch_thread(void *arg) {
 			pf_held += len;
 			pf_read_bytes += len;
 			pthread_cond_broadcast(&pf_cond);
-			pthread_mutex_unlock(&pf_lock);
+			pf_lock_drop();
 		}
 	}
 out:
 	if (fd >= 0)
 		sceIoClose(fd);
-	pthread_mutex_lock(&pf_lock);
+	pf_lock_take();
 	fail_from(ri < n_ranges ? ri : n_ranges, ri < n_ranges ? ci : 0);
 	pf_done = 1;
 	pf_blocked = 0;
 	pf_end_us = sceKernelGetProcessTimeLow();
 	pthread_cond_broadcast(&pf_cond);
-	pthread_mutex_unlock(&pf_lock);
+	pf_lock_drop();
 	return NULL;
 }
 
@@ -254,10 +271,10 @@ void apk_prefetch_start(void *apk, const char *apk_path, int cpu_mask) {
 	int err = pthread_create(&th, &attr, prefetch_thread, NULL);
 	pthread_attr_destroy(&attr);
 	if (err) {
-		pthread_mutex_lock(&pf_lock);
+		pf_lock_take();
 		fail_from(0, 0);
 		pf_done = 1;
-		pthread_mutex_unlock(&pf_lock);
+		pf_lock_drop();
 		return;
 	}
 	pf_active = 1;
@@ -277,21 +294,21 @@ static pf_range *range_at(uint64_t pos) {
 long apk_prefetch_serve(uint64_t pos, void *buf, size_t n) {
 	if (!__atomic_load_n(&pf_active, __ATOMIC_ACQUIRE) || !n)
 		return 0;
-	pthread_mutex_lock(&pf_lock);
+	pf_lock_take();
 	pf_range *r = pf_stop ? NULL : range_at(pos);
 	if (!r) {
-		pthread_mutex_unlock(&pf_lock);
+		pf_lock_drop();
 		return 0;
 	}
 	uint64_t end = pos + n < r->start + r->size ? pos + n : r->start + r->size;
 	int c0 = (int)((pos - r->start) / PF_CHUNK), c1 = (int)((end - 1 - r->start) / PF_CHUNK);
 	for (int c = c0; c <= c1; c++) {
 		if (r->state[c] == PF_PENDING) {
-			pthread_mutex_unlock(&pf_lock);
+			pf_lock_drop();
 			return -1;
 		}
 		if (r->state[c] != PF_READY) {
-			pthread_mutex_unlock(&pf_lock);
+			pf_lock_drop();
 			return 0;
 		}
 	}
@@ -315,7 +332,7 @@ long apk_prefetch_serve(uint64_t pos, void *buf, size_t n) {
 		}
 	}
 	pf_served_bytes += end - pos;
-	pthread_mutex_unlock(&pf_lock);
+	pf_lock_drop();
 	return (long)(end - pos);
 }
 
@@ -324,7 +341,7 @@ long apk_prefetch_serve(uint64_t pos, void *buf, size_t n) {
 int apk_prefetch_wait(uint64_t pos, size_t n) {
 	uint32_t t0 = sceKernelGetProcessTimeLow();
 	int again = 0;
-	pthread_mutex_lock(&pf_lock);
+	pf_lock_take();
 	for (;;) {
 		pf_range *r = pf_stop ? NULL : range_at(pos);
 		if (!r)
@@ -339,11 +356,11 @@ int apk_prefetch_wait(uint64_t pos, size_t n) {
 		}
 		if (pf_done || pf_blocked)
 			break;
-		pthread_cond_wait(&pf_cond, &pf_lock);
+		pf_lock_wait();
 	}
 	pf_wait_us += sceKernelGetProcessTimeLow() - t0;
 	pf_waits++;
-	pthread_mutex_unlock(&pf_lock);
+	pf_lock_drop();
 	return again;
 }
 
@@ -351,9 +368,9 @@ int apk_prefetch_wait(uint64_t pos, size_t n) {
 void apk_prefetch_release(void) {
 	if (!__atomic_load_n(&pf_active, __ATOMIC_ACQUIRE))
 		return;
-	pthread_mutex_lock(&pf_lock);
+	pf_lock_take();
 	if (pf_stop) {
-		pthread_mutex_unlock(&pf_lock);
+		pf_lock_drop();
 		return;
 	}
 	pf_stop = 1;
@@ -373,7 +390,23 @@ void apk_prefetch_release(void) {
 		((pf_done ? pf_end_us : sceKernelGetProcessTimeLow()) - pf_start_us) / 1000000.0f, pf_start_us / 1000000.0f,
 		(pf_done ? pf_end_us : sceKernelGetProcessTimeLow()) / 1000000.0f, pf_served_bytes / 1048576.0f,
 		pf_wait_us / 1000000.0f, pf_waits, left / 1048576.0f);
-	pthread_mutex_unlock(&pf_lock);
+	pf_lock_drop();
+}
+
+// exp_bootwatch's stall report (boot_watch.c). Read without pf_lock: a stuck thread may hold it.
+void apk_prefetch_report(void (*say)(const char *fmt, ...)) {
+	say("prefetch: active %d stop %d done %d blocked %d, held %u KB, read %u KB, served %u KB, game waits %u (%.2f s)\n",
+		pf_active, pf_stop, pf_done, pf_blocked, pf_held / 1024, (unsigned)(pf_read_bytes / 1024),
+		(unsigned)(pf_served_bytes / 1024), pf_waits, pf_wait_us / 1000000.0f);
+	for (int i = 0; i < n_ranges; i++) {
+		char states[64];
+		int n = ranges[i].nchunks < (int)sizeof(states) - 1 ? ranges[i].nchunks : (int)sizeof(states) - 1;
+		for (int c = 0; c < n; c++)
+			states[c] = "PRFX"[ranges[i].state[c] & 3];
+		states[n] = 0;
+		say("prefetch range %s: %u KB at 0x%llx, chunks %s (P pending, R ready, F freed, X failed)\n", ranges[i].name,
+			(unsigned)(ranges[i].size / 1024), (unsigned long long)ranges[i].start, states);
+	}
 }
 
 // pf_lock held. The deflated range called name (as _ReadFile gets it: "assets/game.droid"), or NULL.
@@ -390,22 +423,22 @@ const uint8_t *apk_prefetch_peek(const char *name, uint32_t *size) {
 	if (!__atomic_load_n(&pf_active, __ATOMIC_ACQUIRE))
 		return NULL;
 	uint32_t t0 = sceKernelGetProcessTimeLow();
-	pthread_mutex_lock(&pf_lock);
+	pf_lock_take();
 	pf_range *r = deflated_range(name);
 	while (r && r->state[0] == PF_PENDING && !pf_stop && !pf_done)
-		pthread_cond_wait(&pf_cond, &pf_lock);
+		pf_lock_wait();
 	const uint8_t *p = r && !pf_stop && r->state[0] == PF_READY ? r->chunk[0] + MM_HEADER : NULL;
 	if (p)
 		*size = (uint32_t)r->size;
 	pf_wait_us += sceKernelGetProcessTimeLow() - t0;
 	pf_waits++;
-	pthread_mutex_unlock(&pf_lock);
+	pf_lock_drop();
 	return p;
 }
 
 // The inflated bytes of name were handed over (the _ReadFile hook): freed if they were copied, else the runner has them
 static void deflated_done(const char *name, int copied) {
-	pthread_mutex_lock(&pf_lock);
+	pf_lock_take();
 	pf_range *r = deflated_range(name);
 	if (r && r->state[0] == PF_READY) {
 		if (copied)
@@ -416,13 +449,14 @@ static void deflated_done(const char *name, int copied) {
 		pf_served_bytes += r->size;
 		pthread_cond_broadcast(&pf_cond);
 	}
-	pthread_mutex_unlock(&pf_lock);
+	pf_lock_drop();
 }
 
 // LoadSave::_ReadFile(name, size_out) of runner 1.1.10. Its libzip branch (g_Android_UseDynamicAssetDelivery 0, the
 // loader's setting): zip_fopen, zip_stat, buf = MemoryManager::Alloc(st.size + 1, <source file>, 230, false),
 // buf[st.size] = 0, zip_fread until done, zip_fclose (its result unused), *size_out = st.size if size_out, return buf.
 static void *(*orig_readfile)(const char *name, uint32_t *size);
+static void *readfile_hook_body(const char *name, uint32_t *size);
 static void *(*mm_alloc)(uint32_t size, const char *file, int line, int flag);
 static const uint8_t *dad_flag;
 static const char *readfile_source;
@@ -443,6 +477,19 @@ void *apk_prefetch_runner_malloc(size_t size) {
 }
 
 static void *readfile_hook(const char *name, uint32_t *size) {
+	extern int bw_on;
+	if (bw_on) {
+		debugPrintf("[BOOTWATCH] _ReadFile %s on thread 0x%x\n", name ? name : "(null)", sceKernelGetThreadId());
+		uint32_t t0 = sceKernelGetProcessTimeLow();
+		void *r = readfile_hook_body(name, size);
+		debugPrintf("[BOOTWATCH] _ReadFile %s on thread 0x%x done in %.1f ms\n", name ? name : "(null)",
+			sceKernelGetThreadId(), (sceKernelGetProcessTimeLow() - t0) / 1000.0f);
+		return r;
+	}
+	return readfile_hook_body(name, size);
+}
+
+static void *readfile_hook_body(const char *name, uint32_t *size) {
 	if (hook_on && name && !*dad_flag) {
 		uint32_t len;
 		const uint8_t *data = apk_prefetch_peek(name, &len);

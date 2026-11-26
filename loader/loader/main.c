@@ -426,6 +426,12 @@ static void log_init() {
 	__atomic_store_n(&log_ready, 1, __ATOMIC_RELEASE);
 }
 
+// exp_bootwatch's stall report: the raw words of the log lwmutexes (their owner is in there)
+void log_mutex_words(uint32_t *log, uint32_t *android) {
+	sceClibMemcpy(log, &log_mutex, 32);
+	sceClibMemcpy(android, &android_log_mutex, 32);
+}
+
 static int log_available(void) {
 	if (!__atomic_load_n(&log_ready, __ATOMIC_ACQUIRE))
 		pthread_once(&log_once, log_init);
@@ -814,6 +820,8 @@ static void *worker_thread_start(void *arg) {
 	worker_start_t w = *(worker_start_t *)arg;
 	free(arg);
 	sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), WORKER_THREAD_CPU_MASK);
+	extern void boot_watch_thread(const char *label, void *start);
+	boot_watch_thread("runner pthread", (void *)w.start);
 	return w.start(w.param);
 }
 
@@ -3813,6 +3821,8 @@ void *pthread_main(void *arg) {
 	};
 	loadConfig(game_name);
 	boot_mark("yyl.cfg read");
+	extern void boot_watch_start(int cpu_mask);
+	boot_watch_start(WORKER_THREAD_CPU_MASK); // exp_bootwatch: startup stall locator (boot_watch.c)
 	boot_marks_flush();
 	heavy_profiling = debugMode && file_exists("ux0:data/gms/shared/profile");
 	// Wide surfaces get their own gxm rendertarget; with scenesPerFrame=1 re-targeting the same
@@ -4200,6 +4210,8 @@ void *pthread_main(void *arg) {
 	extern void apk_prefetch_install_hooks(void);
 	apk_prefetch_install_hooks(); // a deflated game.droid is handed over at LoadSave::_ReadFile
 	boot_prof_install();
+	extern void boot_watch_test(void);
+	boot_watch_test();
 	debugPrintf("Calling runner Startup\n");
 	Java_com_yoyogames_runner_RunnerJNILib_Startup(fake_env, 0, apk_path, data_path, pkg_name, 0, 0);
 	{
