@@ -57,8 +57,10 @@ static event_func orig_particle_draw;
 // Instance pointers are 16-byte aligned; use them for a stable per-instance parity bit
 #define INSTANCE_PARITY(self) (((uintptr_t)(self) >> 4) & 1)
 
+// At 30 ticks/s (30 FPS IN COMBAT, combat30.c) the every-other-tick work runs on every tick: the same rate in real time
+extern int c30_active;
 static inline int half_rate_tick(void) {
-	return !(*frame_count & 1);
+	return c30_active || !(*frame_count & 1);
 }
 
 // Cloth simulation (clothesline + its softbody nodes) runs at 30Hz, and not at all while the
@@ -174,7 +176,7 @@ void katana_cloth_report(int frames) {
 
 // Each rain emitter is drawn every other frame, alternating between emitters
 static void rain_draw(void *self, void *other) {
-	if (INSTANCE_PARITY(self) ^ (*frame_count & 1))
+	if (c30_active || (INSTANCE_PARITY(self) ^ (*frame_count & 1)))
 		orig_rain_draw(self, other);
 }
 
@@ -212,7 +214,7 @@ static void particle_draw(void *self, void *other) {
 		if (heavy_profiling)
 			sample_recolor_timer();
 	}
-	if (drawn++ < PARTICLES_ALWAYS_DRAWN || (INSTANCE_PARITY(self) ^ (*frame_count & 1)))
+	if (c30_active || drawn++ < PARTICLES_ALWAYS_DRAWN || (INSTANCE_PARITY(self) ^ (*frame_count & 1)))
 		orig_particle_draw(self, other);
 }
 
@@ -912,6 +914,8 @@ void katana_late_install(void) {
 	// and animation. exp_runnerfast0 / exp_rfdispatch0 / exp_rfmove0 / exp_rfanim0: off.
 	extern void runner_fast_install(void);
 	runner_fast_install();
+	extern void combat30_late_install(void);
+	combat30_late_install(); // after runner_fast: its native sprite animation runs twice at 30 ticks/s by itself
 	hooks_report();
 }
 
@@ -1485,15 +1489,19 @@ static void patch_performance() {
 
 	extern int fps_mode_ignored;
 	if (fps_mode_ignored)
-		debugPrintf("yyl.cfg fpsMode/fps30: no longer supported (the 30 fps mode was removed), ignored\n");
+		debugPrintf("yyl.cfg fpsMode/fps30: no longer supported (the old 30 fps mode was removed; see combat30), ignored\n");
 	enemy_half_rate_install(table);
 	extern void enemy_timing_install(gml_func_entry *table);
 	enemy_timing_install(table); // before options_menu_install: its ENEMY TIMING row needs it
 	extern void timer_slowmo_install(void);
 	timer_slowmo_install(); // and the TIMER & SLOW-MO row this
-	options_menu_install(table);
 	extern void fx_rate_install(gml_func_entry *table);
 	fx_rate_install(table);
+	// 30 FPS IN COMBAT (combat30.c): after enemy_half_rate_install (scripted sequences), pc_rules (obj_master wrapper)
+	// and fx_rate_install (its animation_code hook); before options_menu_install, which adds its GRAPHICS row
+	extern void combat30_install(gml_func_entry *table);
+	combat30_install(table);
+	options_menu_install(table);
 	extern void glow_rest_install(gml_func_entry *table);
 	glow_rest_install(table);
 	extern void crt_native_install(void);

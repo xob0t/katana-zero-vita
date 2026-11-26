@@ -173,7 +173,8 @@ static void DoAStep_Draw_katana(void) {
 		*app_height = *app_new_height = app_set_h = app_surf_h;
 		*app_new_size = 1;
 	}
-	if (lighting30) {
+	extern int c30_active;
+	if (lighting30 && !c30_active) { // at 30 ticks/s the lighting refreshes every tick
 		gml_rvalue *(*vwrite)(void *, int) = (*(void ***)*global_obj_ptr)[3];
 		gml_rvalue *timer = vwrite(*global_obj_ptr, var_recolor_timer[1]);
 		if (timer && timer->kind == 0) {
@@ -265,7 +266,9 @@ static void dynamic_res_update(uint32_t swap_us, uint32_t work_us) {
 		}
 		return;
 	}
-	if (dropped || ++frames <= DYNRES_SETTLE_FRAMES)
+	// At 30 ticks/s (combat30.c) the swap also waits for the second vblank of each frame: not GPU load
+	extern int c30_active;
+	if (dropped || c30_active || ++frames <= DYNRES_SETTLE_FRAMES)
 		return;
 	bound += (period > DYNRES_MISS_US && work_us < DYNRES_CPU_US && swap_us > DYNRES_SWAP_US) || dynres_test;
 	if (++window < DYNRES_WINDOW)
@@ -301,6 +304,8 @@ void katana_after_swap(uint32_t swap_us, uint32_t work_us) {
 static void after_swap(uint32_t swap_us, uint32_t work_us) {
 	options_menu_sync();
 	enemy_half_rate_update();
+	extern void combat30_update(void);
+	combat30_update();
 	uint32_t s0 = sceKernelGetProcessTimeLow();
 	dynamic_res_update(swap_us, work_us);
 	after_swap_dynres_us = sceKernelGetProcessTimeLow() - s0;

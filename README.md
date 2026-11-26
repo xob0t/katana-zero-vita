@@ -32,6 +32,10 @@ Most rooms run at 60 fps. A few of the heaviest dip into the 30s, and as in the 
 the frame rate. The Vita's CPU is the limit. To get this far, the loader patches the game in over 50 places, most of
 them with identical results, and fixes vitaGL bugs that caused a freeze and a crash.
 
+**GRAPHICS → 30 FPS IN COMBAT** (off by default) runs every room with enemies or a boss at a steady 30 fps with the
+game's clock doubled, so fights play at full speed instead of slowing down; the other rooms stay at 60. Input is read
+30 times a second there. The choice is saved and applies from the next room.
+
 Some of the speedups change what you see or play:
 
 - Enemies think every other frame. Hits still land on time. **GAME → ENEMY AI** turns it off.

@@ -60,6 +60,12 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 | Level time limits are the PC ones, two thirds of the Android release's (club_0: 8100 instead of 11850 frames) | **GAME → TIMER & SLOW-MO: ANDROID**, or `timerSlowmo=1` |
 | Zero's slow-mo meter is the PC one, half as long (about 6 seconds instead of 13) | the same |
 
+**Options (off by default)**
+
+| Option | What it does | Turn on with |
+|---|---|---|
+| 30 fps in combat | Rooms with enemies or a boss (70 level rooms, the Headhunter, Kissyface, V, the bike chase and the psychiatrist fight) run at a steady 30 fps with the game's clock doubled, so they play at full speed instead of slowing down below 60. Every other room, the tutorial's scripted part and every cutscene stay at 60. At 30 the game reads input 30 times a second, and a few things the game counts in frames run at half speed in real time: the death slow-mo, the pause menu's effects and the lamps' sway. Decided when a room starts or restarts; a change applies from the next room | **GRAPHICS → 30 FPS IN COMBAT: ON**, or `combat30=1` |
+
 The ENEMY TIMING and TIMER & SLOW-MO choices are saved with the game options. The time limits change from the next
 room or restart, the slow-mo meter from the next spawn, enemy attack timing for enemies that appear after the change,
 the other ENEMY TIMING rules at once.

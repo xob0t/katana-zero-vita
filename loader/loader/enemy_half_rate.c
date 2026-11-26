@@ -1,7 +1,8 @@
 /*
  * enemy_half_rate.c
  *
- * Half-rate enemies (enemyHalfRate in yyl.cfg, or the ENEMY AI menu).
+ * Half-rate enemies (enemyHalfRate in yyl.cfg, or the ENEMY AI menu), the scripted-sequence marker, and enemies'
+ * search_timeout at 30 ticks/s (combat30.c).
  */
 
 #include <vitasdk.h>
@@ -37,6 +38,9 @@
  * - Enemies run every tick during scripted sequences (the game drives the player through override_control_init
  *   every tick; such sequences count ticks with exact comparisons), and a Step that didn't run for longer than a skip
  *   (pause, deactivation, the setting just turned on) covers one tick.
+ * - At 30 ticks/s (30 FPS IN COMBAT, combat30.c) half-rate is off: every enemy Step runs, covering two 60 Hz ticks
+ *   (global.fr is doubled already), so enemies think at 30 Hz, as at half rate, not at 15. A Step that advanced
+ *   search_timeout gets the tick it missed. Back at 60, a Step that didn't run as a half-rate one covers one tick.
  * Caveats: enemy movement, aim and reactions update at 30 Hz (sprite animation, alarms and built-in motion stay at
  * 60), and anything an enemy counts in ticks without fr runs at half speed. Playtesting found no difference in enemy
  * behaviour.
@@ -67,11 +71,13 @@ static const char *const eh_source_names[] = { "obj_slash", "obj_projectile", "o
 static int eh_sources[EH_SOURCES], eh_sources_found;
 static int (*eh_object_find)(const char *name);
 
-// Scripted sequences: the last tick a cutscene script drove the player
-static uint32_t eh_scripted_tick;
+// Scripted sequences: the last tick a cutscene script drove the player (also read by combat30.c, which runs them at
+// 60 ticks/s)
+uint32_t scripted_tick;
+int scripted_hooked;
 static gml_script_fn orig_override_control_init;
 static void *eh_override_control_init(void *self, void *other, void *result, int argc, void **args) {
-	eh_scripted_tick = *frame_count ? *frame_count : 1;
+	scripted_tick = *frame_count ? *frame_count : 1;
 	return orig_override_control_init(self, other, result, argc, args);
 }
 
@@ -237,7 +243,7 @@ static int eh_decide(void *self) {
 	uint32_t elapsed = tick - eh_table[found].last;
 	// Scripted sequences count ticks exactly: every tick. A Step that didn't run for longer than a skip (pause,
 	// deactivation) covers one tick, as the original would.
-	if ((eh_scripted_tick && tick - eh_scripted_tick < 3) || elapsed > 2 || elapsed == 0) {
+	if ((scripted_tick && tick - scripted_tick < 3) || elapsed > 2 || elapsed == 0) {
 		eh_table[found].last = tick;
 		return 1;
 	}
@@ -303,7 +309,32 @@ static void eh_run_step(event_func orig, void *self, void *other) {
 	}
 }
 
+// At 30 ticks/s (combat30.c) every enemy Step runs and covers two 60 Hz ticks (fr is doubled already): one that
+// advanced search_timeout (+= 1 per Step) gets the tick it missed, as a Step covering two ticks above
+unsigned c30_search_ticks;
+static void c30_enemy_step(event_func orig, void *self, void *other) {
+	gml_rvalue *t;
+	double before = -1;
+	if ((t = gml_vget(self, var_search_timeout[1])) && t->kind == 0)
+		before = t->val;
+	eh_depth++;
+	orig(self, other);
+	eh_depth--;
+	if (before >= 0 && (t = instance_var(self, var_search_timeout))) {
+		double step = t->val - before;
+		if (step == 1 || step == 2) {
+			t->val += step;
+			c30_search_ticks++;
+		}
+	}
+}
+
 static void eh_step(event_func orig, void *self, void *other) {
+	extern int c30_active;
+	if (c30_active && !eh_depth) {
+		c30_enemy_step(orig, self, other);
+		return;
+	}
 	if (enemy_half_rate && eh_installed && !eh_depth && eh_resolve_sources()) {
 		eh_run_step(orig, self, other);
 		return;
@@ -342,10 +373,10 @@ void enemy_half_rate_install(gml_func_entry *table) {
 	eh_bbox[3] = (builtin_var_get)so_symbol(&yoyoloader_mod, "_Z6GV_BbbP9CInstanceiP6RValue");
 	int eh_symbols = enemies == 9 && eh_object_find && eh_functions && eh_current_function && eh_function_count &&
 		eh_fn_instance_exists && eh_bbox[0] && eh_bbox[1] && eh_bbox[2] && eh_bbox[3];
-	// Enemies run every tick in scripted sequences (override_control_init marks them)
-	if (eh_symbols)
-		orig_override_control_init = entry_hook(so_symbol(&yoyoloader_mod,
-			"_Z32gml_Script_override_control_initP9CInstanceS0_R8YYRValueiPPS1_"), eh_override_control_init);
+	// Enemies run every tick in scripted sequences (override_control_init marks them), and combat30.c runs those at 60
+	orig_override_control_init = entry_hook(so_symbol(&yoyoloader_mod,
+		"_Z32gml_Script_override_control_initP9CInstanceS0_R8YYRValueiPPS1_"), eh_override_control_init);
+	scripted_hooked = orig_override_control_init != NULL;
 	eh_installed = eh_symbols && orig_override_control_init;
 	if (eh_installed && debugMode)
 		orig_create_corpse = entry_hook(so_symbol(&yoyoloader_mod,

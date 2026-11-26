@@ -327,9 +327,12 @@ static Sway *sway_slot(void *self, uint32_t tick) {
     if (free_slot) { memset(free_slot, 0, sizeof(*free_slot)); free_slot->key = key; free_slot->last = tick - 2; }
     return free_slot;
 }
+/* At 30 ticks/s (combat30.c) half the rate in ticks, rounded up: the same rate in real time */
+extern int c30_active;
 INL int sway_rate(void) {
     if (lamp_sway_ab_off) return 1;
-    return lamp_sway < 1 ? 1 : lamp_sway > SWAY_MAX ? SWAY_MAX : lamp_sway;
+    int n = lamp_sway < 1 ? 1 : lamp_sway > SWAY_MAX ? SWAY_MAX : lamp_sway;
+    return c30_active ? (n + 1) / 2 : n;
 }
 /* Whether this tick's Step may be skipped: see the lamp sway comment. */
 INL int sway_skip(const Sway *s, uint32_t tick, int rate) {

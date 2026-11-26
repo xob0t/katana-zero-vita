@@ -388,6 +388,8 @@ static void light_fast_report(int frames) {
 }
 
 void katana_prof_report(int frames) {
+	extern void combat30_report(int frames);
+	combat30_report(frames);
 	{
 		// Half-rate enemies, per frame of this report window
 		extern unsigned enemyhalf_runs, enemyhalf_doubled, enemyhalf_skips, enemyhalf_forced, enemyhalf_probes,

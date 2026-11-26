@@ -1,8 +1,8 @@
 /*
  * katana_menu.c
  *
- * GAME menu rows ENEMY AI, ENEMY TIMING and TIMER & SLOW-MO, the options menu without its touch controls page, and
- * the yes/no prompt's starting selection.
+ * GAME menu rows ENEMY AI, ENEMY TIMING and TIMER & SLOW-MO, the GRAPHICS row 30 FPS IN COMBAT, the options menu
+ * without its touch controls page, and the yes/no prompt's starting selection.
  */
 
 #include <vitasdk.h>
@@ -76,6 +76,15 @@
  * calls obj_optionsmenu Destroy makes (when global.vsync != prev_var_vsync), which would free every surface the next
  * frame. TIMER & SLOW-MO is installed only with the guard.
  *
+ * 30 FPS IN COMBAT (ON / OFF: combat30.c) goes on the GRAPHICS page after its last row, BLOOD SPRAY (only that page
+ * adds it). It is the PC build's LANDING ROLL row, a controls-page row whose code is all in obj_optionsmenu: Step
+ * toggles var_land_roll = !var_land_roll for the choice "LANDING ROLL" on any page, Draw shows the game's ON/OFF for
+ * it (translated), and only the controls page's SAVE (user event 1, never run on the GRAPHICS page, whose SAVE is user
+ * event 0) copies it to global.land_roll, which the player's physics read. var_land_roll shows the row's choice through
+ * Step and Draw and is put back after each; the choice is kept per menu instance (its id) until SAVE (user event 0)
+ * stores it in combat30.cfg next to the saves (combat30_menu_save). CANCEL keeps the stored one. It applies from the
+ * next room. Only the label "LANDING ROLL" is relabelled; the ON/OFF are the game's. exp_c30menu0: no row.
+ *
  * CONTROLS (touchControls=0): the options main menu (obj_options_main_menu Create: GAME, CONTROLS, GRAPHICS, AUDIO,
  * BACK; the title's OPTIONS and the pause menu's both create it) has no CONTROLS row. On Android that row opens the
  * touch controls page and nothing else (Step line 173: "CONTROLS" or "GAMEPAD CONTROLS" ->
@@ -109,6 +118,21 @@ extern int timer_slowmo_cfg; // timer_slowmo.c
 int timer_slowmo_available(void);
 void timer_slowmo_apply(int android);
 static int timer_slowmo_android;
+
+// 30 FPS IN COMBAT (combat30.c)
+static int c30_row;             // the GRAPHICS page shows it
+static int *var_var_land_roll;
+static uint32_t c30_menu_id;    // the obj_optionsmenu with the row (instance id + 1); c30_choice is its unsaved choice
+static int c30_choice;
+extern int combat30_on, c30_installed;
+void combat30_menu_save(int on);
+typedef struct { int set; double val; unsigned kind; } c30_shown;
+
+static uint32_t menu_id(void *self) {
+	uint32_t id;
+	memcpy(&id, (char *)self + 0x80, 4);
+	return id + 1;
+}
 
 // ENEMY TIMING and TIMER & SLOW-MO: a PC / ANDROID choice kept in a PC option the Android build doesn't use
 typedef struct {
@@ -151,6 +175,16 @@ static void *menu_add_pausemenu_choice(void *self, void *other, void *result, in
 		return result; // the script returns nothing; the caller's result stays as it set it
 	}
 	void *r = orig_add_pausemenu_choice(self, other, result, argc, args);
+	if (c30_row && key && !strcmp(key, "BLOOD SPRAY")) { // the GRAPHICS page only (obj_options_main_menu Step)
+		gml_rvalue name = {0}, res = {0};
+		c30_menu_id = menu_id(self); // add_pausemenu_choice runs in the new menu (with (bb))
+		c30_choice = combat30_on;
+		yy_create_string(&name, "LANDING ROLL");
+		void *a[2] = { &name, args[1] }; // this call's "toggle"
+		orig_add_pausemenu_choice(self, other, &res, 2, a);
+		rv_free(&name);
+		rv_free(&res);
+	}
 	if (key && !strcmp(key, "SLOWDOWN CONTROL")) { // the GAME page only (obj_options_main_menu Step)
 		extern int eh_available(void);
 		// ENEMY AI, ENEMY TIMING, TIMER & SLOW-MO
@@ -193,7 +227,9 @@ static void *menu_translate_option(void *self, void *other, void *result, int ar
 	if (!key)
 		return orig_translate_option(self, other, result, argc, args);
 	int in_draw = menu_draw_self && self == menu_draw_self;
-	if (choices[ROW_TIMING].row && !strcmp(key, "WINDOW ZOOM"))
+	if (c30_row && !strcmp(key, "LANDING ROLL"))
+		text = "30 FPS IN COMBAT";
+	else if (choices[ROW_TIMING].row && !strcmp(key, "WINDOW ZOOM"))
 		text = "ENEMY TIMING";
 	else if (choices[ROW_TIMING].row && strstr(key, "X ZOOM") && strlen(key) == 7) // "1X ZOOM".."4X ZOOM": shows 1 or 2
 		text = key[0] == '3' || key[0] == '4' ? "ANDROID" : "PC";
@@ -280,6 +316,29 @@ static void choice_unshow(void *self, const choices_shown *was) {
 	}
 }
 
+// var_land_roll showing 30 FPS IN COMBAT's choice through a Step or Draw of the menu that has the row
+static c30_shown c30_show(void *self) {
+	c30_shown was = {0};
+	gml_rvalue *v = c30_row && c30_menu_id == menu_id(self) ? instance_num(self, var_var_land_roll) : NULL;
+	if (!v)
+		return was;
+	was = (c30_shown){ 1, v->val, v->kind };
+	v->val = c30_choice ? 1.0 : 0.0;
+	v->kind = VALUE_BOOL;
+	return was;
+}
+
+// After a Step the shown value is the choice (a toggle flips it); the menu's own value goes back
+static void c30_unshow(void *self, c30_shown was, int step) {
+	gml_rvalue *v = was.set ? instance_num(self, var_var_land_roll) : NULL; // looked up again: events add variables
+	if (!v)
+		return;
+	if (step)
+		c30_choice = v->val != 0.0;
+	v->val = was.val;
+	v->kind = was.kind;
+}
+
 // The obj_optionsmenu whose Step runs with var_fullscreen showing ENEMY AI and the choice rows' variables showing
 // their choices, and what they held before
 static void *step_show_self;
@@ -314,6 +373,10 @@ static void enemy_optionsmenu_save(void *self, void *other) {
 		}
 	}
 	orig_optionsmenu_save(self, other);
+	// 30 FPS IN COMBAT: SAVE runs inside Step, where var_land_roll shows this menu's choice
+	gml_rvalue *land = c30_row && c30_menu_id == menu_id(self) ? instance_num(self, var_var_land_roll) : NULL;
+	if (land)
+		combat30_menu_save(land->val != 0.0);
 	if (f && (f = instance_num(self, var_var_fullscreen))) { // looked up again: events add variables
 		f->val = shown;
 		f->kind = shown_kind;
@@ -331,6 +394,7 @@ static void enemy_optionsmenu_save(void *self, void *other) {
 static void enemy_optionsmenu_step(void *self, void *other) {
 	enemy_shown enemy = enemy_show(self);
 	choices_shown shown_choices = choice_show(self);
+	c30_shown c30 = c30_show(self);
 	void *prev_self = step_show_self;
 	enemy_shown prev_show = step_show;
 	choices_shown prev_choices = step_choices;
@@ -338,6 +402,7 @@ static void enemy_optionsmenu_step(void *self, void *other) {
 	step_show = enemy;
 	step_choices = shown_choices;
 	orig_optionsmenu_step(self, other);
+	c30_unshow(self, c30, 1);
 	step_show_self = prev_self;
 	step_show = prev_show;
 	step_choices = prev_choices;
@@ -381,6 +446,7 @@ void options_menu_sync(void) {
 static void enemy_optionsmenu_draw(void *self, void *other) {
 	enemy_shown enemy = enemy_show(self);
 	choices_shown shown_choices = choice_show(self);
+	c30_shown c30 = c30_show(self);
 	void *prev_self = menu_draw_self;
 	double prev_c = enemy_label_c, prev_timer_c = timer_label_c;
 	menu_draw_self = self;
@@ -391,6 +457,7 @@ static void enemy_optionsmenu_draw(void *self, void *other) {
 	timer_label_c = prev_timer_c;
 	enemy_unshow(self, enemy);
 	choice_unshow(self, &shown_choices); // Draw doesn't change the variables: puts the stored values back
+	c30_unshow(self, c30, 0);
 }
 
 // display_reset is forwarded only from load_options, with vsync false: what the boot call did with every save before
@@ -439,12 +506,14 @@ void options_menu_install(gml_func_entry *table) {
 	debugPrintf("display_reset guard: %s\n", orig_display_reset ? "on" : "NOT installed");
 
 	int want_timing = enemy_timing_available(), want_timer = timer_slowmo_available();
+	int want_c30 = c30_installed && !exp_flag("c30menu0");
+	var_var_land_roll = (int *)so_symbol(&yoyoloader_mod, "g_VAR_var_land_roll");
 	timer_slowmo_android = timer_slowmo_cfg != 0;
 	choices[ROW_TIMING].var_global = (int *)so_symbol(&yoyoloader_mod, "g_VAR_zoom_mode");
 	choices[ROW_TIMING].var_menu = (int *)so_symbol(&yoyoloader_mod, "g_VAR_var_zoom_mode");
 	choices[ROW_TIMER].var_global = (int *)so_symbol(&yoyoloader_mod, "g_VAR_vsync");
 	choices[ROW_TIMER].var_menu = (int *)so_symbol(&yoyoloader_mod, "g_VAR_var_vsync");
-	if ((want_enemy || want_timing || want_timer) && yy_create_string && yy_free_rvalue)
+	if ((want_enemy || want_timing || want_timer || want_c30) && yy_create_string && yy_free_rvalue)
 		orig_translate_option = entry_hook(so_symbol(&yoyoloader_mod,
 			"_Z27gml_Script_translate_optionP9CInstanceS0_R8YYRValueiPPS1_"), menu_translate_option);
 	// In this order, so a row is never added without its labels and its Step, Draw and SAVE hooks
@@ -455,8 +524,9 @@ void options_menu_install(gml_func_entry *table) {
 	// TIMER & SLOW-MO also needs the display_reset guard (Destroy and load_options pass global.vsync to display_reset)
 	int timer_ok = want_timer && orig_translate_option && orig_display_reset && choices[ROW_TIMER].var_global &&
 		choices[ROW_TIMER].var_menu && var_c;
+	int c30_ok = want_c30 && orig_translate_option && var_var_land_roll;
 	// Every row needs SAVE to see the values to store
-	if (enemy_ok || timing_ok || timer_ok)
+	if (enemy_ok || timing_ok || timer_ok || c30_ok)
 		orig_optionsmenu_save = gml_replace(table, "gml_Object_obj_optionsmenu_Other_10", enemy_optionsmenu_save);
 	if (orig_optionsmenu_save)
 		orig_optionsmenu_step = gml_replace(table, "gml_Object_obj_optionsmenu_Step_0", enemy_optionsmenu_step);
@@ -472,6 +542,7 @@ void options_menu_install(gml_func_entry *table) {
 	enemy_row = enemy_ok && rows_ok;
 	choices[ROW_TIMING].row = timing_ok && rows_ok;
 	choices[ROW_TIMER].row = timer_ok && rows_ok;
+	c30_row = c30_ok && rows_ok;
 	hide_touch_page = want_touch_hidden && orig_add_pausemenu_choice;
 	debugPrintf("options menu CONTROLS (touch controls page): %s\n", hide_touch_page ? "hidden" :
 		want_touch_hidden ? "NOT hidden (hook not installed)" : touch_controls ? "kept (touchControls)" :
@@ -482,6 +553,7 @@ void options_menu_install(gml_func_entry *table) {
 		enemy_half_rate);
 	debugPrintf("enemy timing menu: %s (yyl.cfg enemyTiming %d)\n", choices[ROW_TIMING].row ? "on" : want_timing ?
 		"NOT installed" : "off", enemy_timing_cfg);
+	debugPrintf("30 fps in combat menu: %s\n", c30_row ? "on (GRAPHICS)" : want_c30 ? "NOT installed" : "off");
 	debugPrintf("timer & slow-mo menu: %s (yyl.cfg timerSlowmo %d)\n", choices[ROW_TIMER].row ? "on" : want_timer ?
 		"NOT installed" : "off", timer_slowmo_cfg);
 }

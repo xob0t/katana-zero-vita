@@ -98,6 +98,7 @@ static int64_t *create_counter;
 int rf_verify, rf_ab_dispatch, rf_ab_move, rf_ab_anim, rf_prof;
 static uint32_t rf_move_us, rf_anim_us, rf_move_frames, rf_anim_calls;
 static int disp_on, move_on, anim_on;     // installed
+int runner_fast_anim_on;                   // combat30.c: the native animation runs twice at 30 ticks/s
 static volatile int disp_off, move_off, anim_off; // A/B windows
 static int anim_checked;                  // sprite lookup self-check: 0 not yet, 1 passed, -1 failed
 
@@ -446,13 +447,21 @@ static int ABI fast_move(int arg) {
 	return r;
 }
 
+// At 30 ticks/s (combat30.c) the sprite animation runs twice per tick, as two 60 Hz ticks would; not again for an
+// instance its animation end event destroyed or deactivated (flags +0x7c)
+extern int c30_active, c30_anim;
+#define C30_AGAIN(inst) (c30_active && c30_anim && !(U32(inst, 0x7c) & 3))
 static void ABI fast_animate(char *inst) {
 	if (!rf_prof) {
 		fast_animate_body(inst);
+		if (C30_AGAIN(inst))
+			fast_animate_body(inst);
 		return;
 	}
 	uint32_t t0 = sceKernelGetProcessTimeLow();
 	fast_animate_body(inst);
+	if (C30_AGAIN(inst))
+		fast_animate_body(inst);
 	rf_anim_us += sceKernelGetProcessTimeLow() - t0;
 	rf_anim_calls++;
 }
@@ -595,6 +604,7 @@ void runner_fast_install(void) {
 	}
 	if (!exp_flag("rfanim0")) {
 		anim_on = (orig_animate = (inst_fn)entry_hook(animate, fast_animate)) != NULL;
+		runner_fast_anim_on = anim_on;
 		debugPrintf("runner fast paths: animation %s\n", anim_on ? "installed" : "NOT installed");
 	}
 	if (rf_verify)
