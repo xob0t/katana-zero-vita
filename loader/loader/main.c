@@ -906,6 +906,23 @@ int pthread_mutex_unlock_soloader(pthread_mutex_t **mutex)
 	return pthread_mutex_unlock(*mutex);
 }
 
+// exp_bootwatch: the runner's pthread_once calls that find the once not done, with the 12 bytes after it (bionic's
+// pthread_once_t is one int, pthread-embedded's a 16-byte struct)
+int pthread_once_soloader(pthread_once_t *once, void (*init)(void))
+{
+	extern int bw_on;
+	volatile int *w = (volatile int *)once;
+	if (!bw_on || w[0] == 2)
+		return pthread_once(once, init);
+	uint32_t t0 = sceKernelGetProcessTimeLow();
+	int b0 = w[0], b1 = w[1], b2 = w[2], b3 = w[3];
+	int ret = pthread_once(once, init);
+	debugPrintf("[BOOTWATCH] pthread_once %p from %p on thread 0x%x: before %d %08x %08x %08x, after %d %08x %08x %08x, "
+		"%.1f ms\n", once, __builtin_return_address(0), sceKernelGetThreadId(), b0, b1, b2, b3, w[0], w[1], w[2], w[3],
+		(sceKernelGetProcessTimeLow() - t0) / 1000.0f);
+	return ret;
+}
+
 int pthread_join_soloader(const pthread_t *thread, void **value_ptr)
 {
 	return pthread_join(*thread, value_ptr);
@@ -2982,7 +2999,7 @@ static so_default_dynlib default_dynlib[] = {
 	{ "pthread_mutexattr_init", (uintptr_t) &pthread_mutexattr_init_soloader},
 	{ "pthread_mutexattr_setpshared", (uintptr_t) &pthread_mutexattr_setpshared_soloader},
 	{ "pthread_mutexattr_settype", (uintptr_t) &pthread_mutexattr_settype_soloader},
-	{ "pthread_once", (uintptr_t)&pthread_once },
+	{ "pthread_once", (uintptr_t)&pthread_once_soloader },
 	{ "pthread_self", (uintptr_t) &pthread_self },
 	{ "pthread_setschedparam", (uintptr_t) &pthread_setschedparam_soloader },
 	{ "pthread_setspecific", (uintptr_t)&pthread_setspecific },

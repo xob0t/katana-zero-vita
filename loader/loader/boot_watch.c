@@ -21,6 +21,7 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include <psp2/registrymgr.h>
 #include "main.h"
 #include "so_util.h"
 
@@ -184,10 +185,19 @@ static int boot_watch_main(SceSize args, void *argp) {
 	uint32_t last = __atomic_load_n(&debug_printf_calls, __ATOMIC_ACQUIRE);
 	unsigned still = 0;
 	int reported = 0;
+	uint64_t last_sys = sceKernelGetSystemTimeWide();
 	for (;;) {
 		sceKernelDelayThread(1000000);
 		if (__atomic_load_n(&setup_ended, __ATOMIC_ACQUIRE))
 			return 0;
+		uint64_t sys = sceKernelGetSystemTimeWide();
+		if (sys - last_sys > 3000000) {
+			// The app was suspended meanwhile (standby, PS button): say so, start over
+			say("a 1-s sleep took %.1f s: the app was suspended\n", (sys - last_sys) / 1000000.0f);
+			flush_out();
+			still = 0;
+		}
+		last_sys = sys;
 		uint32_t now = __atomic_load_n(&debug_printf_calls, __ATOMIC_ACQUIRE);
 		if (now != last) {
 			if (reported) {
@@ -222,6 +232,26 @@ static void bw_atexit(void) {
 	debug_flush();
 }
 
+// Power events (standby, suspend, PS button) before the main loop: written to hang.log at once, the app may be
+// suspended right after
+static int bw_power_cb(int notify_id, int notify_count, int power_info, void *common) {
+	if (__atomic_load_n(&setup_ended, __ATOMIC_ACQUIRE))
+		return 0;
+	say("power event 0x%08x (count %d)\n", power_info, notify_count);
+	flush_out();
+	return 0;
+}
+
+static int bw_power_thread(SceSize args, void *argp) {
+	SceUID cb = sceKernelCreateCallback("boot watch power", 0, bw_power_cb, NULL);
+	if (cb < 0 || scePowerRegisterCallback(cb) < 0)
+		return 0;
+	while (!__atomic_load_n(&setup_ended, __ATOMIC_ACQUIRE))
+		sceKernelDelayThreadCB(1000000);
+	scePowerUnregisterCallback(cb);
+	return 0;
+}
+
 void boot_watch_start(int cpu_mask) {
 	if (!exp_flag("bootwatch"))
 		return;
@@ -235,6 +265,15 @@ void boot_watch_start(int cpu_mask) {
 	}
 	debugPrintf("boot watch: on (report after %d s without a log line before the main loop, core dump after %d s)\n",
 		BW_REPORT_S, BW_DUMP_S);
+	SceUID pt = sceKernelCreateThread("Boot Watch power", bw_power_thread, 0x10000100, 0x2000, 0, cpu_mask, NULL);
+	if (pt >= 0)
+		sceKernelStartThread(pt, 0, NULL);
+	int standby = -1, dim = -1, off = -1;
+	sceRegMgrGetKeyInt("/CONFIG/POWER_SAVING", "suspend_interval", &standby);
+	sceRegMgrGetKeyInt("/CONFIG/POWER_SAVING", "dim_interval", &dim);
+	sceRegMgrGetKeyInt("/CONFIG/POWER_SAVING", "display_off_interval", &off);
+	debugPrintf("boot watch: power saving suspend_interval %d, dim_interval %d, display_off_interval %d\n", standby, dim,
+		off);
 }
 
 // exp_bootwatchtest: the game thread stops for 30 s before the runner's Startup (tests the report and the dump)
