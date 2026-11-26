@@ -4,7 +4,6 @@
 # Native replacements must round exactly like the runner (no FMA contraction)
 set(EXACT_SOURCES
   loader/bike_draw.c
-  loader/clubber_native.c
   loader/collision_native.c
   loader/cone_shadow.c
   loader/crt_native.c
@@ -46,6 +45,6 @@ set_source_files_properties(${EXACT_SOURCES} PROPERTIES COMPILE_OPTIONS "-ffp-co
 set_source_files_properties(loader/dustspawner_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-marm;-O2")
 # Unicorn-verified with exactly these flags (smokedraw_verify.py, an untracked harness; host build: tools/verify)
 set_source_files_properties(loader/smokedraw_native.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-O2")
-# Kill-test natives (exp_lightfast, exp_lightfast_inline): Unicorn-verified with exactly these flags. The sibling
-# call keeps the fallback into the original event at the caller's stack depth, as in the verified build.
-set_source_files_properties(loader/light_fast.c loader/light_fast_inline.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-O2;-foptimize-sibling-calls")
+# Kill-test native (light_fast_inline.c): Unicorn-verified with exactly these flags. The sibling call keeps
+# the fallback into the original event at the caller's stack depth, as in the verified build.
+set_source_files_properties(loader/light_fast_inline.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-O2;-foptimize-sibling-calls")

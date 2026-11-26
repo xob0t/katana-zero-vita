@@ -69,13 +69,13 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Lighting at 30 Hz | `katana_display.c` | none | `exp_lighting60` | | Visible |
 | No lamp glow in club_0 and haunted_cart2 | `room_lighting.c` | `roomLighting` | none | `exp_roomlighting1` (A/B, read at Room Start) | Visible |
 | Flamethrower flames don't light the room: their obj_orangelight (and its obj_lightback) isn't created; their instance and element ids are taken as the creations would; the light list refresh the light's Create asks for (`global.update_lights`, read only by drawing code) isn't | `flame_lights.c` | `flameLights` | none | `exp_flamelightsverify`, `exp_flamelightsfault` (negative control), `exp_flamelightsab` | Visible; game state exact except the collision tree's shape and the id order within one frame |
-| obj_orangelight and obj_lightback Step natives | `light_fast_inline.c` (default), `light_fast.c` (`exp_lightfast`) | none | `exp_lightfast0` | | Exact native |
+| obj_orangelight and obj_lightback Step natives | `light_fast_inline.c` | none | `exp_lightfast0` | | Exact native |
 | obj_lightback user event 0 (off-screen and on-screen lights) | `lightback_native.c` | none | `exp_lightbacknative0`; `exp_lbvisible0` (on-screen lights only) | `exp_lbverify`, `exp_lbverifyfault` (negative control), `exp_lbab`, `exp_lbvisab` | Exact native |
 | `update_light_array` loop | `light_array_native.c` | none | `exp_lightarray0` | `exp_lightarrayverify` | Exact native |
 | `draw_sprite_recolored` light loop | `recolor_lights.c` | none | `exp_recolorlights0` | `exp_recolorlightsverify`, `exp_recolorlightsab`, `exp_recolorlightsprof` | Exact native |
 | Afterimage trails: far lights skipped, tint native | `trail_lights.c` | `trailLights` (afterimage tint) | `exp_traillights0`; `exp_traillightsnative0` keeps only the skipping | `exp_traillightscheck`, `exp_traillightsverify` | Exact; the tint off is visible |
 | `update_region` native | `region_native.c` | none | `exp_regionnative0` | `exp_regionverify` | Exact native |
-| Club dancers' rim glow, cheap by default | `dancer_glow.c` (cheap, 2), `katana.c` (stub for 0), `clubber_native.c` (native for 1) | `dancerGlow` | `exp_clubbernative0` (GML for 1) | `exp_dglowab`, `exp_dglowprof`, `exp_dglowcompare` | Visible (cheap: outline corners); native exact |
+| Club dancers' rim glow, cheap by default | `dancer_glow.c` (cheap, 2), `katana.c` (stub for 0; the game's event for 1) | `dancerGlow` | `dancerGlow=1` | `exp_dglowab`, `exp_dglowprof`, `exp_dglowcompare` | Visible (cheap: outline corners) |
 | Clotheslines without light tint | `katana.c` (`cloth_instance_exists`) | `ropeLights` | none | | Visible |
 | Lighting tilemaps sized in tiles (game bug fix) | `katana.c` (`layer_tilemap_create_fixed`) | none | `exp_lightmapbig` | | Fix |
 
@@ -170,7 +170,6 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | vblank pacing; the runner's `Timing_Sleep` skips frame-sized waits | `main.c`, `katana.c` | none | `exp_sleeppace` | Pacing |
 | 30 fps in combat rooms, game clock doubled (opt-in) | `combat30.c`, `katana_menu.c` (GRAPHICS row), `enemy_half_rate.c`, `fx_rate.c`, `runner_fast.c` | `combat30` | the setting or the menu (`exp_c30anim0`, `exp_c30alarm0`, `exp_c30freeze0`, `exp_c30timer0`, `exp_c30text0`, `exp_c30slowmo0`: one conversion off; `exp_c30menu0`: no row; `exp_c30all`, `exp_c30trace`) | Gameplay timing change when on |
 | Game thread alone on core 1 | `main.c` | none | `exp_gamecore0` (core 0) | Threads |
-| Frame skip (opt-in) | `katana.c` | `frameSkip` | | Visible when on |
 | Same-sound limit, voice limit | `sound_limit.c`, `katana.c` | `sameSoundLimit`, `maxVoices` | | Audible |
 | OpenSL ES output buffer | `patches/opensles.patch` | `audioGrain` | | Audio |
 
@@ -263,27 +262,22 @@ Rules:
    of the deployed runner into direct `bl`, so a GOT slot only sees what that script leaves alone (its
    `DEFAULT_EXCLUDE`: `_Z12DoAStep_Drawv`, `BZ2_bzBuffToBuffDecompress`). For anything else, add the symbol to
    `DEFAULT_EXCLUDE` or use an entry hook.
-4. Natives check the runner helpers they inline or bypass. `clubber_native.c` and `dustspawner_native.c` compare the
-   first two words and the GOT slot of each helper (37 and about 50) at install and on every call;
-   `smokedraw_native.c` does it once per frame and after any new hook (`so_hook_generation`); `light_fast.c`,
-   `light_fast_inline.c`, `visibility_native.c` and `virtual_capture.c` check the prologues of the entries they
-   replace at install. A native that finds a helper hooked declines and the original GML runs. So a verify or
-   profiling hook can change which path runs: `exp_fogskipverify` entry-hooks `YYGML_NewWithIterator`, which is in
-   the clubber and dust tables; `exp_lbverify` entry-hooks `Variable_SetValue_Direct`, which smokedraw bypasses;
+4. Natives check the runner helpers they inline or bypass. `dustspawner_native.c` compares the first two words and
+   the GOT slot of each helper (about 50) at install and on every call; `smokedraw_native.c` does it once per frame
+   and after any new hook (`so_hook_generation`); `light_fast_inline.c`, `visibility_native.c` and
+   `virtual_capture.c` check the prologues of the entries they replace at install. A native that finds a helper
+   hooked declines and the original GML runs. So a verify or profiling hook can change which path runs:
+   `exp_fogskipverify` entry-hooks `YYGML_NewWithIterator`, which is in the dust table; `exp_lbverify` entry-hooks `Variable_SetValue_Direct`, which smokedraw bypasses;
    heavy profiling (`profile`) swaps GOT slots of `draw_self` and `draw_sprite_ext` and entry-hooks stage functions.
    Check the natives' report lines when you profile.
 5. Install order matters. Dependencies in the code today:
    - obj_particle user event 15: `katana.c` swaps in `particle_draw`, which calls `fog_trail_install(particle_native_install(orig))`.
      The call order is `particle_draw` (alternate frames), then `fog_trail.c`, then `particle_native.c`, then the original.
    - `room_lighting_install` runs after `blood_drops_install`: both wrap obj_opto_master's Room Start.
-   - `light_fast.c` and `light_fast_inline.c` hook the same two entries; `katana.c` installs only one.
    - obj_rain Draw: `katana.c` swaps in `rain_draw` first; cheap rain's Draw wraps it.
-   - `DoAStep_Draw` GOT slot: frame skip takes it first (only with `frameSkip=1`), then `katana_display_hook_draw`
-     at the end of `patch_performance`. `katana_prof.c` entry-hooks the same function afterwards.
+   - `DoAStep_Draw` GOT slot: `katana_display_hook_draw` takes it at the end of `patch_performance`. `katana_prof.c` entry-hooks the same function afterwards.
    - `katana_prof_install` runs after `patch_performance`, so its entry hooks fail where a native already hooked the
      function (`inside_screen`, hooked by `visibility_native.c`) and it falls back to the GOT slot.
-   - `clubber_native.c` installs after `visibility_native.c`, which hooks `inside_screen`, one of clubber's checked
-     helpers. With the default flags the clubber native therefore never installs, and `dancerGlow=1` runs the GML.
    - `fog_skip_install` runs inside `fog_install` (`katana.c`), after the fog Create/Step hooks.
    - `instance_create_depth` in the runner's function registry: `fog_skip.c`, `rain_skip.c`, `hud_sparks.c` and
      `flame_lights.c` each wrap the entry they find, in that order (all in `katana_late_install`, once the registry is
@@ -332,7 +326,7 @@ Sources: `loader/CMakeLists.txt` compiles every `loader/loader/*.c` (a `file(GLO
 `qoi_decoder.c`, which belongs to the selector build. A new non-exact `.c` file needs no CMake edit: `build.py`
 re-runs the configure step, and `CONFIGURE_DEPENDS` re-checks the glob on a plain `cmake --build`. A new exact
 native adds one line to `EXACT_SOURCES` in `loader/exact_sources.cmake` (sorted, one file per line). Files verified
-with other flags (`dustspawner_native.c`, `smokedraw_native.c`, `light_fast.c`, `light_fast_inline.c`) have their
+with other flags (`dustspawner_native.c`, `smokedraw_native.c`, `light_fast_inline.c`) have their
 own lines there; keep their flags as they are.
 
 ## Tests and verifiers
