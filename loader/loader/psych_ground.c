@@ -199,7 +199,7 @@ static int native_draw(void *self, void *other) {
 	if (slices != floor(slices) || slices < 0 || slices > MAX_SLICES)
 		FAIL();
 	int n = (int)slices;
-	uint8_t *arr = *(uint8_t **)&rp->val;
+	uint8_t *arr = *(uint8_t *__attribute__((may_alias)) *)&rp->val; // the array pointer (may_alias: no punning)
 	if (!arr)
 		FAIL();
 	int len = *(int *)(arr + 0x1c);
@@ -308,7 +308,7 @@ static void ground_draw(void *self, void *other) {
 	}
 	// Verify: native (draws recorded only), restore the pressure array, original (calls recorded), compare
 	gml_rvalue *rp = gml_vget(self, v_pressure[1]);
-	uint8_t *arr = rp && KIND(rp) == 2 ? *(uint8_t **)&rp->val : NULL;
+	uint8_t *arr = rp && KIND(rp) == 2 ? *(uint8_t *__attribute__((may_alias)) *)&rp->val : NULL;
 	int len = arr ? *(int *)(arr + 0x1c) : 0;
 	gml_rvalue *p = arr ? *(gml_rvalue **)(arr + 4) : NULL;
 	if (!p || len > MAX_SLICES + 1) {
@@ -343,7 +343,7 @@ static void ground_draw(void *self, void *other) {
 	rf_draw_part->func = real_draw_part;
 	// The original may have replaced the array (it shouldn't): compare against what the variable holds now
 	rp = gml_vget(self, v_pressure[1]);
-	uint8_t *arr2 = rp && KIND(rp) == 2 ? *(uint8_t **)&rp->val : NULL;
+	uint8_t *arr2 = rp && KIND(rp) == 2 ? *(uint8_t *__attribute__((may_alias)) *)&rp->val : NULL;
 	gml_rvalue *p2 = arr2 ? *(gml_rvalue **)(arr2 + 4) : NULL;
 	int len2 = arr2 ? *(int *)(arr2 + 0x1c) : -1;
 	int bad = 0;

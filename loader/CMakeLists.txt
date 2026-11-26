@@ -63,6 +63,16 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/exact_sources.cmake)
 file(GLOB APP_SOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} CONFIGURE_DEPENDS loader/*.c)
 # qoi_decoder.c belongs to the selector build below
 list(REMOVE_ITEM APP_SOURCES loader/qoi_decoder.c)
+# The port's own files (all but the upstream YoYo Loader ones) turn these warnings into errors: the tree is clean of
+# them, and each one has hidden a real bug before (an undeclared snprintf, a pointer of the wrong type, type-punned
+# reads at -O3). Flags that don't change the generated code.
+set(UPSTREAM_SOURCES loader/main.c loader/so_util.c loader/so_elf.c loader/dialog.c loader/gamepad.c loader/ioapi.c
+  loader/unzip.c loader/zip.c loader/sha1.c loader/net.c loader/trophies.c loader/videoplayer_patch.c
+  loader/audio_player.c loader/profiler.c loader/ctype_patch.c loader/openal_patch.c loader/sbrk.c)
+set(PORT_SOURCES ${APP_SOURCES})
+list(REMOVE_ITEM PORT_SOURCES ${UPSTREAM_SOURCES})
+set_property(SOURCE ${PORT_SOURCES} APPEND PROPERTY COMPILE_OPTIONS -Werror=implicit-function-declaration
+  -Werror=return-type -Werror=incompatible-pointer-types -Werror=int-conversion -Werror=strict-aliasing)
 add_executable(YoYoLoader ${APP_SOURCES} loader/lz4/lz4.c)
 # page_reserve.c hands held heap blocks to vitaGL's newlib fallback (its memalign)
 target_link_options(YoYoLoader PRIVATE -Wl,--wrap,memalign)

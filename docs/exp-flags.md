@@ -5,7 +5,7 @@ hand. `tests/test_exp_flags.py` fails when it is out of date. What each switch d
 [DEVELOPING.md](DEVELOPING.md#feature-map) (every switch must be named there) and the owning file's header
 comment. Kinds are guessed from the name.
 
-286 switches.
+288 switches.
 
 | Switch | Owner | Also read in | Kind |
 |---|---|---|---|
@@ -41,12 +41,14 @@ comment. Kinds are guessed from the name.
 | `exp_corpserestprof` | `corpse_rest.c` |  | profiling |
 | `exp_corpserestscript` | `corpse_rest.c` |  | other |
 | `exp_corpserestverify` | `corpse_rest.c` |  | verify |
-| `exp_crtab` | `collision_round_trip.c` | `crt_native.c` | A/B |
+| `exp_crtab` | `collision_round_trip.c` |  | A/B |
+| `exp_crtfxab` | `crt_native.c` |  | A/B |
+| `exp_crtfxverify` | `crt_native.c` |  | verify |
 | `exp_crtnative0` | `crt_native.c` |  | off-switch |
 | `exp_crtprof` | `collision_round_trip.c` |  | profiling |
 | `exp_crtres` | `collision_round_trip.c` |  | other |
 | `exp_crtstat` | `collision_round_trip.c` |  | profiling |
-| `exp_crtverify` | `collision_round_trip.c` | `crt_native.c` | verify |
+| `exp_crtverify` | `collision_round_trip.c` |  | verify |
 | `exp_crtverifyfault` | `collision_round_trip.c` |  | negative control |
 | `exp_decodeguard0` | `page_evict.c` |  | off-switch |
 | `exp_dglowab` | `dancer_glow.c` |  | A/B |

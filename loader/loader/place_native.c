@@ -517,10 +517,10 @@ static void *verify_steps(void *self, float px, float py, int sel, void *list, v
 		memcpy(test_words[i], s0.test[i], 12);
 	uint32_t test_sent[2] = { test_list[0], test_list[1] };
 	int full = ++pcv_n % 64 == 0;
-	uint32_t h0 = full ? tree_hash(PTR(tree, 0x14), 0x811c9dc5u, 0) : 0;
+	uint32_t h0 = full ? tree_hash((const uint32_t *)PTR(tree, 0x14), 0x811c9dc5u, 0) : 0;
 	void *ra = native_steps(self, px, py, sel, sp);
 	snap(&sa, self, tree);
-	uint32_t ha = full ? tree_hash(PTR(tree, 0x14), 0x811c9dc5u, 0) : 0;
+	uint32_t ha = full ? tree_hash((const uint32_t *)PTR(tree, 0x14), 0x811c9dc5u, 0) : 0;
 	// back to s0: lists, caller, globals
 	if (sa.nd > 0)
 		list_reset(dirty_list, sa.dirty, sa.nd);
@@ -544,7 +544,7 @@ static void *verify_steps(void *self, float px, float py, int sel, void *list, v
 	void *rb = orig_place(self, px, py, sel, list);
 	force_runner = 0;
 	snap(&sb, self, tree);
-	uint32_t hb = full ? tree_hash(PTR(tree, 0x14), 0x811c9dc5u, 0) : 0;
+	uint32_t hb = full ? tree_hash((const uint32_t *)PTR(tree, 0x14), 0x811c9dc5u, 0) : 0;
 	pcv_queries++;
 	unsigned bad0 = pcv_bad;
 	if (ra != rb || sa.res != sb.res)

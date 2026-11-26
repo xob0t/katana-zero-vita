@@ -410,7 +410,7 @@ void katana_prof_report(int frames) {
 				letter_native_hits[2], letter_native_hits[3], letter_native_hits[4], letter_native_fallbacks[0],
 				letter_native_fallbacks[1], letter_native_fallbacks[2], letter_native_fallbacks[3], letter_native_fallbacks[4]);
 		{
-			extern int letter_glow, letter_glow_ab, letter_glow_ab_on, letter_glow_prof;
+			extern int letter_glow, letter_glow_ab, letter_glow_ab_on;
 			extern unsigned letter_glow_calls, letter_glow_zero, letter_glow_skipped;
 			extern uint64_t letter_glow_us;
 			extern unsigned letter_glow_cheap_n, letter_glow_cheap_slow, letter_glow_cheap_zero, letter_glow_cheap_fallback;

@@ -18,7 +18,10 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: atamanenko/vitasdk-softfp:latest
+    # Pinned by digest (the image `latest` was on 2026-11-26, which built v1.4.0), so a release is built with a known
+    # SDK. To update: take the Digest line from a run's "Initialize containers" step with :latest, test that eboot on
+    # a Vita, then change it here.
+    container: atamanenko/vitasdk-softfp@sha256:fa66f683d397885ffec3dcccf915ca977c19e20fc895c2d7e9ce25201c39ecdd
     steps:
       - uses: actions/checkout@v7
         with:
@@ -40,6 +43,13 @@ jobs:
           # The container's softfp VitaSDK ($VITASDK) is used as it is; build.py builds the dependencies into it
           uv run --locked build.py --deps-dir "$RUNNER_TEMP/deps"
           test -s build/app/eboot.bin && test -s build/app/KatanaZero.vpk_param.sfo
+
+      - name: Loader checks
+        # No global defined twice across the app's objects (the link merges them silently), extern declarations that
+        # match their definitions (an LTO partial link), and the natives' host test builds (scripts/check_loader.py)
+        run: |
+          uv run --locked python scripts/check_loader.py --build build/app
+          uv run --locked python scripts/check_loader.py --build build/loader --only dups
 
       - name: Site
         run: |

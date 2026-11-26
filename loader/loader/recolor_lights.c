@@ -55,22 +55,22 @@
  *   clamp is YYGML_clamp's two compares), and writes rdist and the four sums the way the original's assignments do.
  * blackout_here, argument7 and the loop counter are read from the original's frame: the wrappers get &self = fp-0x10c,
  * &other = fp-0x110 and the iterator at sp+0x78 (fp-0x260), all checked.
- * Anything unexpected (a missing variable, a value that isn't a plain real, an unusual instance or with target)
- * leaves that light or element to the original, before anything has been written.
+ * Anything unexpected (a missing variable, a non-real value, an odd instance or with target) runs the original.
  *
  * exp_recolorlights0 keeps the original. Debug mode only ([RECOLORLIGHTS] report line):
  * - exp_recolorlightsverify: no batches; for every light the native body computes what it would write without
  *   writing, then the original body runs; the next iterator step compares the light's rdist and the caller's
  *   light_r/g/b/alpha (all 16 bytes) with the native result. Every instance-id with target is also looked up the
  *   batch's way and compared with what NewWithIterator visited. Mismatches must stay 0.
- * - exp_recolorlightsab: the native body is off in every other report window (in-run A/B).
- * - exp_recolorlightsprof: times every draw_sprite_recolored call (an entry hook on the script).
+ * - exp_recolorlightsab: native off every other report window (A/B); exp_recolorlightsprof: times each call.
  */
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
 #include <math.h>
-#ifndef RECOLOR_LIGHTS_TEST
+#ifdef RECOLOR_LIGHTS_TEST
+#include "collision_stub.h" // tools/verify; the harness defines BUG(n), its fault injection (-D'BUG(n)=0': none)
+#else
 #include <kubridge.h>
 #include <psp2/kernel/processmgr.h>
 #include "main.h"
