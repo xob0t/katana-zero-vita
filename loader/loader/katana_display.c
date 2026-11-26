@@ -312,7 +312,8 @@ static void after_swap(uint32_t swap_us, uint32_t work_us) {
 	rt_free_report();
 	extern void page_evict_frame(void);
 	page_evict_frame();
-	// A frame that skipped its swap (frameSkip) may leave scenes open: no collection until a presented frame
+	// A frame that skipped its swap may leave scenes open: no collection until a presented frame (written for the
+	// removed frame skip; kept as a guard)
 	if (vgl_scene_open)
 		return;
 	texdrain_run("after the swap");

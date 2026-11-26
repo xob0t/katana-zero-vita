@@ -18,7 +18,7 @@ from elftools.elf.elffile import ELFFile
 
 # Symbols the loader intercepts through their GOT slot must keep going through the PLT
 DEFAULT_EXCLUDE = {
-    "_Z12DoAStep_Drawv",  # frame skip / lighting hooks
+    "_Z12DoAStep_Drawv",  # lighting hooks (katana_display.c)
     "BZ2_bzBuffToBuffDecompress",  # LZ4 texture pages (katana.c); a missed hook breaks every texture
 }
 

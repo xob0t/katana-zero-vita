@@ -218,163 +218,6 @@ static void particle_draw(void *self, void *other) {
 		orig_particle_draw(self, other);
 }
 
-/*
- * Frame skipping: when a frame runs over budget, the next frame only runs game logic
- * and the previous image stays on screen. Never skips twice in a row.
- */
-// A frame is "behind" when it took longer than a 60 Hz frame plus some slack
-#define FRAMESKIP_THRESHOLD_US 17500
-
-static void (*frameskip_orig_draw)(void);
-static uint32_t last_frame_start;
-static int last_frame_skipped;
-static int draw_skipped;
-static volatile int draw_skipping;
-static uint32_t frames_seen, frames_skipped;
-
-extern int frame_skip;
-
-/*
- * Adaptive partial frame skip: when a frame falls behind, the next frame still runs the
- * whole game logic and the draw pass, but Draw events of ordinary objects return
- * immediately and the frame is not presented. Draw events of story/UI objects (cutscenes,
- * textboxes, menus, transitions...) always run, because they contain logic: skipping them
- * stalled the first tutorial.
- */
-#ifndef SCE_KERNEL_MEMBLOCK_TYPE_USER_RX
-#define SCE_KERNEL_MEMBLOCK_TYPE_USER_RX (0x0C20D050)
-#endif
-#define DRAWSKIP_STUB_WORDS 3
-#define DRAWSKIP_ADDRESS (LOAD_ADDRESS + 0xC00000)
-
-static const char *story_words[] = {
-	"cutscene", "textbox", "choicebox", "dialog", "pausemenu", "gamepause", "pausecamera",
-	"transition", "prompt", "fade", "ending", "credits", "title", "menu", "options",
-	"leveltext", "popuptext", "level_end", "go_arrow", "text"
-};
-
-static event_func *drawskip_orig;
-static const char **drawskip_names;
-static uint8_t *drawskip_seen;
-static int drawskip_num;
-
-static void drawskip_call(void *self, void *other, int idx) {
-	if (!draw_skipping)
-		drawskip_orig[idx](self, other);
-	else if (drawskip_seen)
-		drawskip_seen[idx] = 1;
-}
-
-// Debug: lists the Draw events that were skipped since the last call
-void katana_drawskip_dump(void) {
-	if (!debugMode || !drawskip_seen)
-		return;
-	for (int i = 0; i < drawskip_num; i++) {
-		if (drawskip_seen[i]) {
-			debugPrintf("[SKIPPED] %s\n", drawskip_names[i]);
-			drawskip_seen[i] = 0;
-		}
-	}
-}
-
-// Debug report for the frame-stats log line
-const char *katana_guard_last() {
-	static char buf[64];
-	snprintf(buf, sizeof(buf), "skipped %u of %u frames", frames_skipped, frames_seen);
-	frames_skipped = frames_seen = 0;
-	return buf;
-}
-
-static int is_story_object(const char *name) {
-	const char *obj = name + 11; // skip "gml_Object_"
-	for (int i = 0; i < sizeof(story_words) / sizeof(*story_words); i++) {
-		if (strstr(obj, story_words[i]))
-			return 1;
-	}
-	return 0;
-}
-
-// Only world Draw events are skipped: Draw (0), Draw Begin (72), Draw End (73). GUI draws
-// (64, 74, 75) always run, since HUD and touch-button logic lives there.
-static int is_skippable_draw(const char *name) {
-	if (strncmp(name, "gml_Object_", 11) || is_story_object(name))
-		return 0;
-	const char *ev = strstr(name, "_Draw_");
-	if (!ev)
-		return 0;
-	ev += 6;
-	return !strcmp(ev, "0") || !strcmp(ev, "72") || !strcmp(ev, "73");
-}
-
-static void install_draw_skip(gml_func_entry *table) {
-	int count = GML_FUNCS_SIZE / sizeof(gml_func_entry);
-	int num = 0;
-	for (int i = 0; i < count; i++) {
-		if (table[i].name && table[i].func && is_skippable_draw(table[i].name))
-			num++;
-	}
-	if (!num)
-		return;
-
-	SceSize size = (num * DRAWSKIP_STUB_WORDS * 4 + 0xfff) & ~0xfff;
-	SceKernelAllocMemBlockKernelOpt opt;
-	memset(&opt, 0, sizeof(opt));
-	opt.size = sizeof(opt);
-	opt.attr = 0x1;
-	opt.field_C = DRAWSKIP_ADDRESS;
-	SceUID block = kuKernelAllocMemBlock("draw skip", SCE_KERNEL_MEMBLOCK_TYPE_USER_RX, size, &opt);
-	if (block < 0) {
-		debugPrintf("Katana: draw skip allocation failed (0x%08X), disabling frame skip\n", block);
-		frame_skip = 0;
-		return;
-	}
-	uint32_t *stubs_rx;
-	sceKernelGetMemBlockBase(block, (void **)&stubs_rx);
-	uint32_t *stubs = calloc(1, size);
-	drawskip_orig = calloc(num, sizeof(event_func));
-	drawskip_names = calloc(num, sizeof(char *));
-	drawskip_seen = calloc(num, 1);
-	drawskip_num = num;
-
-	int n = 0;
-	for (int i = 0; i < count && n < num; i++) {
-		if (!table[i].name || !table[i].func || !is_skippable_draw(table[i].name))
-			continue;
-		uint32_t *s = &stubs[n * DRAWSKIP_STUB_WORDS];
-		s[0] = 0xE3002000 | ((n >> 12) << 16) | (n & 0xfff); // movw r2, #n
-		s[1] = 0xE51FF004;                                   // ldr pc, [pc, #-4]
-		s[2] = (uint32_t)&drawskip_call;
-		drawskip_orig[n] = table[i].func;
-		drawskip_names[n] = table[i].name;
-		table[i].func = (event_func)&stubs_rx[n * DRAWSKIP_STUB_WORDS];
-		n++;
-	}
-	kuKernelCpuUnrestrictedMemcpy(stubs_rx, stubs, size);
-	kuKernelFlushCaches(stubs_rx, size);
-	free(stubs);
-	debugPrintf("Katana: draw skip on %d Draw events\n", n);
-}
-
-static void DoAStep_Draw_frameskip(void) {
-	uint32_t now = sceKernelGetProcessTimeLow();
-	uint32_t last_frame_time = now - last_frame_start;
-	last_frame_start = now;
-
-	int skip = frame_skip && last_frame_time > FRAMESKIP_THRESHOLD_US && !last_frame_skipped;
-	draw_skipping = skip;
-	frameskip_orig_draw();
-	draw_skipping = 0;
-	draw_skipped = skip;
-	last_frame_skipped = skip;
-	frames_seen++;
-	frames_skipped += skip;
-}
-
-// Queried by the main loop to avoid presenting a frame that wasn't drawn
-int katana_frame_skipped() {
-	return draw_skipped;
-}
-
 // NurseryAlloc (the runner's per-frame bump allocator) returns cur and advances by exactly the
 // requested size, so one odd-sized request misaligns every later chunk. Android's kernel emulates
 // the resulting unaligned VFP stores; the Vita faults (e.g. draw_roundrect in obj_passive_textbox:
@@ -1362,7 +1205,7 @@ static void patch_performance() {
 	// with 2-4 outline sprites per light, each drawn twice: ~285 extra draws per frame in the club, 44 fps vs
 	// 52-56 without it. dancerGlow=2 (default) draws it natively with the layers merged per side, one draw per side
 	// (dancer_glow.c). dancerGlow=0 skips the event; the club light show itself stays. dancerGlow=1 keeps the
-	// game's event, with an exact native version of it (exp_clubbernative0: the original GML).
+	// game's event.
 	extern int dancer_glow;
 	if (dancer_glow == 2) {
 		extern int dancer_glow_install(gml_func_entry *table);
@@ -1372,9 +1215,6 @@ static void patch_performance() {
 	if (!dancer_glow) {
 		stub_event("_Z31gml_Object_obj_clubber_Other_16P9CInstanceS0_");
 		debugPrintf("dancer rim glow: off\n");
-	} else if (dancer_glow == 1 && !exp_flag("clubbernative0")) {
-		extern int clubber_native_install(void *(*rx_alloc)(size_t));
-		debugPrintf("native dancer rim glow: %s\n", clubber_native_install(katana_rx_alloc) ? "installed" : "NOT installed");
 	}
 	// Native ceiling-laser beam draw and height probe (laser_native.c). The draw's fast path builds no temporary
 	// array: bunker2_2 with 6 beams on screen, frames over 18 ms 230/min -> 1.4/min (GC passes), process 15.2 ->
@@ -1418,13 +1258,8 @@ static void patch_performance() {
 	// Exact natives of obj_orangelight Step and obj_lightback Step, from the static recompiler kill test
 	// (work/cpu_research/kill_test/REPORT.md): the events with the runner's compare/truth/variable helpers inlined
 	// (light_fast_inline.c). room_haunted_cart2 (129 lights): orangelight 2.13 -> 1.53 ms, lightback 0.51 -> 0.42 ms.
-	// Calls it can't take (~6%) run the original event. exp_lightfast0: the original GML; exp_lightfast: the older
-	// hand native (light_fast.c) instead. Both hook the same two entries, so only one is installed.
-	if (exp_flag("lightfast")) {
-		extern int light_fast_install(void *(*rx_alloc)(size_t));
-		light_fast_mode = light_fast_install(katana_rx_alloc) ? 1 : 0;
-		debugPrintf("light fast: %s (hand)\n", light_fast_mode ? "installed" : "NOT installed");
-	} else if (!exp_flag("lightfast0")) {
+	// Calls it can't take (~6%) run the original event. exp_lightfast0: the original GML.
+	if (!exp_flag("lightfast0")) {
 		extern int light_fast_inline_install(void *(*rx_alloc)(size_t));
 		light_fast_mode = light_fast_inline_install(katana_rx_alloc) ? 2 : 0;
 		// Lamp sway at 1/lampSway rate (in light_fast_inline.c): exp_swayab alternates it with the original per
@@ -1487,9 +1322,11 @@ static void patch_performance() {
 	orig_timing_sleep = entry_hook(so_symbol(&yoyoloader_mod, "Timing_Sleep"), timing_sleep_vsync);
 	debugPrintf("frame limiter spin: %s\n", orig_timing_sleep ? "skipped with vblank pacing" : "NOT hooked");
 
-	extern int fps_mode_ignored;
+	extern int fps_mode_ignored, frame_skip_ignored;
 	if (fps_mode_ignored)
 		debugPrintf("yyl.cfg fpsMode/fps30: no longer supported (the old 30 fps mode was removed; see combat30), ignored\n");
+	if (frame_skip_ignored)
+		debugPrintf("yyl.cfg frameSkip: no longer supported (frame skipping was removed), ignored\n");
 	enemy_half_rate_install(table);
 	extern void enemy_timing_install(gml_func_entry *table);
 	enemy_timing_install(table); // before options_menu_install: its ENEMY TIMING row needs it
@@ -1526,14 +1363,6 @@ static void patch_performance() {
 	extern void hud_sparks_install(gml_func_entry *table), flame_lights_install(gml_func_entry *table);
 	hud_sparks_install(table);
 	flame_lights_install(table);
-
-	// Frame skipping (and its guard stubs) only when opted in with frameSkip=1
-	uintptr_t *draw_slot = frame_skip ? so_got_slot(&yoyoloader_mod, "_Z12DoAStep_Drawv") : NULL;
-	if (draw_slot) {
-		install_draw_skip(table);
-		frameskip_orig_draw = (void *)*draw_slot;
-		*draw_slot = (uintptr_t)&DoAStep_Draw_frameskip;
-	}
 
 	katana_display_hook_draw();
 }

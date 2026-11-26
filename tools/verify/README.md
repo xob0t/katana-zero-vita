@@ -7,13 +7,12 @@ differential and Unicorn harnesses need it. The harnesses themselves, and the ga
 
 | Header | Define | File |
 |---|---|---|
-| `collision_stub.h` | `CLUBBER_TEST` | `clubber_native.c` |
-| | `COLLISION_STUB` | `collision_native.c` |
+| `collision_stub.h` | `COLLISION_STUB` | `collision_native.c` |
 | | `DUSTSPAWNER_TEST` | `dustspawner_native.c` |
 | | `FLASH_MASK_STUB` | `flash_mask.c` |
 | | `LASER_TEST` | `laser_native.c` |
 | | `LETTER_TEST` | `letter_native.c` |
-| | `LIGHT_FAST_STUB` | `light_fast.c`, `light_fast_inline.c` |
+| | `LIGHT_FAST_STUB` | `light_fast_inline.c` |
 | | `RAIL_TEST` | `minecart_native.c` |
 | | `ROPE_STUB` | `rope_fast.c` |
 | | `VIRTUAL_CAPTURE_TEST` | `virtual_capture.c` |

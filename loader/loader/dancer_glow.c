@@ -88,7 +88,7 @@ static float field(const void *p, size_t o) {
 }
 
 // An instance's (or the global object's) variable map: the runner's robin-hood hash of slot+1 -> RValue *.
-// Same layout as clubber_native.c; only the standard vtable getters are trusted to mean that storage.
+// Same layout as the removed clubber_native.c had; only the standard vtable getters are trusted to mean that storage.
 typedef struct {
 	const uint8_t *entries;
 	uint32_t mask;

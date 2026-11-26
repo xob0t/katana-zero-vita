@@ -80,7 +80,6 @@ void gpu_alloc_fail_report(size_t size, size_t alignment, int for_gpu, void *cal
 static uint32_t swap_only_us; // vglSwapBuffers alone, without katana_after_swap
 static uint32_t screenshot_check_us;
 void katana_prof_report(int frames);
-int katana_frame_skipped();
 void katana_after_swap(uint32_t swap_us, uint32_t work_us);
 void katana_clock_probe(void);
 void boot_mark(const char *name);
@@ -109,7 +108,7 @@ extern unsigned _newlib_heap_size;
 int disableObjectsArray = 0;
 int uncached_mem = 0;
 int double_buffering = 0;
-int frame_skip = 0; // opt-in: frameSkip=1 in yyl.cfg
+int frame_skip_ignored; // yyl.cfg still sets frameSkip (frame skipping was removed)
 int fps_mode_ignored; // yyl.cfg still sets fpsMode/fps30 (removed)
 int replays = 0; // replays=1 in yyl.cfg: leave replay recording to the game's own option
 int rain_level = 1; // rain=1 cheap rain drawn by the loader (default), 0 none, 2 the game's rain
@@ -247,7 +246,8 @@ void loadConfig(const char *game) {
 			else if (strcmp("disableAudio", buffer) == 0) disableAudio = value;
 			else if (strcmp("uncachedMem", buffer) == 0) uncached_mem = value;
 			else if (strcmp("doubleBuffering", buffer) == 0) double_buffering = value;
-			else if (strcmp("frameSkip", buffer) == 0) frame_skip = value;
+			// frameSkip: the opt-in frame skipping, removed; logged once at install (patch_performance)
+			else if (strcmp("frameSkip", buffer) == 0) frame_skip_ignored = 1;
 			// fpsMode (old name fps30): the old 30 fps mode, removed; logged once at install (patch_performance). Its
 			// successor combat30 has a new key so these old lines don't decide its default.
 			else if (strcmp("fpsMode", buffer) == 0 || strcmp("fps30", buffer) == 0) { extern int fps_mode_ignored; fps_mode_ignored = 1; }
@@ -1079,8 +1079,7 @@ void main_loop() {
 			} else {
 				uint64_t prof_t1 = sceKernelGetProcessTimeWide();
 				hang_set_stage(HANG_STAGE_SWAP);
-				if (!katana_frame_skipped())
-					vglSwapBuffers(GL_FALSE);
+				vglSwapBuffers(GL_FALSE);
 				swap_only_us = (uint32_t)(sceKernelGetProcessTimeWide() - prof_t1);
 				hang_set_stage(HANG_STAGE_AFTER_SWAP);
 				katana_after_swap(swap_only_us, (uint32_t)(prof_t1 - prof_t0));
@@ -1326,12 +1325,6 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 			(float)vgl_scene_count / frames, vgl_scene_end_us / 1000.0f / frames, vgl_scene_begin_us / 1000.0f / frames);
 		vgl_scene_count = vgl_scene_end_us = vgl_scene_begin_us = 0;
 		glprof_report(frames);
-		if (frame_skip) {
-			extern const char *katana_guard_last();
-			debugPrintf("[GUARD] last blocking event: %s\n", katana_guard_last());
-			extern void katana_drawskip_dump(void);
-			katana_drawskip_dump();
-		}
 		katana_prof_report(frames);
 		callprof_report(frames);
 		evprof_report(frames);

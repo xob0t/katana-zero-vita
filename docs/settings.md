@@ -45,7 +45,7 @@ Defaults come from the variable definitions in the file listed. "Nonzero" means 
 | `rain` | 1 | 0, 1, 2; other values are ignored | 1 cheap rain drawn by the loader, 0 no rain, 2 the game's rain. If cheap rain can't install it falls back to 0. With 2, `katana.c` still runs each drop's Draw on alternate frames only (half the drops each frame). | `main.c`, `rain_cheap.c`, `katana.c` |
 | `replays` | 0 | 0, nonzero | 1 brings back the end-of-level replay and the death rewind. | `main.c`, `katana.c` |
 | `pauseStack` | 1 | 0, nonzero | 1 draws the paused room picture's 10 stacked layers (behind the pause and options menus) as one quad with a shader that applies the 10 blends; 0 the game's 10 draws. | `pause_stack.c` |
-| `dancerGlow` | 2 | 0 to 2 | The club dancers' rim glow. 2: the loader draws it with the game's lights, distances and alphas, one composited outline per side (`dancer_glow.c`; about 0.6 ms in club_0); 1: the game's own glow (`katana.c` also tries the exact native `clubber_native.c`, which declines while `visibility_native.c` has `inside_screen` hooked, the default, so the original GML draws it; in club_0 it also needs `roomLighting=1`); 0: no glow. | `katana.c`, `dancer_glow.c`, `clubber_native.c` |
+| `dancerGlow` | 2 | 0 to 2 | The club dancers' rim glow. 2: the loader draws it with the game's lights, distances and alphas, one composited outline per side (`dancer_glow.c`; about 0.6 ms in club_0); 1: the game's own glow (in club_0 it also needs `roomLighting=1`); 0: no glow. | `katana.c`, `dancer_glow.c` |
 | `bloomDefault` | 0 | 0, nonzero | 1: BLOOM FX defaults to on, as in the game. 0: off on a fresh install and after the game's option resets. A choice saved in the GRAPHICS menu is kept either way. | `option_defaults.c` |
 | `restartFxDefault` | 0 | 0, nonzero | The same for RESTART FX (the wave distortion of the restart transition). | `option_defaults.c` |
 | `rewindFxDefault` | 0 | 0, nonzero | The same for REWIND FX (the VHS look of the death rewind; nothing to see unless `replays=1`). | `option_defaults.c` |
@@ -67,12 +67,11 @@ Defaults come from the variable definitions in the file listed. "Nonzero" means 
 | `touchControls` | 0 | 0, 1, 2 or more | 0: no touch input, the touch controls' per-frame events stop, and the game starts in its controller mode (`global.gamepadMode`), so prompts show buttons from the first frame; the options menu leaves out CONTROLS, the touch controls' page (`katana_menu.c`). 1: touch works and the controls aren't drawn; the game starts in touch mode as on Android and switches on the first stick move. 2 or more: the controls are also drawn. | `main.c`, `touch_controls.c`, `gamepad_prompts.c`, `katana_menu.c` |
 | `stickDeadzone` | 20 | 0 to 90, clamped | Radial stick deadzone in percent of full tilt. 0 turns it off. | `gamepad.c` |
 | `audioGrain` | 512 | 64 to 4096, other values use 512; rounded down to a multiple of 64 | Buffer size in sample frames of the OpenSL ES audio thread (`patches/opensles.patch`). Smaller buffers underrun on a busy Vita and crackle. | `patches/opensles.patch` |
-| `frameSkip` | 0 | 0, nonzero | 1 turns on frame skipping: after a frame over 17.5 ms the next frame runs game logic but skips ordinary Draw events and is not shown. Never twice in a row. Story and UI objects always draw. | `main.c`, `katana.c` |
 | `debugMode` | 0 | 0, nonzero | 1 writes the log to `ux0:data/gms/shared/yyl.log` and turns on the debug request files, the profiling report and the freeze locator ([DEVELOPING.md](DEVELOPING.md#debug-files)). | `main.c` |
 | `memOverlay` | 0 | 0, nonzero | 1 shows YoYo Loader's memory overlay. Only with `debugMode=1`. | `main.c` |
 
-Settings marked visible in [changes.md](changes.md) change what you see or hear. `frameSkip` and
-`dynamicRes` also change the picture when they act; `renderRes` changes sharpness.
+Settings marked visible in [changes.md](changes.md) change what you see or hear. `dynamicRes` also changes the
+picture when it acts; `renderRes` changes sharpness.
 
 ## Upstream YoYo Loader settings
 
@@ -99,5 +98,6 @@ These come from YoYo Loader Vita and mostly matter for other games. All default 
 | Key | What happens |
 |---|---|
 | `fpsMode`, `fps30` | The old 30 fps mode (heavy rooms or every room) was removed; `combat30` is its successor, with a new key so old configs don't turn it on. The loader logs once that the key is ignored. |
+| `frameSkip` | The opt-in frame skipping was removed (Nov 2026). The loader logs once that the key is ignored. |
 
 Any other key is ignored without a message.
