@@ -6,7 +6,7 @@
 - dups: no global symbol is defined by two of the app's objects. The link uses --allow-multiple-definition
   (CMakeLists.txt, from upstream), which silently merges such symbols into one: two modules then share a variable
   (crt_ab_off in collision_round_trip.c and crt_native.c did, until Nov 2026). The objects are the ones the link
-  uses (CMakeFiles/YoYoLoader.dir/objects1.rsp), so run it after a build. Intended duplicates go in ALLOWED_DUPLICATES
+  uses (CMakeFiles/YoYoLoader.dir/objects1.rsp or link.txt), so run it after a build. Intended duplicates go in ALLOWED_DUPLICATES
   with the reason; there are none today (the app links without --allow-multiple-definition).
 - lto: every loader/loader/*.c (as the CMake glob, minus qoi_decoder.c) is compiled with -flto and the objects are
   partially linked (-r) with -Wlto-type-mismatch, which compares every extern declaration with its definition across
@@ -80,11 +80,22 @@ def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
 
+def linked_objects(build):
+    """The objects the app's link uses: objects1.rsp (Windows), else the link command in link.txt (Linux Makefiles)."""
+    d = build / "CMakeFiles" / "YoYoLoader.dir"
+    if (d / "objects1.rsp").exists():
+        words = (d / "objects1.rsp").read_text().split()
+    elif (d / "link.txt").exists():
+        words = (d / "link.txt").read_text().split()
+    else:
+        return []
+    return [build / w for w in words if w.startswith("CMakeFiles/YoYoLoader.dir/") and w.endswith((".obj", ".o"))]
+
+
 def check_dups(build):
-    rsp = build / "CMakeFiles" / "YoYoLoader.dir" / "objects1.rsp"
-    if not rsp.exists():
-        return [f"{rsp} missing: build first"]
-    objects = [build / o for o in rsp.read_text().split()]
+    objects = linked_objects(build)
+    if not objects:
+        return [f"no object list in {build / 'CMakeFiles' / 'YoYoLoader.dir'}: build first"]
     nm = tool("nm")
     owners = {}
     for obj in objects:
