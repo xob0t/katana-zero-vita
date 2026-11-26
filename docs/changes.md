@@ -64,6 +64,7 @@ original; settings go in `ux0:data/gms/katanazero/yyl.cfg`.
 
 | Option | What it does | Turn on with |
 |---|---|---|
+| Steadier lag mode | The game turns rim shading off while the frame rate is low and tries it again once it recovers. In chinatown_4 that try fails 4 times in the first ~10 s of every entry and restart, each time with a quarter second at ~30 fps, before the game gives up for the room. With this option the game gives up after the first failed try, and a room that failed once starts later entries and restarts with rim shading already off. Rim shading then stays off where the game would have shown it for a moment between the stutters; the rest of the room looks as in the game | `lagLatch=2` (`lagLatch=1`: without remembering the room) |
 | 30 fps in combat | Rooms with enemies or a boss (70 level rooms, the Headhunter, Kissyface, V, the bike chase and the psychiatrist fight) run at a steady 30 fps with the game's clock doubled, so they play at full speed instead of slowing down below 60. Every other room, the tutorial's scripted part and every cutscene stay at 60. At 30 the game reads input 30 times a second, and a few things the game counts in frames run at half speed in real time: the death slow-mo, the pause menu's effects and the lamps' sway. Decided when a room starts or restarts; a change applies from the next room | **GRAPHICS → 30 FPS IN COMBAT: ON**, or `combat30=1` |
 
 The ENEMY TIMING and TIMER & SLOW-MO choices are saved with the game options. The time limits change from the next

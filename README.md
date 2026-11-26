@@ -57,6 +57,10 @@ death slow-mo rules.
 Level time limits and the slow-mo meter are the PC version's too: the Android release makes the time limits 1.5 times
 as long and the meter twice as long. **GAME → TIMER & SLOW-MO: ANDROID** (or `timerSlowmo=1`) brings them back.
 
+`lagLatch=2` in `yyl.cfg` (off by default) removes the stutter at the start of chinatown_4 and after each restart
+there: the game stops retrying rim shading that the room can't hold at 60 fps. Visible: rim shading stays off where
+the game would have flashed it on for a moment between stutters.
+
 ## Building from source
 
 See [docs/BUILDING.md](docs/BUILDING.md): one `uv run build.py` command on Windows (no WSL) or Linux, how to

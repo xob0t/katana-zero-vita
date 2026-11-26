@@ -233,6 +233,7 @@ void loadConfig(const char *game) {
 			else if (strcmp("timerSlowmo", buffer) == 0) { extern int timer_slowmo_cfg; timer_slowmo_cfg = value; }
 			else if (strcmp("waveStrips", buffer) == 0) { extern int wave_strips; wave_strips = value; }
 			else if (strcmp("lampSway", buffer) == 0) { extern int lamp_sway; lamp_sway = value; }
+			else if (strcmp("lagLatch", buffer) == 0 && value >= 0 && value <= 2) { extern int lag_latch; lag_latch = value; }
 			else if (strcmp("bloomDefault", buffer) == 0) { extern int bloom_default; bloom_default = value; }
 			else if (strcmp("restartFxDefault", buffer) == 0) { extern int restart_fx_default; restart_fx_default = value; }
 			else if (strcmp("rewindFxDefault", buffer) == 0) { extern int rewind_fx_default; rewind_fx_default = value; }

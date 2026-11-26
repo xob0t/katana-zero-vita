@@ -1360,6 +1360,8 @@ static void patch_performance() {
 	// no light from the flamethrower's flames (flame_lights.c)
 	extern void hud_sparks_install(gml_func_entry *table), flame_lights_install(gml_func_entry *table);
 	hud_sparks_install(table);
+	extern void lag_latch_install(gml_func_entry *table);
+	lag_latch_install(table); // lagLatch (lag_latch.c), off by default
 	flame_lights_install(table);
 
 	katana_display_hook_draw();
