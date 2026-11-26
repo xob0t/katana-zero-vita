@@ -164,6 +164,7 @@ class ApkTests(unittest.TestCase):
                 (Path(dest) / name).touch()
             log("LiveArea ready")
 
+        self.make_apk({"assets/game.droid": b"data"})
         out, log, progress = self.root / "out.vpk", io.StringIO(), Mock()
         with (patch.object(prepare_apk, "prepare", prepare), patch.object(builder.make_livearea, "game_art", art),
               redirect_stdout(log)):
@@ -182,6 +183,59 @@ class ApkTests(unittest.TestCase):
             builder.build(self.apk, out, self.root, progress=progress)
         self.assertEqual(out.read_bytes(), previous)
         self.assertFalse(private[1].exists())
+
+    def make_bundle(self, path, apks):
+        with zipfile.ZipFile(path, "w") as bundle:
+            bundle.writestr("info.json", b"{}")
+            for name, entries in apks.items():
+                inner = io.BytesIO()
+                with zipfile.ZipFile(inner, "w") as z:
+                    for entry, data in entries.items():
+                        z.writestr(entry, data)
+                bundle.writestr(name, inner.getvalue(), compress_type=zipfile.ZIP_DEFLATED)
+
+    def test_apk_bundles_read_like_the_single_apk(self):
+        lib32, lib64 = prepare_apk.KEEP_LIB, "lib/arm64-v8a/libyoyo.so"
+        base = {prepare_apk.MANIFEST: b"base manifest", "assets/splash.png": b"splash", "classes.dex": b"dex"}
+        assets = {prepare_apk.MANIFEST: b"split manifest", "assets/assets/game.droid": b"game",
+                  "assets/assets/music.ogg": b"music"}
+        self.make_apk({"assets/splash.png": b"splash", "assets/assets/game.droid": b"game",
+                       "assets/assets/music.ogg": b"music"})
+        layouts = {
+            "apkm": {"base.apk": base, "split_DynamicAssetDeliveryFiles.apk": assets,
+                     "split_config.armeabi_v7a.apk": {prepare_apk.MANIFEST: b"abi", lib32: b"unknown runner"},
+                     "split_config.arm64_v8a.apk": {prepare_apk.MANIFEST: b"abi", lib64: b"64"},
+                     "split_config.en.apk": {prepare_apk.MANIFEST: b"en", "assets/assets/game.droid": b"wrong"}},
+            "xapk": {"com.netflix.NGP.KatanaZero.apk": base, "DynamicAssetDeliveryFiles.apk": assets,
+                     "config.armeabi_v7a.apk": {lib32: b"unknown runner"}},
+        }
+
+        def game_apk(src):
+            out = io.BytesIO()
+            with (patch.object(prepare_apk, "recompress_textures", lambda data, _: data),
+                  patch.object(patch_plt_calls, "patch", return_value=(b"patched", ["patched"])),
+                  redirect_stdout(io.StringIO())):
+                prepare_apk.prepare(src, out)
+            with zipfile.ZipFile(out) as z:
+                return {name: z.read(name) for name in z.namelist()}
+
+        single = game_apk(self.apk)
+        for kind, apks in layouts.items():
+            with self.subTest(kind=kind):
+                path = self.root / f"bundle.{kind}"
+                self.make_bundle(path, apks)
+                self.assertTrue(builder.inspect(path)["ok"])
+                built = game_apk(path)
+                self.assertEqual(built.pop(prepare_apk.MANIFEST), b"base manifest")
+                self.assertEqual(built, {k: v for k, v in single.items() if k != prepare_apk.MANIFEST})
+                self.assertEqual(extract_art.load_game_data(path), b"game")
+        builder._close()
+
+        path = self.root / "arm64.apkm"
+        self.make_bundle(path, {"base.apk": base, "split_config.arm64_v8a.apk": {lib64: b"64"}})
+        self.assertIn("armeabi-v7a", builder.inspect(path)["error"])
+        with self.assertRaisesRegex(ValueError, "armeabi-v7a"):
+            prepare_apk.prepare(path, io.BytesIO())
 
 
 class Symbol(dict):

@@ -13,11 +13,14 @@
 - redraws the Xbox button glyphs as PS Vita buttons (scripts/vita_glyphs.py; --xbox-glyphs keeps them)
 - rewrites the runner's PLT calls into direct branches (scripts/patch_plt_calls.py)
 
-Usage: python scripts/prepare_apk.py [--xbox-glyphs] <input.apk> <output.apk>
+- reads an APK bundle (APKM, XAPK, APKS) as one APK: base, armeabi-v7a split and asset splits (bundle_apks)
+
+Usage: python scripts/prepare_apk.py [--xbox-glyphs] <input.apk|.apkm|.xapk|.apks> <output.apk>
 """
 import hashlib
 import io
 import os
+import shutil
 import struct
 import sys
 import tempfile
@@ -187,12 +190,95 @@ def apk_entries(names, game):
     return entries
 
 
+def bundle_apks(names):
+    """For an APK bundle (APKM, XAPK or APKS: the split APKs of one app inside a ZIP), returns the inner APKs the port
+    reads, base first: the base APK, the armeabi-v7a split (the runner) and the asset splits (APKMirror's Katana ZERO
+    keeps game.droid in split_DynamicAssetDeliveryFiles.apk). The other ABI, language and density splits are left out.
+    Returns None if `names` is not a bundle."""
+    apks = [n for n in names if n.endswith(".apk") and "/" not in n]
+    if not apks or KEEP_LIB in names:
+        return None
+
+    def config(name):  # APKM and APKS: split_config.<x>.apk; XAPK: config.<x>.apk
+        return name.removeprefix("split_").startswith("config.")
+
+    base = "base.apk" if "base.apk" in apks else next((n for n in apks if not config(n) and not n.startswith("split_")),
+                                                       None)
+    picked = [base] if base else []
+    picked += [n for n in apks if config(n) and "armeabi_v7a" in n]
+    picked += [n for n in apks if not config(n) and n != base]
+    return picked
+
+
+def bundle_problem(names):
+    """Returns why an APK bundle with these entry names can't be used, or None."""
+    apks = bundle_apks(names)
+    if not any(n.removeprefix("split_").startswith("config.") and "armeabi_v7a" in n for n in apks):
+        return ("This APK bundle has no 32-bit ARM split (config.armeabi_v7a.apk), which holds the runner the Vita "
+                "needs. Download the bundle variant that includes armeabi-v7a.")
+    return None
+
+
+class ApkFiles:
+    """One APK, or the APKs of a bundle read as one: each entry comes from the first APK that has it (the base APK's
+    AndroidManifest.xml). Duplicates inside one APK stay in `names`, so apk_problem() still sees them."""
+
+    def __init__(self, paths):
+        self.paths = list(paths)
+        self.zips = [zipfile.ZipFile(p) for p in self.paths]
+        self.names, self.owner = [], {}
+        for z in self.zips:
+            for name in z.namelist():
+                if self.owner.setdefault(name, z) is z:
+                    self.names.append(name)
+
+    def open(self, name):
+        return self.owner[name].open(name)
+
+    def read(self, name):
+        return self.owner[name].read(name)
+
+    def path_of(self, name):
+        return self.paths[self.zips.index(self.owner[name])]
+
+    def close(self):
+        for z in self.zips:
+            z.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+
+def open_apk(path, work, log=print):
+    """Opens the APK or APK bundle at `path` as ApkFiles. A bundle's APKs are unpacked into the folder `work` first
+    (zipfile can't seek inside a compressed member), so `work` must stay until the ApkFiles is closed."""
+    with zipfile.ZipFile(path) as outer:
+        names = outer.namelist()
+        apks = bundle_apks(names)
+        if apks is None:
+            return ApkFiles([path])
+        problem = bundle_problem(names)
+        if problem:
+            raise ValueError(problem)
+        paths = []
+        for n, name in enumerate(apks):
+            dest = os.path.join(work, f"{n}_{name}")
+            with outer.open(name) as fi, open(dest, "wb") as fo:
+                shutil.copyfileobj(fi, fo, 1 << 22)
+            paths.append(dest)
+    log("APK bundle: reading " + ", ".join(apks))
+    return ApkFiles(paths)
+
+
 def apk_problem(names):
     """Returns why an APK with these entry names can't be used, or None. Shared with the web builder."""
     if KEEP_LIB not in names:
         if any(n.endswith(".apk") for n in names):
-            return ("This is an APK bundle (XAPK, APKM or APKS), split by device. Use a single APK that includes "
-                    "the 32-bit runner, lib/armeabi-v7a/libyoyo.so.")
+            return ("This APK bundle has no 32-bit ARM runner, lib/armeabi-v7a/libyoyo.so, in its base APK or "
+                    "armeabi-v7a split.")
         if "lib/arm64-v8a/libyoyo.so" in names:
             return ("This APK only has the 64-bit runner (lib/arm64-v8a); APKs copied off a 64-bit phone often do. "
                     "The Vita needs the 32-bit one, lib/armeabi-v7a/libyoyo.so, so use a universal APK.")
@@ -215,28 +301,35 @@ def apk_problem(names):
 
 
 def prepare(src, dst, vita_glyphs=True, *, log=print):
-    """Writes the loader's game.apk to `dst` (a path or a writable file) from the Android APK `src`."""
-    with zipfile.ZipFile(src) as zi:
-        names = zi.namelist()
-        problem = apk_problem(names)
-        if problem:
-            raise ValueError(problem)
-        entries = apk_entries(names, game_data_member(names))
-        with zipfile.ZipFile(dst, "w", zipfile.ZIP_STORED) as zo:
-            for out_name, in_name in sorted(entries.items()):
-                payload = zi.read(in_name)
-                if out_name == KEEP_LIB:
-                    payload = patch_runner(payload, log)
-                if out_name == FLAT_GAME:
-                    before = len(payload)
-                    payload = recompress_textures(payload, vita_glyphs)
-                    log(f"game.droid: {before / 1e6:.1f}MB -> {len(payload) / 1e6:.1f}MB (textures recompressed to LZ4"
-                        + (", Vita button glyphs)" if vita_glyphs else ")"))
-                if out_name in DEFLATED:
-                    zo.writestr(zipfile.ZipInfo(out_name, (2020, 1, 1, 0, 0, 0)), payload,
-                                compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
-                else:
-                    zo.writestr(zipfile.ZipInfo(out_name, (2020, 1, 1, 0, 0, 0)), payload)
+    """Writes the loader's game.apk to `dst` (a path or a writable file) from `src`: the path of an Android APK or APK
+    bundle, or an ApkFiles from open_apk()."""
+    if isinstance(src, ApkFiles):
+        return _prepare(src, dst, vita_glyphs, log)
+    with tempfile.TemporaryDirectory() as work, open_apk(src, work, log) as apk:
+        return _prepare(apk, dst, vita_glyphs, log)
+
+
+def _prepare(zi, dst, vita_glyphs, log):
+    names = zi.names
+    problem = apk_problem(names)
+    if problem:
+        raise ValueError(problem)
+    entries = apk_entries(names, game_data_member(names))
+    with zipfile.ZipFile(dst, "w", zipfile.ZIP_STORED) as zo:
+        for out_name, in_name in sorted(entries.items()):
+            payload = zi.read(in_name)
+            if out_name == KEEP_LIB:
+                payload = patch_runner(payload, log)
+            if out_name == FLAT_GAME:
+                before = len(payload)
+                payload = recompress_textures(payload, vita_glyphs)
+                log(f"game.droid: {before / 1e6:.1f}MB -> {len(payload) / 1e6:.1f}MB (textures recompressed to LZ4"
+                    + (", Vita button glyphs)" if vita_glyphs else ")"))
+            if out_name in DEFLATED:
+                zo.writestr(zipfile.ZipInfo(out_name, (2020, 1, 1, 0, 0, 0)), payload,
+                            compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+            else:
+                zo.writestr(zipfile.ZipInfo(out_name, (2020, 1, 1, 0, 0, 0)), payload)
     log(f"wrote {dst} ({len(entries)} entries)")
 
 

@@ -25,17 +25,52 @@ LIVEAREA = (
 )
 
 
-def inspect(path):
-    """Checks that `path` is an APK this port can use. Returns a dict for the page."""
+_opened = None  # (path, temporary folder, ApkFiles) of the last APK inspect() accepted, for build()
+
+
+def _close():
+    global _opened
+    if _opened:
+        _opened[2].close()
+        _opened[1].cleanup()
+        _opened = None
+
+
+def _open(path):
+    """ApkFiles for `path`; an APK bundle is unpacked once (into the same virtual filesystem) and kept for build()."""
+    global _opened
+    if _opened and _opened[0] == path:
+        return _opened[2]
+    _close()
+    work = tempfile.TemporaryDirectory()
     try:
-        with zipfile.ZipFile(path) as z:
-            problem = prepare_apk.apk_problem(z.namelist())
-            if problem:
-                return {"ok": False, "error": problem}
-            with z.open(prepare_apk.KEEP_LIB) as runner:
-                version = prepare_apk.runner_version(runner)
+        apk = prepare_apk.open_apk(path, work.name, log=lambda line: None)
+    except BaseException:
+        work.cleanup()
+        raise
+    _opened = (path, work, apk)
+    return apk
+
+
+def inspect(path):
+    """Checks that `path` is an APK or APK bundle (APKM, XAPK, APKS) this port can use. Returns a dict for the page."""
+    _close()  # the page mounts each chosen file at the same path, so never reuse an earlier one
+    try:
+        apk = _open(path)
+        problem = prepare_apk.apk_problem(apk.names)
+        if problem:
+            _close()
+            return {"ok": False, "error": problem}
+        with apk.open(prepare_apk.KEEP_LIB) as runner:
+            version = prepare_apk.runner_version(runner)
+        if apk.paths == [path]:
+            _close()  # a plain APK is cheap to open again; only an unpacked bundle is worth keeping
     except zipfile.BadZipFile:
+        _close()
         return {"ok": False, "error": "This file is not an APK."}
+    except ValueError as exc:
+        _close()
+        return {"ok": False, "error": str(exc)}
     result = {"ok": True, "version": version}
     if not version:
         result["warning"] = prepare_apk.UNKNOWN_RUNNER
@@ -43,7 +78,7 @@ def inspect(path):
 
 
 def build(apk, out, base, glyphs=True, log=print, progress=lambda value, label: None):
-    """Writes the VPK to `out` from the APK `apk` and the prebuilt loader files in the folder `base`."""
+    """Writes the VPK to `out` from the APK or APK bundle `apk` and the prebuilt loader files in the folder `base`."""
     if log is print:
         stdout = sys.stdout
         log = lambda line: print(line, file=stdout)
@@ -60,12 +95,23 @@ def build(apk, out, base, glyphs=True, log=print, progress=lambda value, label: 
             if line.startswith(prefix):
                 progress(value, label)
 
+    try:
+        _build(apk, out, base, glyphs, log, progress, stage_log)
+    finally:
+        _close()  # frees an unpacked bundle
+    progress(1.0, "Done")
+
+
+def _build(apk, out, base, glyphs, log, progress, stage_log):
     # Pyodide's output and stage files live in the same virtual filesystem.
     with tempfile.TemporaryDirectory(dir=os.path.dirname(out) or ".") as work:
         game_apk = os.path.join(work, "game.apk")
         progress(0.02, "Recompressing the textures")
-        prepare_apk.prepare(apk, game_apk, glyphs, log=stage_log)
-        make_livearea.game_art(apk, work, log=stage_log)
+        files_in = _open(apk)
+        prepare_apk.prepare(files_in, game_apk, glyphs, log=stage_log)
+        # the art reads game.droid from the (inner) APK that holds it
+        game = prepare_apk.game_data_member(files_in.names)
+        make_livearea.game_art(files_in.path_of(game) if game else apk, work, log=stage_log)
         files = [(os.path.join(base, src), dst) for src, dst in VPK_FILES]
         files += [(os.path.join(work, src), dst) for src, dst in LIVEAREA]
         files.append((game_apk, "game.apk"))
@@ -79,4 +125,3 @@ def build(apk, out, base, glyphs=True, log=print, progress=lambda value, label: 
         size = os.path.getsize(staged_vpk)
         os.replace(staged_vpk, out)
         log(f"{os.path.basename(out)}: {size / 1e6:.0f} MB")
-    progress(1.0, "Done")
