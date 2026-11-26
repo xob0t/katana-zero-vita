@@ -168,6 +168,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Feature | Files | yyl.cfg | Off-switch | Kind |
 |---|---|---|---|---|
 | vblank pacing; the runner's `Timing_Sleep` skips frame-sized waits | `main.c`, `katana.c` | none | `exp_sleeppace` | Pacing |
+| 30 fps in combat rooms, game clock doubled (opt-in) | `combat30.c`, `katana_menu.c` (GRAPHICS row), `enemy_half_rate.c`, `fx_rate.c`, `runner_fast.c` | `combat30` | the setting or the menu (`exp_c30anim0`, `exp_c30alarm0`, `exp_c30freeze0`, `exp_c30timer0`, `exp_c30text0`, `exp_c30slowmo0`: one conversion off; `exp_c30menu0`: no row; `exp_c30all`, `exp_c30trace`) | Gameplay timing change when on |
 | Game thread alone on core 1 | `main.c` | none | `exp_gamecore0` (core 0) | Threads |
 | Frame skip (opt-in) | `katana.c` | `frameSkip` | | Visible when on |
 | Same-sound limit, voice limit | `sound_limit.c`, `katana.c` | `sameSoundLimit`, `maxVoices` | | Audible |

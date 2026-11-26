@@ -31,6 +31,7 @@ Defaults come from the variable definitions in the file listed. "Nonzero" means 
 |---|---|---|---|---|
 | `enemyHalfRate` | 1 | 0, nonzero = 1 | Enemy Steps every other tick. The GAME menu's ENEMY AI row overrides this once a player picks FULL RATE or HALF RATE there (the choice is saved in the game options). | `enemy_half_rate.c`, `katana_menu.c` |
 | `enemyTiming` | 0 | 0, nonzero | 1 plays the Android release's enemy timing and combat rules: later first attacks and shots, 4 frames longer melee cooldowns, slashes through temporary doors, door-opening slashes deadly 2-3 frames longer, smoked enemies falling 3 more frames, the death slow-mo starting after the hit freeze and ramping faster. 0 the PC version's. The GAME menu's ENEMY TIMING row overrides this once a player picks PC or ANDROID there (saved in the game options). | `enemy_timing.c`, `pc_rules.c`, `katana_menu.c` |
+| `combat30` | 0 | 0, nonzero | 1 runs rooms with enemies or a boss at 30 ticks a second with the game's clock doubled (30 FPS IN COMBAT). The GRAPHICS menu's 30 FPS IN COMBAT row overrides this once a player saves it there (the choice is kept in `assets/combat30.cfg`, next to the saves). Unrelated to the removed `fpsMode`/`fps30`, which stay ignored. | `combat30.c`, `katana_menu.c` |
 | `timerSlowmo` | 0 | 0, nonzero | 1 keeps the Android release's level time limits (1.5 times the PC ones) and slow-mo meter (twice the PC one). 0 the PC version's. The GAME menu's TIMER & SLOW-MO row overrides this once a player picks PC or ANDROID there (saved in the game options). | `timer_slowmo.c`, `katana_menu.c` |
 | `smokeClouds` | 2 | 1 to 3; below 1 counts as 1, above 3 as 3 | One smoke cloud in N is drawn, larger. Needs the native smoke Draw: with `exp_smokedraw0` every cloud is drawn as in the original. | `smokedraw_native.c` |
 | `trailLights` | 0 | 0, nonzero | 1 keeps the light tint on roll dust and afterimages everywhere. | `fog_trail.c`, `trail_lights.c` |
@@ -97,6 +98,6 @@ These come from YoYo Loader Vita and mostly matter for other games. All default 
 
 | Key | What happens |
 |---|---|
-| `fpsMode`, `fps30` | The 30 fps mode was removed. The loader logs once that the key is ignored. |
+| `fpsMode`, `fps30` | The old 30 fps mode (heavy rooms or every room) was removed; `combat30` is its successor, with a new key so old configs don't turn it on. The loader logs once that the key is ignored. |
 
 Any other key is ignored without a message.

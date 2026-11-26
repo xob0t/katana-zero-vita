@@ -30,6 +30,9 @@
  *   Animation End destroys the ember): image_speed is divided by N. Its own motion (x += hsp * fr) would move in
  *   jumps every N ticks; the jump is spread over the N ticks with built-in hspeed/vspeed, which the runner applies
  *   after the Step (the ember doesn't use built-in motion otherwise).
+ * At 30 ticks/s (30 FPS IN COMBAT, combat30.c) a tick already covers two 60 Hz ticks (fr doubled), so the period
+ * there is N/2 rounded up: the same update rate in real time. The animation_code entry hook also carries that mode's
+ * player animation fr (combat30_animation_code).
  * Debug counters print with the profiler as [FXRATE].
  */
 
@@ -54,6 +57,13 @@ static event_func orig_smoke_step, orig_corpsefire_step;
 static int fx_anim_repeat;
 static double fx_anim_fr;
 static gml_script_fn orig_animation_code;
+int fx_animation_code_hooked; // combat30.c uses this entry hook on animation_code instead of its own
+
+// The period: N, or N/2 rounded up at 30 ticks/s
+static int fx_period(void) {
+	extern int c30_active;
+	return c30_active ? (fx_rate_n + 1) / 2 : fx_rate_n;
+}
 
 unsigned fx_smoke_full, fx_smoke_update, fx_smoke_skip, fx_smoke_contacts, fx_anim_calls, fx_ember_update, fx_ember_skip;
 
@@ -99,8 +109,9 @@ static void fx_restore_fr(double real, int n) {
 // animation_finished is true if any run finished
 static void *fx_animation_code(void *self, void *other, void *result, int argc, void **args) {
 	gml_script_fn orig = orig_animation_code;
+	extern void *combat30_animation_code(gml_script_fn orig, void *self, void *other, void *result, int argc, void **args);
 	if (fx_anim_repeat <= 1)
-		return orig(self, other, result, argc, args);
+		return combat30_animation_code(orig, self, other, result, argc, args);
 	int n = fx_anim_repeat;
 	fx_anim_repeat = 0; // nothing inside runs a wrapped Step, but don't recurse either way
 	gml_rvalue *fr = global_var(var_fr);
@@ -680,7 +691,7 @@ static void smoke_begin(void *self, void *other) {
 }
 
 static void smoke_step(void *self, void *other) {
-	int n = fx_rate_n;
+	int n = fx_period();
 	uint32_t tick = *frame_count, *last = NULL;
 	gml_rvalue *v;
 	if (n <= 1 || !(v = fx_var(self, var_in_place)) || v->val == 0 || !(last = smoke_last(self, tick))) {
@@ -728,7 +739,7 @@ static void smoke_step(void *self, void *other) {
 }
 
 static void corpsefire_step(void *self, void *other) {
-	int n = fx_rate_n;
+	int n = fx_period();
 	if (n <= 1) {
 		orig_corpsefire_step(self, other);
 		return;
@@ -845,6 +856,7 @@ void fx_rate_install(gml_func_entry *table) {
 			fx_current_function && fx_fn_place_meeting && fx_object_find && current_room)
 		orig_animation_code = entry_hook(so_symbol(&yoyoloader_mod,
 			"_Z25gml_Script_animation_codeP9CInstanceS0_R8YYRValueiPPS1_"), fx_animation_code);
+	fx_animation_code_hooked = orig_animation_code != NULL;
 	if (orig_animation_code)
 		smoke = !!(orig_smoke_step = gml_replace(table, "gml_Object_obj_smokecloud_Step_0", smoke_step));
 	if (var_fr && gv_image_speed && sv_image_speed && gv_x && gv_y && sv_x && sv_y && sv_hspeed && sv_vspeed &&

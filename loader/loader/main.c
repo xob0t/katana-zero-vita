@@ -248,8 +248,12 @@ void loadConfig(const char *game) {
 			else if (strcmp("uncachedMem", buffer) == 0) uncached_mem = value;
 			else if (strcmp("doubleBuffering", buffer) == 0) double_buffering = value;
 			else if (strcmp("frameSkip", buffer) == 0) frame_skip = value;
-			// fpsMode (old name fps30): the 30 fps mode was removed; logged once at install (patch_performance)
+			// fpsMode (old name fps30): the old 30 fps mode, removed; logged once at install (patch_performance). Its
+			// successor combat30 has a new key so these old lines don't decide its default.
 			else if (strcmp("fpsMode", buffer) == 0 || strcmp("fps30", buffer) == 0) { extern int fps_mode_ignored; fps_mode_ignored = 1; }
+			// combat30: 1 combat rooms at 30 ticks/s with the game's clock doubled (0, off, by default); the GRAPHICS row
+			// 30 FPS IN COMBAT overrides it once saved
+			else if (strcmp("combat30", buffer) == 0) { extern int combat30_cfg; combat30_cfg = value ? 1 : 0; }
 			// enemyHalfRate: 1 enemy AI every other tick at 60 fps (default), 0 every tick (the ENEMY AI menu overrides it)
 			else if (strcmp("enemyHalfRate", buffer) == 0) { extern int enemy_half_rate; enemy_half_rate = value ? 1 : 0; }
 			else if (strcmp("stickDeadzone", buffer) == 0) { extern double stick_deadzone; stick_deadzone = (value < 0 ? 0 : value > 90 ? 90 : value) / 100.0; }
