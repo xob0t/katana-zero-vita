@@ -119,8 +119,8 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Bounding-box fast path | `collision_native.c` | none | `exp_nativebbox0` | | Exact native |
 | Runner per-instance work: event dispatch through cached events, movement of instances that don't move skipped, `Instance_Animate` native | `runner_fast.c` | none | `exp_runnerfast0`; `exp_rfdispatch0`, `exp_rfmove0`, `exp_rfanim0` | `exp_runnerfastverify`, `exp_rfab` (`exp_rfabdispatch`, `exp_rfabmove`, `exp_rfabanim`), `exp_rfprof` | Exact |
 | Tile and door glow fades at rest | `glow_rest.c` | none | `exp_glowrest0` | `exp_glowverify` | Exact skip |
-| Collision tree updates of instances back where they were skipped | `collision_round_trip.c` | `collisionRoundTrip` | `collisionRoundTrip=0` | `exp_crtverify` (shadow trees; also read by `crt_native.c`), `exp_crtverifyfault` (negative control), `exp_crtab` (also read by `crt_native.c`), `exp_crtprof`, `exp_crtres` + `exp_crtstat` (per-object research) | Near-exact: same rectangles, tree order differs |
-| Pause screen and options menu CRT rows (`draw_crt_surface`, `draw_crt_image`) | `crt_native.c` | none | `exp_crtnative0` | `exp_crtverify`, `exp_crtab` | Exact native |
+| Collision tree updates of instances back where they were skipped | `collision_round_trip.c` | `collisionRoundTrip` | `collisionRoundTrip=0` | `exp_crtverify` (shadow trees), `exp_crtverifyfault` (negative control), `exp_crtab`, `exp_crtprof`, `exp_crtres` + `exp_crtstat` (per-object research) | Near-exact: same rectangles, tree order differs |
+| Pause screen and options menu CRT rows (`draw_crt_surface`, `draw_crt_image`) | `crt_native.c` | none | `exp_crtnative0` | `exp_crtfxverify`, `exp_crtfxab` (until Nov 2026 `exp_crtverify` / `exp_crtab`, which also switched `collision_round_trip.c`'s) | Exact native |
 | Paused room's tile layers, covered by the pause background's opaque rectangle, not drawn | `pause_bg.c` (`page_evict.c` keeps their pages) | none | `exp_pausetiles0` | `exp_pausetilesverify`, `exp_pausetilesab` | Exact skip |
 | Tile layer draw (`DrawLayerTilemapElement`): same vertices, UVs from a table instead of a division per tile | `tilemap_native.c` | none | `exp_tilenative0` | `exp_tilenativeverify`, `exp_tilenativeverifyfault`, `exp_tilenativeab`, `exp_tilenativeprof` | Exact native |
 | Tile layers as 4 vertices per tile plus a static index buffer (the runner's 6 repeat 2 of them bit for bit), drawn with `glDrawRangeElements` | `tilemap_native.c` (glDrawArrays/glBindBuffer wrapped through dlsym in `main.c`) | none | `exp_tile4v0` | `exp_tile4verify` (with `exp_tilenativeverify`; `exp_tilenativeverifyfault` as control), `exp_tile4ab` | Exact (same triangles and vertex values) |
@@ -310,8 +310,9 @@ Rules:
      the call order is the paused-tile skip, then `tilemap_native.c`, then the runner. `tilemap_native_install` (after
      `pause_bg_install`) takes the entry itself only when pause_bg didn't (`exp_pausetiles0`).
    - `place_native.c` entry-hooks `Command_InstancePlace` and veneers its `RTree::Search` call. `exp_crtverify`
-     (`collision_round_trip.c`, installed earlier) entry-hooks the same function, so with it the native command
-     doesn't install (only the candidate test). The native calls `ShouldUseFastCollision`, `UpdateTree`,
+     (`collision_round_trip.c`'s shadow-tree verify, installed earlier) entry-hooks the same function to see every
+     first-hit query, so with it the native command doesn't install (only the candidate test): run the shadow-tree
+     verify and `exp_placeverify` in separate boots. The CRT rows' verify is `exp_crtfxverify` and doesn't do this. The native calls `ShouldUseFastCollision`, `UpdateTree`,
      `Compute_BoundingBox(true)`, `CollisionMarkDirty` and `GetCollisionTreeForDomain` through their entries, so hooks
      on those still run; it reproduces `SetPosition`, `SkeletonAnimation` and `Compute_BoundingBox(false)` and checks
      their code at install, so an entry hook on `SetPosition` makes it decline.
@@ -343,6 +344,11 @@ Check every build: grep the output case-insensitively for `error` and require th
 deletes the old `eboot.bin` and VPK before building, so a failed build leaves none; a plain `cmake --build` leaves the
 old ones in place and every later test runs old code.
 
+Port files (every `.c` but the upstream ones listed at the top) compile with
+`-Werror=implicit-function-declaration -Werror=return-type -Werror=incompatible-pointer-types -Werror=int-conversion
+-Werror=strict-aliasing` (`PORT_SOURCES` in `loader/CMakeLists.txt`). CI builds in the `atamanenko/vitasdk-softfp`
+container pinned by digest in `.github/workflows/web-builder.yml`.
+
 Sources: `loader/CMakeLists.txt` compiles every `loader/loader/*.c` (a `file(GLOB ... CONFIGURE_DEPENDS)`), minus
 `qoi_decoder.c`, which belongs to the selector build. A new non-exact `.c` file needs no CMake edit: `build.py`
 re-runs the configure step, and `CONFIGURE_DEPENDS` re-checks the glob on a plain `cmake --build`. A new exact
@@ -357,6 +363,7 @@ own lines there; keep their flags as they are.
 | Python unit tests (`tests/test_*.py`: build script, APK tooling, `vita_common.py`) | `uv run python -m unittest discover -s tests` | yes |
 | `tests/test_settings_docs.py`: every key `loadConfig` reads is in settings.md and the reverse, documented defaults equal the variables' initialisers, `changes.md`'s keys exist | the same | yes |
 | `tests/test_exp_flags.py`: `docs/exp-flags.md` is current, one file per switch, every switch named in this file | the same | yes |
+| `scripts/check_loader.py`: no global symbol defined in two objects (the link's `--allow-multiple-definition` would merge them), extern declarations match their definitions (LTO partial link with `-Wlto-type-mismatch`), the natives' host test builds compile | `python scripts/check_loader.py` after a build (Vita toolchain) | yes, in the build job |
 | `tests/asyncsave_test.c`: the background save writer on the host (needs glibc) | `gcc -O1 -g -Wall -pthread -Iloader/loader tests/asyncsave_test.c -o asyncsave-test && ./asyncsave-test`; also with `-fsanitize=thread` and `-fsanitize=address,undefined` | yes, plain and under both sanitizers |
 | `tests/loader_core.c`: save file replacement, `yyl.cfg` parsing, ELF loading, shared APK reads | see its header; needs `libyoyo.so` from the 1.1.10 APK | no |
 
@@ -391,6 +398,7 @@ on `~/.t3/vita-device.lock` for sessions that share one console. The scripts don
 | `extract_art.py`, `make_livearea.py`, `vita_glyphs.py` | Art from the APK: sprites, LiveArea images, button glyphs. |
 | `env.sh` | Sets up the toolchain environment in Git Bash for running cmake by hand. |
 | `exp_index.py` | Writes `docs/exp-flags.md`, the index of `exp_*` switches (`--check` only compares). |
+| `check_loader.py` | The build checks above: duplicate globals, extern types, test builds. |
 
 The test saves in `work/testsaves/` are not in the repository either.
 

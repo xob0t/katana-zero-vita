@@ -41,9 +41,6 @@ SHARED = {
     "lettertime": ("letter_glyph.c", {"katana.c", "letter_glyph.c"}),
     # one switch times both halves of the recolor work
     "recolorlightsprof": ("recolor_lights.c", {"particle_lights.c", "recolor_lights.c"}),
-    # crt_native.c (the CRT rows) reuses collision_round_trip.c's names; separated in the build-checks PR
-    "crtab": ("collision_round_trip.c", {"collision_round_trip.c", "crt_native.c"}),
-    "crtverify": ("collision_round_trip.c", {"collision_round_trip.c", "crt_native.c"}),
 }
 
 

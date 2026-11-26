@@ -13,4 +13,7 @@ uintptr_t *so_got_slot(so_module *, const char *);
 so_hook hook_addr(uintptr_t, uintptr_t);
 void kuKernelCpuUnrestrictedMemcpy(void *, const void *, size_t);
 void kuKernelFlushCaches(void *, size_t);
+extern int debugMode;
+int exp_flag(const char *name);
+int debugPrintf(const char *fmt, ...);
 #endif

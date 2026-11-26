@@ -46,10 +46,12 @@
  * depend on it); nothing else runs during the loop. Doubles round as in the runner: the file is compiled with
  * -ffp-contract=off (loader/exact_sources.cmake).
  *
- * exp_crtnative0 runs the scripts as before. exp_crtab runs them as before in every other profiling report window
- * (A/B in one run). exp_crtverify (debug) runs the native in a recording mode (no draws), puts the random state and
+ * exp_crtnative0 runs the scripts as before. exp_crtfxab runs them as before in every other profiling report window
+ * (A/B in one run). exp_crtfxverify (debug) runs the native in a recording mode (no draws), puts the random state and
  * the variables back, runs the original with its part draws and draw_set_alpha calls recorded, and compares the two
- * lists, the random state and the variables after the call. Counters print with the profiler as [CRTFX].
+ * lists, the random state and the variables after the call. Counters print with the profiler as [CRTFX]. (Until Nov
+ * 2026 these two were exp_crtab / exp_crtverify, which also switched collision_round_trip.c's A/B and shadow-tree
+ * verify, and the two files shared one crt_ab_off.)
  */
 
 #include <vitasdk.h>
@@ -110,7 +112,7 @@ static RV offsets[10], colours[4], line_colours[2];
 static RV *offset_args[10], *colour_args[4], *line_colour_args[2];
 
 static int installed, ab_mode, verify;
-int crt_ab_off; // exp_crtab: this report window runs the original scripts
+static int crt_fx_ab_off; // exp_crtfxab: this report window runs the original scripts
 unsigned crt_calls[2], crt_rows[2], crt_fallbacks[2], crt_lines;
 static unsigned fail_reason[8];
 static unsigned verify_calls, verify_mismatches, verify_ops;
@@ -317,7 +319,7 @@ static int vars_ready(void) {
 }
 
 static int surface_admit(void *self, void *other, RV *result, int argc, RV **args) {
-	if (!installed || !vars_ready() || (ab_mode && crt_ab_off) || argc != 8 || !args || !result)
+	if (!installed || !vars_ready() || (ab_mode && crt_fx_ab_off) || argc != 8 || !args || !result)
 		return fail(0);
 	for (int i = 1; i < 7; i++)
 		if (!real_arg(args[i]) || args[i] == result) {
@@ -409,7 +411,7 @@ static int table_ready(void) {
 static int image_admit(void *self, void *other, RV *result, int argc, RV **args) {
 	if (!table_ready())
 		return fail(4);
-	if (!installed || !vars_ready() || (ab_mode && crt_ab_off) || argc != 4 || !args || !result)
+	if (!installed || !vars_ready() || (ab_mode && crt_fx_ab_off) || argc != 4 || !args || !result)
 		return fail(4);
 	for (int i = 1; i < 4; i++)
 		if (!real_arg(args[i]) || args[i] == result) {
@@ -600,14 +602,14 @@ void crt_native_report(int frames) {
 			"%.1f/%.1f per frame%s | reasons %u %u %u %u %u %u %u %u\n", (float)crt_calls[0] / frames,
 			(float)crt_rows[0] / frames, (float)crt_calls[1] / frames, (float)crt_rows[1] / frames,
 			(float)crt_lines / frames, (float)crt_fallbacks[0] / frames, (float)crt_fallbacks[1] / frames,
-			ab_mode && crt_ab_off ? " (A/B: original this window)" : "", fail_reason[0], fail_reason[1],
+			ab_mode && crt_fx_ab_off ? " (A/B: original this window)" : "", fail_reason[0], fail_reason[1],
 			fail_reason[2], fail_reason[3], fail_reason[4], fail_reason[5], fail_reason[6], fail_reason[7]);
 	if (verify)
 		debugPrintf("[CRTFX] verify: %u calls compared, %u draw ops, %u mismatches\n", verify_calls, verify_ops,
 			verify_mismatches);
 	crt_calls[0] = crt_calls[1] = crt_rows[0] = crt_rows[1] = crt_fallbacks[0] = crt_fallbacks[1] = crt_lines = 0;
 	if (ab_mode)
-		crt_ab_off = !crt_ab_off;
+		crt_fx_ab_off = !crt_fx_ab_off;
 }
 
 void crt_native_install(void) {
@@ -664,8 +666,8 @@ void crt_native_install(void) {
 	line_colour_args[0] = &line_colours[0];
 	line_colour_args[1] = &line_colours[1];
 
-	verify = debugMode && exp_flag("crtverify");
-	ab_mode = debugMode && exp_flag("crtab");
+	verify = debugMode && exp_flag("crtfxverify");
+	ab_mode = debugMode && exp_flag("crtfxab");
 	if (verify) {
 		orig_surface_part_hook = entry_hook((uintptr_t)surface_part, hook_surface_part);
 		orig_set_alpha_hook = entry_hook((uintptr_t)set_alpha, hook_set_alpha);

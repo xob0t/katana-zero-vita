@@ -50,7 +50,9 @@
 #include <stddef.h>
 #include <string.h>
 #include <math.h>
-#ifndef PARTICLE_NATIVE_TEST
+#ifdef PARTICLE_NATIVE_TEST
+#include "collision_stub.h" // tools/verify
+#else
 #include <kubridge.h>
 #include "main.h"
 #include "so_util.h"
