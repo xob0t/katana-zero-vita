@@ -110,6 +110,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | Dossier burn natives, fewer decorative circles | `dossier_native.c` | `dossierCircles` | `exp_dossiernative0`; `exp_dossierexact0` (keeps part) | `exp_dossiercleanup`, `exp_dossierverify` | Exact; circles visible |
 | Wavy dialogue backgrounds | `wavy_native.c` | `waveStrips` | `exp_wavynative0` | `exp_wavyverify`, `exp_waveab`, `exp_waveprof` | Exact native; strips visible |
 | Ceiling laser beams | `laser_native.c` | none | `exp_lasernative0`; `exp_laserfast0` (temporary array as before) | `exp_laserab`, `exp_laserprof` | Exact native |
+| obj_ceiling_laser Step for lasers that don't move: the runner's calls without the event's lookups; a hit puts back what it wrote and runs the original | `hazard_native.c` | none | `exp_hzlaser0` | `exp_hzlaserverify`, `exp_hzlaserfault` (negative control), `exp_hzlaserab`, `exp_hzlaserprof` | Exact native |
 | Laser deaths in fewer slices | `katana.c` (`dissolve_install`) | `dissolveChunkScale` | none | | Visible |
 | Minecart master and rails | `minecart_native.c` | none | `exp_minecartnative0` | | Exact native |
 | Flashlight mask culling | `flash_mask.c` | none | `exp_flashmask0` | | Exact native |

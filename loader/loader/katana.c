@@ -1275,6 +1275,13 @@ static void patch_performance() {
 		extern int flashlight_native_install(gml_func_entry *table);
 		debugPrintf("native flashlight event: %s\n", flashlight_native_install(table) ? "installed" : "NOT installed");
 	}
+	// obj_ceiling_laser Step for lasers that don't move (exact; hazard_native.c): the runner's own calls without the
+	// event's lookups and temporaries; a hit puts back what it wrote and runs the original. bunker2_3 -0.28 ms/frame.
+	// exp_hzlaser0: the original event.
+	{
+		extern int hazard_native_install(gml_func_entry *table);
+		debugPrintf("native ceiling laser Step: %s\n", hazard_native_install(table) ? "installed" : exp_flag("hzlaser0") ? "off (exp_hzlaser0)" : "NOT installed");
+	}
 	if (!exp_flag("flashmask0")) {
 		extern int flash_mask_install(void *(*rx_alloc)(size_t));
 		debugPrintf("flashlight mask culling: %s\n", flash_mask_install(katana_rx_alloc) ? "installed" : "NOT installed");
