@@ -2325,6 +2325,11 @@ static DIR *opendir_hook(const char *path) {
 
 // exit() from the runner: saves still in the background writer's queue go to the card first
 static void exit_hook(int status) {
+	extern int bw_on;
+	if (bw_on) {
+		debugPrintf("[BOOTWATCH] exit(%d) called by %p\n", status, __builtin_return_address(0));
+		debug_flush();
+	}
 	asyncsave_flush(3000, "exit");
 	exit(status);
 }

@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "main.h"
 #include "so_util.h"
@@ -212,11 +213,21 @@ static int boot_watch_main(SceSize args, void *argp) {
 }
 
 // The game thread, after yyl.cfg is read
+// atexit: a process that ends through newlib's exit() (not abort_hook, which logs) leaves a line and the buffered log
+static void bw_atexit(void) {
+	if (__atomic_load_n(&setup_ended, __ATOMIC_ACQUIRE))
+		return;
+	debugPrintf("[BOOTWATCH] process exiting before the main loop\n");
+	extern void debug_flush(void);
+	debug_flush();
+}
+
 void boot_watch_start(int cpu_mask) {
 	if (!exp_flag("bootwatch"))
 		return;
 	bw_game = sceKernelGetThreadId();
 	bw_on = 1;
+	atexit(bw_atexit);
 	SceUID th = sceKernelCreateThread("Boot Watch", boot_watch_main, 0x10000100 - 10, 0x4000, 0, cpu_mask, NULL);
 	if (th < 0 || sceKernelStartThread(th, 0, NULL) < 0) {
 		debugPrintf("boot watch: could not start (0x%x)\n", th);
