@@ -181,6 +181,8 @@ static void report(unsigned still) {
 	flush_out();
 }
 
+static SceAppMgrAppState app_state;
+
 static int boot_watch_main(SceSize args, void *argp) {
 	uint32_t last = __atomic_load_n(&debug_printf_calls, __ATOMIC_ACQUIRE);
 	unsigned still = 0;
@@ -198,6 +200,16 @@ static int boot_watch_main(SceSize args, void *argp) {
 			still = 0;
 		}
 		last_sys = sys;
+		// The app's state as the system sees it (event counts, system UI on top): logged when it changes
+		SceAppMgrAppState st;
+		memset(&st, 0, sizeof(st));
+		if (_sceAppMgrGetAppState(&st, sizeof(st), 0x03570011) >= 0 && memcmp(&st, &app_state, 16)) {
+			say("app state: system events %u, app events %u, system UI on top %d, next words %08x %08x\n",
+				st.systemEventNum, st.appEventNum, st.isSystemUiOverlaid, ((uint32_t *)st.reserved)[0],
+				((uint32_t *)st.reserved)[1]);
+			flush_out();
+			app_state = st;
+		}
 		uint32_t now = __atomic_load_n(&debug_printf_calls, __ATOMIC_ACQUIRE);
 		if (now != last) {
 			if (reported) {
