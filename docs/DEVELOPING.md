@@ -219,6 +219,7 @@ Files are in `loader/loader/`. "Exact" means bit-identical game state and draws,
 | PLT call counter | `callprof.c` | `shared/profile` and `shared/callprof` | most called functions |
 | GL call profiler | `glprof.c` | `shared/profile` | GL calls and time |
 | Slow-frame log | `main.c` | `exp_spikes` (threshold in ms, default 20) | `[SPIKE]` lines |
+| Log line formatting | `log_format.c` (fast path of `debugPrintf` in `main.c`; `vsnprintf` for the rest) | `exp_logformatverify` (also formats every fast-path line with `vsnprintf` and logs that text on a mismatch) | `[LOGFORMAT]` line in the report |
 | Allocation profilers | `main.c`, `gcalloc.c` | `exp_allocprof`, `exp_gcalloc` | `[GCALLOC]` and allocation lines |
 | Freeze locator | `hang_watch.c` | on in debugMode; `exp_hangwatch0` off, `exp_hangdump` core dump after 30 s | `hang.log` |
 | Hook registry | `hooks.c` | always | one `[HOOKS]` line at startup |

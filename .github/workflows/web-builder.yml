@@ -93,6 +93,13 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: log_format
+        # debugPrintf's fast formatter vs glibc's snprintf (byte-identical output, fast path not vacuous)
+        run: |
+          gcc -O1 -g -Wall -fsanitize=address,undefined -fno-sanitize-recover=all -Iloader/loader \
+            tests/log_format_test.c -o log-format-test -lm
+          ./log-format-test
+
   deploy:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: build

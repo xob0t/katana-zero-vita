@@ -468,7 +468,9 @@ static void ABI fast_animate(char *inst) {
 
 // --- install ---
 
-typedef struct { const char *name; uint32_t elf, w0, w1; uintptr_t addr; } helper;
+// got: the helper's PLT GOT slot, looked up once (got_done). so_got_slot walks the PLT relocations with strcmp and bumps
+// so_hook_generation, so a lookup in every report re-armed the report's check below and cost ~7 ms per report.
+typedef struct { const char *name; uint32_t elf, w0, w1; uintptr_t addr; uintptr_t *got; int got_done; } helper;
 // The runner functions dispatch bypasses: they must be the 1.1.10 code and not hooked by anyone
 static helper bypassed[] = {
 	{"_Z13Perform_EventP9CInstanceS0_ii", 0xf363f8, 0xe92d4df0, 0xe28db018, 0},
@@ -488,8 +490,11 @@ static int bypassed_intact(uintptr_t bias) {
 			h->addr = so_symbol(&yoyoloader_mod, h->name);
 		if (!h->addr || h->addr != bias + h->elf || U32(h->addr, 0) != h->w0 || U32(h->addr, 4) != h->w1)
 			return 0;
-		uintptr_t *got = so_got_slot(&yoyoloader_mod, h->name);
-		if (got && *got != h->addr)
+		if (!h->got_done) {
+			h->got = so_got_slot(&yoyoloader_mod, h->name);
+			h->got_done = 1;
+		}
+		if (h->got && *h->got != h->addr)
 			return 0;
 	}
 	return 1;

@@ -55,6 +55,7 @@
 #include "sha1.h"
 #include "unzip.h"
 #include "yyl_config.h"
+#include "log_format.h"
 
 #include "openal_patch.h"
 
@@ -447,6 +448,25 @@ int debug_try_append(const char *text, int len) {
 	return ok;
 }
 
+// exp_logformatverify: every line log_format formats is formatted by vsnprintf too; a mismatch logs vsnprintf's text
+// (and counts), shown in a [LOGFORMAT] report line
+int log_format_verify;
+unsigned log_format_fast, log_format_checked, log_format_mismatches;
+char log_format_first_bad[256];
+
+static int log_formatf(char *out, int cap, const char *fmt, ...) {
+	va_list list;
+	va_start(list, fmt);
+	int n = log_format(out, cap, fmt, list);
+	va_end(list);
+	if (n < 0) {
+		va_start(list, fmt);
+		n = vsnprintf(out, cap, fmt, list);
+		va_end(list);
+	}
+	return n;
+}
+
 int debugPrintf(char *text, ...) {
 	if (!debugMode || !log_available())
 		return 0;
@@ -455,10 +475,32 @@ int debugPrintf(char *text, ...) {
 	va_list list;
 	char local[1024], *string = local;
 	uint32_t ms = sceKernelGetProcessTimeLow() / 1000;
-	int prefix = snprintf(local, sizeof(local), "[%5u.%03u] ", ms / 1000, ms % 1000);
+	int prefix = log_formatf(local, sizeof(local), "[%5u.%03u] ", ms / 1000, ms % 1000);
+	// log_format.c first (newlib's vsnprintf costs ~17 us a line), vsnprintf for what it doesn't reproduce exactly
 	va_start(list, text);
-	int body = vsnprintf(local + prefix, sizeof(local) - prefix, text, list);
+	int body = log_format(local + prefix, sizeof(local) - prefix, text, list);
 	va_end(list);
+	if (body >= 0 && log_format_verify) {
+		char check[sizeof(local)];
+		va_start(list, text);
+		int want = vsnprintf(check, sizeof(local) - prefix, text, list);
+		va_end(list);
+		log_format_checked++;
+		if (want != body || memcmp(check, local + prefix, body)) {
+			if (!log_format_mismatches++) {
+				snprintf(log_format_first_bad, sizeof(log_format_first_bad), "format \"%.60s\": vsnprintf \"%.60s\", "
+					"log_format \"%.60s\"", text, check, local + prefix);
+			}
+			body = -1; // the line is formatted by vsnprintf below
+		}
+	}
+	if (body >= 0) {
+		log_format_fast++;
+	} else {
+		va_start(list, text);
+		body = vsnprintf(local + prefix, sizeof(local) - prefix, text, list);
+		va_end(list);
+	}
 	if (body < 0)
 		return 0;
 	int len = prefix + (body < 0x7fff - prefix ? body : 0x7fff - prefix);
@@ -1324,6 +1366,11 @@ void frame_profile(uint64_t start, uint64_t processed, uint64_t swapped) {
 		debugPrintf("[SCENES] %.1f scenes/frame | EndScene %.2fms BeginScene %.2fms per frame\n",
 			(float)vgl_scene_count / frames, vgl_scene_end_us / 1000.0f / frames, vgl_scene_begin_us / 1000.0f / frames);
 		vgl_scene_count = vgl_scene_end_us = vgl_scene_begin_us = 0;
+		if (log_format_verify) {
+			debugPrintf("[LOGFORMAT] verify: %u lines formatted by log_format, %u of them checked, %u mismatches%s%s\n",
+				log_format_fast, log_format_checked, log_format_mismatches, log_format_mismatches ? " | first: " : "",
+				log_format_mismatches ? log_format_first_bad : "");
+		}
 		glprof_report(frames);
 		katana_prof_report(frames);
 		callprof_report(frames);
@@ -3873,6 +3920,7 @@ void *pthread_main(void *arg) {
 	if (debugMode && mem_overlay)
 		vglSetDisplayCallback(mem_profiler);
 	alloc_prof_on = exp_flag("allocprof");
+	log_format_verify = exp_flag("logformatverify");
 	vglSetupGarbageCollector(127, game_core_index() == 1 ? 0x40000 : 0x20000);
 	if (squeeze_mem)
 		vglSetParamBufferSize(2 * 1024 * 1024);
