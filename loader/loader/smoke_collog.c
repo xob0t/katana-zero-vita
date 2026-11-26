@@ -247,8 +247,8 @@ void smoke_collog_frame(void) {
 	real_place_meeting = (builtin_fn)pm->func;
 	real_instance_place = (builtin_fn)ip->func;
 	real_instance_find = (builtin_fn)find->func;
-	pm->func = (void *)wrap_place_meeting;
-	ip->func = (void *)wrap_instance_place;
+	builtin_chain((void **)&pm->func, (void *)wrap_place_meeting); // chained: fx_rate.c swaps place_meeting in its
+	builtin_chain((void **)&ip->func, (void *)wrap_instance_place); // verify, and these pass every call on
 	swapped = 1;
 	debugPrintf("smoke collision log: place_meeting and instance_place wrapped\n");
 }

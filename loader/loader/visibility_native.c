@@ -206,7 +206,7 @@ static Script hook(uintptr_t entry, void *replacement, void *(*rx_alloc)(size_t)
 	uint32_t code[4] = { w[0], w[1], 0xe51ff004, (uint32_t)(entry + 8) };
 	kuKernelCpuUnrestrictedMemcpy(rx, code, sizeof(code));
 	kuKernelFlushCaches(rx, sizeof(code));
-	hook_addr(entry, (uintptr_t)replacement);
+	hook_raw(entry, (uintptr_t)replacement);
 	kuKernelFlushCaches((void *)entry, 8);
 	return (Script)rx;
 }

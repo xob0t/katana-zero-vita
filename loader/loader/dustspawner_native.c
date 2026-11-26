@@ -458,6 +458,6 @@ int dustspawner_loop_native_install(void *(*rx_alloc)(size_t)) {
  uint32_t code[]={0xe92d4ff0,0xe28db01c,0xe51ff004,(uint32_t)(entry+8)};
  kuKernelCpuUnrestrictedMemcpy(rx,code,sizeof(code));kuKernelFlushCaches(rx,16);
  dustspawner_loop_native_original=(Event)rx;
- hook_addr(entry,(uintptr_t)dustspawner_loop_native_event);kuKernelFlushCaches((void *)entry,8);
+ hook_raw(entry,(uintptr_t)dustspawner_loop_native_event);kuKernelFlushCaches((void *)entry,8);
  installed=true;return 1;
 }

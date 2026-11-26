@@ -376,8 +376,7 @@ static void got_wrap(const char *sym, void *wrapper, void **orig) {
 	uintptr_t *slot = so_got_slot(&yoyoloader_mod, sym);
 	if (!slot || !*slot)
 		return;
-	*orig = (void *)*slot;
-	*slot = (uintptr_t)wrapper;
+	*orig = (void *)got_write(slot, (uintptr_t)wrapper);
 }
 
 static int bootprof_on;

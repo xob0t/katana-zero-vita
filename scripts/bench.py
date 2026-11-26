@@ -14,6 +14,7 @@ import statistics
 import sys
 import time
 
+import hooks_baseline
 import vita_common
 from vita_common import SHARED, ftp_session
 
@@ -118,6 +119,9 @@ def main():
     vc("launch KTNZ00001; wait 3s; " + press("cross"), timeout=15)
     log = wait_for(r"Entered Room: room_title", 240)
     load_line = [l for l in log.splitlines() if "Entered Room: room_title" in l][0]
+    # The [HOOKS] lines against tests/expected_hooks.txt: a feature that stopped installing, or a hook conflict
+    hooks_ok = hooks_baseline.check_log(log, default_config=not args.exp and not args.profile,
+                                        label=f"[{args.label}] [HOOKS]")
     time.sleep(4)
     vc(press("cross") + "; wait 4s", timeout=10)
     log = wait_for(rf"Entered Room: {args.room}(?![0-9_])", 120, poke=press("cross"))
@@ -175,6 +179,9 @@ def main():
         print(f"[{args.label}] {window.split('] ', 1)[1]}")
     with open(os.path.join(ROOT, "work", f"bench_{args.label}.log"), "w", encoding="utf-8") as f:
         f.write(log)
+    if not hooks_ok:
+        print(f"[{args.label}] FAILED: the [HOOKS] lines differ from tests/expected_hooks.txt (see above)")
+        return 1
 
 
 if __name__ == "__main__":

@@ -188,8 +188,7 @@ static void passthru_hook(const char *label, const char *symbol) {
 		return;
 	int i = passthru_num++;
 	passthru_names[i] = label;
-	passthru_orig[i] = (passthru_func)*slot;
-	*slot = (uintptr_t)passthru_wrappers[i];
+	passthru_orig[i] = (passthru_func)got_write(slot, (uintptr_t)passthru_wrappers[i]);
 }
 
 
@@ -273,7 +272,7 @@ static void userprof_hooks(void) {
 		kuKernelFlushCaches(rx, sizeof(code));
 		userprof_orig[idx] = (userprof_event)&rx[3];
 		userprof_names[idx] = strdup(name);
-		hook_addr(entry, (uintptr_t)rx);
+		hook_raw(entry, (uintptr_t)rx);
 		kuKernelFlushCaches((void *)entry, 8);
 	}
 	debugPrintf("userprof: timing %d events\n", userprof_num);
@@ -319,8 +318,7 @@ static void stage_hook(const char *symbol, void **orig, void *wrapper) {
 		debugPrintf("Stage profiler: no PLT slot for %s\n", symbol);
 		return;
 	}
-	*orig = (void *)*slot;
-	*slot = (uintptr_t)wrapper;
+	*orig = (void *)got_write(slot, (uintptr_t)wrapper);
 }
 
 // Times the runtime builtins listed in ux0:data/gms/shared/builtinprof.txt (GML names, e.g.
@@ -344,8 +342,8 @@ static void builtinprof_hooks(void) {
 			if (f->name && !strcmp(f->name, name)) {
 				int slot = passthru_num++;
 				passthru_names[slot] = name;
-				passthru_orig[slot] = (passthru_func)f->func;
-				f->func = passthru_wrappers[slot];
+				passthru_orig[slot] = (passthru_func)builtin_chain((void **)&f->func, passthru_wrappers[slot]);
+				// (chained: the profiler times whatever the entry holds)
 				break;
 			}
 		}

@@ -1743,7 +1743,7 @@ int smokedraw_native_install(void *(*rx_alloc)(size_t)) {
 		wobble_verify = smokedraw_verify && exp_flag("smokewobbleverify");
 		debugPrintf("smoke cloud Draw verify: %s\n", smokedraw_verify ? "on" : "NOT available");
 	}
-	hook_addr(entry, (uintptr_t)smokedraw_event);
+	hook_raw(entry, (uintptr_t)smokedraw_event);
 	kuKernelFlushCaches((void *)entry, 8);
 	installed = 1;
 	return 1;

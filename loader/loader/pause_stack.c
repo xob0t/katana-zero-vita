@@ -343,8 +343,8 @@ void pause_stack_late_install(void) {
 		if (b < 0 || sceKernelGetMemBlockBase(b, (void **)&orig_px) < 0)
 			orig_px = NULL;
 	}
-	orig_dse = f_dse->func;
-	f_dse->func = w_dse;
+	orig_dse = builtin_swap((void **)&f_dse->func, w_dse);
+	// (recorded: virtual_capture.c, installed before, checks this entry)
 	installed = 1;
 	debugPrintf("pause stack: one shader pass for the 10 screencopy layers%s%s\n", verify ? " (verify)" : "",
 		ab_mode ? ", A/B by report window" : "");

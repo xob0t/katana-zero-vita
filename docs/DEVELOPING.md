@@ -254,14 +254,19 @@ then is read after it.
 
 ## Hook rules
 
-The helpers are in `hooks.c` / `hooks.h`, except `hook_addr` and `so_got_slot` in `so_util.c`.
+The helpers are in `hooks.c` / `hooks.h`, except `hook_addr` and `so_got_slot` in `so_util.c`. `hook_raw`,
+`got_write`, `builtin_swap` and `builtin_chain` are defined in `hooks.c` and declared in `so_util.h`, next to
+`hook_addr`, so every native can use them without a new include.
 
 | Helper | What it does | Composes with |
 |---|---|---|
-| `hook_addr(addr, dst)` | Overwrites the first two words of `addr` with `ldr pc, [pc, #-4]` and `dst`. No trampoline, no check: the original can't be called and an earlier hook on `addr` is silently replaced. | nothing |
+| `hook_addr(addr, dst)` | Overwrites the first two words of `addr` with `ldr pc, [pc, #-4]` and `dst`. No trampoline, no check: the original can't be called and an earlier hook on `addr` is silently replaced. Port code uses `hook_raw`. | nothing |
+| `hook_raw(addr, dst)` | `hook_addr`, recorded in the registry: a second module on `addr`, or an `addr` already patched off the record, is logged as `[HOOKS] CONFLICT`. | nothing |
 | `entry_hook(entry, replacement)` | Copies the two-instruction prologue (`push {..., lr}` then `add fp, sp, #imm` or `mov fp, sp`) into a trampoline from `katana_rx_alloc`, then `hook_addr`. Returns the trampoline (call it to run the original), or NULL: no symbol, another prologue, or the function is already hooked, RX arena full. | GOT-slot interception, `gml_replace` |
 | `gml_replace(table, name, wrapper)` | Swaps the compiled event `name` in the runner's `g_GMLFuncs` table. Returns the previous entry (NULL if not found). A second `gml_replace` on the same name chains: it gets the first wrapper as its original. | everything |
-| `so_got_slot(mod, symbol)` | Returns the PLT GOT slot of an imported or exported symbol; writing it redirects calls that go through the PLT. The function body is untouched. | entry hooks, natives' prologue checks |
+| `so_got_slot(mod, symbol)` | Returns the PLT GOT slot of an imported or exported symbol; writing it redirects calls that go through the PLT. The function body is untouched. Write it with `got_write`. | entry hooks, natives' prologue checks |
+| `got_write(slot, fn)` | Stores `fn` in a GOT slot and returns the old value, recorded: a conflict when another module wrote the slot, or a runner function's slot no longer held the function. | entry hooks |
+| `builtin_swap(&entry->func, fn)` / `builtin_chain(...)` | Replace a GML builtin in the runner's registry (`the_functions`), return the old function, recorded. `builtin_swap` reports a conflict when another module swapped the entry or it didn't hold the runner's function; `builtin_chain` is for wrappers that pass on every call they don't handle, where an earlier swap is expected (`instance_create_depth`, psych_fix's surface copy wrappers). | each other, in install order |
 | `stub_event(symbol)` | Writes `bx lr` over the first word: the event returns at once. Used for `dancerGlow=0`, `cathedralDust=0` and `stub_events`. | nothing |
 | `katana_rx_alloc(size)` | 64 KB of executable memory for trampolines and veneers, 16-byte aligned, never freed. | |
 | Veneers (`so_alloc_near`) | Rewrite one `bl` call site to go through an 8-byte veneer in the code cave or patch block. Only that call site changes. Used by `trail_lights.c`, `bike_draw.c`, `cone_shadow.c`, `explosion_lite.c`, `far_rocket.c` and others, often on `with` iterator calls (`YYGML_NewWithIterator`, `YYGML_WithIteratorNext`). The site must be within `bl` range (32 MB); call sites far from the cave can't be patched. | entry hooks on the callee |
@@ -274,10 +279,17 @@ Rules:
    happens, and `hooks_report()` (end of `katana_late_install`) prints one `[HOOKS]` line with the hook count, RX
    arena use and every hook that did not install, followed by every line logged before it that says `NOT` and a
    lowercase word (`NOT installed`, `NOT hooked`; `NOT drawn` is a setting and is left out), quoted, so a native that
-   declines in its own install checks is listed too. Check that line after adding a hook. Hooks a native installs with
-   its own `hook_addr` are not in the registry, so the second hook's failure is listed without the owner.
-2. A later `hook_addr` or `stub_event` on a hooked function silently replaces the first hook. `stub_event` logs it;
-   plain `hook_addr` does not.
+   declines in its own install checks is listed too. A second `[HOOKS] also ...` line counts the raw hooks, GOT
+   slots and registry swaps (`hook_raw`, `got_write`, `builtin_swap`/`builtin_chain`) and lists their conflicts.
+   `tests/expected_hooks.txt` holds both lines of a default boot; `scripts/bench.py` and the Vita3K harness compare
+   every boot with it (`scripts/hooks_baseline.py`), so a feature that stops installing or a new conflict shows on the
+   next run. A PR that adds or drops a hook updates the file (`python scripts/hooks_baseline.py --update yyl.log`).
+2. A later `hook_raw` or `stub_event` on a hooked function replaces the first hook; both log it (`[HOOKS] CONFLICT`,
+   `stub_event disables the hook on`). Upstream files (`main.c`, `openal_patch.c`, `videoplayer_patch.c`,
+   `gamepad.c`) still call `hook_addr` directly; their targets are libc/OpenAL/video imports, not runner code the
+   port hooks. Temporary swaps made and undone around one call (verify recorders in `fx_rate.c`, `psych_ground.c`,
+   `shadow_native.c`, `wavy_native.c`, `flashlight_native.c`, `crt_native.c`; psych_fix's per-event GOT swaps;
+   `callprof.c`'s PLT stubs) are not recorded.
 3. Prefer GOT-slot interception when the call sites go through the PLT: it composes with an entry hook on the same
    function and leaves the prologue that natives check intact. `scripts/patch_plt_calls.py` rewrites most PLT calls
    of the deployed runner into direct `bl`, so a GOT slot only sees what that script leaves alone (its
@@ -324,6 +336,8 @@ Rules:
    - `virtual_capture.c` installs before `pause_stack.c`: pause_stack swaps `draw_surface_ext` in the function
      registry, and vcapture declines unless the registry still holds `F_DrawSurfaceExt` (it didn't install from #115
      until this order was fixed).
+   - `surface_copy` in the function registry: `katana_display.c` (app surface copy scaling) swaps it, then
+     `psych_fix.c` chains its "forget" wrapper in front (both in `katana_late_install`; found by the registry, Nov 2026).
    - `katana_late_install` (once, after the runner's Startup, before the main loop) holds what needs the function
      registry (`the_functions`) or `g_FUNC_*` ids: sound limit, voices, input and held natives, virtual captures,
      the clothesline and tilemap builtin swaps, dossier, wavy and shadow natives.
@@ -363,6 +377,7 @@ own lines there; keep their flags as they are.
 | Python unit tests (`tests/test_*.py`: build script, APK tooling, `vita_common.py`) | `uv run python -m unittest discover -s tests` | yes |
 | `tests/test_settings_docs.py`: every key `loadConfig` reads is in settings.md and the reverse, documented defaults equal the variables' initialisers, `changes.md`'s keys exist | the same | yes |
 | `tests/test_exp_flags.py`: `docs/exp-flags.md` is current, one file per switch, every switch named in this file | the same | yes |
+| `tests/test_hooks_baseline.py`: the `[HOOKS]` baseline checker | the same | yes |
 | `scripts/check_loader.py`: no global symbol defined in two objects (the link's `--allow-multiple-definition` would merge them), extern declarations match their definitions (LTO partial link with `-Wlto-type-mismatch`), the natives' host test builds compile | `python scripts/check_loader.py` after a build (Vita toolchain) | yes, in the build job |
 | `tests/asyncsave_test.c`: the background save writer on the host (needs glibc) | `gcc -O1 -g -Wall -pthread -Iloader/loader tests/asyncsave_test.c -o asyncsave-test && ./asyncsave-test`; also with `-fsanitize=thread` and `-fsanitize=address,undefined` | yes, plain and under both sanitizers |
 | `tests/loader_core.c`: save file replacement, `yyl.cfg` parsing, ELF loading, shared APK reads | see its header; needs `libyoyo.so` from the 1.1.10 APK | no |
@@ -398,6 +413,8 @@ on `~/.t3/vita-device.lock` for sessions that share one console. The scripts don
 | `extract_art.py`, `make_livearea.py`, `vita_glyphs.py` | Art from the APK: sprites, LiveArea images, button glyphs. |
 | `env.sh` | Sets up the toolchain environment in Git Bash for running cmake by hand. |
 | `exp_index.py` | Writes `docs/exp-flags.md`, the index of `exp_*` switches (`--check` only compares). |
+| `hooks_baseline.py` | Compares a `yyl.log`'s `[HOOKS]` lines with `tests/expected_hooks.txt` (`bench.py` runs it after every boot). |
+| `boot_lines.py` | The ordered install lines of a boot (timings and addresses filtered); with two logs, their diff. For proving a refactor leaves installs unchanged. |
 | `check_loader.py` | The build checks above: duplicate globals, extern types, test builds. |
 
 The test saves in `work/testsaves/` are not in the repository either.
@@ -415,7 +432,8 @@ The test saves in `work/testsaves/` are not in the repository either.
 5. If it is exact, add the file to `loader/exact_sources.cmake`.
 6. If it has a `yyl.cfg` key: parse it in `loadConfig`, add a row to [settings.md](settings.md), and if it changes what
    the player sees or hears, a row to [changes.md](changes.md).
-7. Use the hook helpers above and check the `[HOOKS]` line: nothing new under "not installed", and no other feature's
-   `NOT installed` line in `yyl.log`.
+7. Use the hook helpers above (`hook_raw`, `got_write`, `builtin_swap`/`builtin_chain` rather than bare writes) and
+   check the `[HOOKS]` lines: nothing new under "not installed", no conflicts, and no other feature's `NOT installed`
+   line in `yyl.log`. Update `tests/expected_hooks.txt` with the new counts.
 8. In the pull request, give the verifier you ran (the `exp_*verify` switch and the scene, or the offline harness) and
    its result.

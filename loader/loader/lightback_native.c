@@ -487,8 +487,8 @@ void lightback_native_late(void) {
 	for (int i = 0; functions && *functions && count && i < *count; i++) {
 		runner_function *f = &(*functions)[i];
 		if (f->name && !strcmp(f->name, "draw_sprite_stretched_ext")) {
-			orig_stretched = f->func;
-			f->func = (void *)counted_stretched;
+			orig_stretched = builtin_swap((void **)&f->func, (void *)counted_stretched);
+			// (recorded in the hook registry)
 			debugPrintf("[LIGHTBACK] verify: recording draw_sprite_stretched_ext\n");
 			return;
 		}
@@ -545,7 +545,7 @@ int lightback_native_install(void *(*rx_alloc)(size_t)) {
 	lb_visab = exp_flag("lbvisab");
 	extern int heavy_profiling;
 	lb_timing = heavy_profiling;
-	hook_addr(entry, (uintptr_t)lightback_native);
+	hook_raw(entry, (uintptr_t)lightback_native);
 	kuKernelFlushCaches((void *)entry, 8);
 	return 1;
 }

@@ -1,0 +1,6 @@
+# The [HOOKS] lines of a boot with the default yyl.cfg (debugMode=1 only) and no exp_* files: what installed, and the
+# hook registry's conflicts. scripts/hooks_baseline.py compares a boot log with it (scripts/bench.py and
+# work/vita3k/kz_verify.sh run it): the "not installed" and "conflicts" lists must match; counts that differ are
+# reported. A PR that adds or drops a hook updates this file: python scripts/hooks_baseline.py --update yyl.log
+[HOOKS] 42 entry hooks, 2 stubs, rx arena 20512 of 65536 bytes; not installed: none
+[HOOKS] also 272 raw hooks, 2 GOT slots, 17 registry swaps (4 chained); conflicts: none

@@ -651,7 +651,7 @@ int light_array_install(void *(*rx_alloc)(size_t)) {
 	}
 	patch_call(AT(NEW_SITE), new_veneer, (uintptr_t)&update_new_with);
 	patch_call(AT(NEXT_SITE), next_veneer, (uintptr_t)&update_next_with);
-	hook_addr(entry, (uintptr_t)&update_entry);
+	hook_raw(entry, (uintptr_t)&update_entry);
 	kuKernelFlushCaches((void *)entry, 8);
 #undef AT
 	debugPrintf("light array: native loop body%s\n", verify ? " (verify mode)" : "");

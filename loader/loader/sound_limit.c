@@ -126,14 +126,11 @@ void sound_limit_install(void) {
 		if (!f->name)
 			continue;
 		if (!strcmp(f->name, "audio_play_sound")) {
-			orig_play_sound = f->func;
-			f->func = play_sound;
+			orig_play_sound = builtin_swap((void **)&f->func, (void *)play_sound);
 		} else if (!strcmp(f->name, "audio_play_sound_at")) {
-			orig_play_sound_at = f->func;
-			f->func = play_sound_at;
+			orig_play_sound_at = builtin_swap((void **)&f->func, (void *)play_sound_at);
 		} else if (!strcmp(f->name, "audio_play_sound_on")) {
-			orig_play_sound_on = f->func;
-			f->func = play_sound_on;
+			orig_play_sound_on = builtin_swap((void **)&f->func, (void *)play_sound_on);
 		}
 	}
 	debugPrintf("same-sound limit: %d\n", same_sound_limit);

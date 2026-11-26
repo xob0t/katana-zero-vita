@@ -755,7 +755,7 @@ static bool hook_entries(int n, const uintptr_t *entry, void *const *replacement
 	kuKernelFlushCaches(rx, 16 * n);
 	for (int i = 0; i < n; i++) {
 		original[i] = rx + 4 * i;
-		hook_addr(entry[i], (uintptr_t)replacement[i]);
+		hook_raw(entry[i], (uintptr_t)replacement[i]);
 		kuKernelFlushCaches((void *)entry[i], 8);
 	}
 	return true;

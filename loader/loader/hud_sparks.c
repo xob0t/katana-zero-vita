@@ -773,8 +773,8 @@ void hud_sparks_late_install(void) {
 	for (int i = 0; *functions && i < *function_count; i++) {
 		runner_function *f = &(*functions)[i];
 		if (f->name && !strcmp(f->name, "instance_create_depth")) {
-			orig_create_depth = f->func;
-			f->func = create_depth_hook;
+			orig_create_depth = builtin_chain((void **)&f->func, create_depth_hook);
+			// (chained: see hooks.c)
 			break;
 		}
 	}

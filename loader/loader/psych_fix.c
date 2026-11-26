@@ -757,14 +757,15 @@ void psych_fix_late_install(void) {
 	// Builtins that free, create, resize or copy into a surface make the pass forget what it holds. Nothing else can
 	// draw into the attack surface: only the battle object's Create, Draw and CleanUp read global.attack_surface (GOT
 	// xrefs in APK 1.1.10), and its Draw's target switches go through the wrappers. No entry hook on the runner's
-	// surface_set_target_ext: virtual_capture.c hooks it and checks its prologue.
-	orig_surface_free = f_free->func; f_free->func = surface_free_pool;
-	orig_surface_create = f_create->func; f_create->func = surface_create_pool;
-	orig_surface_exists = f_exists->func; f_exists->func = surface_exists_pool;
+	// surface_set_target_ext: virtual_capture.c hooks it and checks its prologue. The resize/copy wrappers pass every
+	// call on, so they chain: surface_copy is katana_display.c's app-surface copy scaling by now (appsurf_copy_install).
+	orig_surface_free = builtin_swap((void **)&f_free->func, surface_free_pool);
+	orig_surface_create = builtin_swap((void **)&f_create->func, surface_create_pool);
+	orig_surface_exists = builtin_swap((void **)&f_exists->func, surface_exists_pool);
 	bi_surface_exists = f_exists->func;
-	orig_surface_resize = f_resize->func; f_resize->func = surface_resize_forget;
-	orig_surface_copy = f_copy->func; f_copy->func = surface_copy_forget;
-	orig_surface_copy_part = f_copy_part->func; f_copy_part->func = surface_copy_part_forget;
+	orig_surface_resize = builtin_chain((void **)&f_resize->func, surface_resize_forget);
+	orig_surface_copy = builtin_chain((void **)&f_copy->func, surface_copy_forget);
+	orig_surface_copy_part = builtin_chain((void **)&f_copy_part->func, surface_copy_part_forget);
 
 	lazy_on = lazy_ok && fid_instance_exists >= 0;
 	pool_on = !exp_flag("psychpool0") && room_find;

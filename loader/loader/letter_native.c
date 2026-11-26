@@ -809,7 +809,7 @@ int letter_native_install(void *(*rx_alloc)(size_t)) {
  original_draw=(event_fn)rx; original_step=(event_fn)((uint8_t *)rx+16); original_user=(event_fn)((uint8_t *)rx+32);
  original_scaled=(script_fn)((uint8_t *)rx+48); original_font=(script_fn)((uint8_t *)rx+64);
  uintptr_t replacements[]={(uintptr_t)letter_native_draw,(uintptr_t)letter_native_step,(uintptr_t)letter_native_user,(uintptr_t)letter_native_scaled,(uintptr_t)letter_native_font};
- for(int i=0;i<5;++i) { hook_addr(entry[i],replacements[i]); kuKernelFlushCaches((void *)entry[i],8); }
+ for(int i=0;i<5;++i) { hook_raw(entry[i],replacements[i]); kuKernelFlushCaches((void *)entry[i],8); }
  installed=1; return 1;
 }
 

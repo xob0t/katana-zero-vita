@@ -306,7 +306,7 @@ int laser_native_install(void *(*rx_alloc)(size_t)) {
                     0xe59d007c,0xe200001f,0xe51ff004,(uint32_t)(probe+8)};
  kuKernelCpuUnrestrictedMemcpy(rx,code,sizeof(code)); kuKernelFlushCaches(rx,sizeof(code));
  original_draw=(script_fn)rx; laser_probe_original=(uintptr_t)rx+16; laser_probe_resume=step+0x5bf0;
- hook_addr(draw,(uintptr_t)laser_native_draw); hook_addr(probe,(uintptr_t)laser_native_probe_bridge);
+ hook_raw(draw,(uintptr_t)laser_native_draw); hook_raw(probe,(uintptr_t)laser_native_probe_bridge);
  kuKernelFlushCaches((void *)draw,8); kuKernelFlushCaches((void *)probe,8); installed=1;
 #ifndef LASER_TEST
  laser_prof=exp_flag("laserprof"); exp_laserfast0=exp_flag("laserfast0"); laser_ab=exp_flag("laserab");

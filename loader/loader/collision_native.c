@@ -150,7 +150,7 @@ int collision_install(void *rx, size_t rx_size) {
     kuKernelCpuUnrestrictedMemcpy(rx, trampoline, sizeof(trampoline));
     kuKernelFlushCaches(rx, sizeof(trampoline));
     original_bbox = (bbox_fn)rx;
-    hook_addr(entry, (uintptr_t)collision_bbox);
+    hook_raw(entry, (uintptr_t)collision_bbox);
     kuKernelFlushCaches((void *)entry, 8);
     installed = true;
     return 1;
