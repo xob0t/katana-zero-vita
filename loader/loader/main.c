@@ -66,6 +66,9 @@
 #define STB_ONLY_PNG
 #include "stb_image.h"
 
+// 1 until the main loop's first frame: main() starts a thread that keeps the system awake during startup
+static volatile int boot_power_ticks = 1;
+
 extern int trophies_init();
 extern void patch_trophies();
 extern void audio_player_play(char *path, int loop);
@@ -1133,6 +1136,7 @@ void main_loop() {
 				// Keep the system from auto-suspending during play without input
 				// (e.g. cutscenes, or unattended benchmark runs)
 				static int power_tick_frames = 0;
+				boot_power_ticks = 0; // the startup ticker (main()) stops; this loop ticks from here on
 				if (++power_tick_frames >= 60) {
 					power_tick_frames = 0;
 					sceKernelPowerTick(SCE_KERNEL_POWER_TICK_DEFAULT); // also keeps the display on
@@ -3626,8 +3630,24 @@ static void audio_sound_get_track_position(retval_t *ret, void *self, void *othe
 
 void *pthread_main(void *arg);
 
+// Startup takes ~16 s before the main loop's own power tick runs. A launch without a button press (vitacompanion,
+// or after a long time without input) doesn't reset the system's idle timer, and such launches stopped at the
+// audio group load (~14 s) with no dump. This thread ticks once a second until the main loop takes over.
+static int boot_power_tick_thread(SceSize args, void *argp) {
+	(void)args; (void)argp;
+	while (boot_power_ticks) {
+		sceKernelPowerTick(SCE_KERNEL_POWER_TICK_DEFAULT);
+		sceKernelDelayThread(1000 * 1000);
+	}
+	return sceKernelExitDeleteThread(0);
+}
+
 int main(int argc, char *argv[]) {
 	boot_mark("main()");
+	sceKernelPowerTick(SCE_KERNEL_POWER_TICK_DEFAULT);
+	SceUID ticker = sceKernelCreateThread("boot_power_tick", boot_power_tick_thread, 0x10000100, 0x1000, 0, 0, NULL);
+	if (ticker >= 0)
+		sceKernelStartThread(ticker, 0, NULL);
 	pthread_t t;
 	pthread_attr_t attr;
 	pthread_attr_init(&attr);
