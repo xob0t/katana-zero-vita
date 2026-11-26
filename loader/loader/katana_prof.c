@@ -1002,6 +1002,8 @@ void katana_prof_report(int frames) {
 	flashlight_native_report(frames);
 	extern void runner_fast_report(int frames);
 	runner_fast_report(frames);
+	extern void hazard_native_report(int frames);
+	hazard_native_report(frames);
 	extern void place_native_report(int frames);
 	place_native_report(frames);
 	extern void option_defaults_report(int frames);
